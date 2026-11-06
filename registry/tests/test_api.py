@@ -16,6 +16,7 @@
 
 import asyncio
 
+import asyncpg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -148,3 +149,46 @@ def test_keeps_trying_until_the_database_answers():
     asyncio.run(connect_with_retry(Holder, connect, retry_seconds=0))
     assert len(attempts) == 3
     assert Holder.state.store is store
+
+
+class LostStore(MemoryStore):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    async def get(self, participant_id: str) -> dict | None:
+        raise self.error
+
+    async def all(self) -> list[dict]:
+        raise self.error
+
+    async def save(self, record: dict) -> None:
+        raise self.error
+
+    async def delete(self, participant_id: str) -> bool:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncpg.exceptions.ConnectionDoesNotExistError("gone"),
+        asyncpg.exceptions.CannotConnectNowError("starting"),
+        asyncpg.InterfaceError("pool is closed"),
+        ConnectionRefusedError("refused"),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+def test_database_lost_after_startup_is_unavailable(error):
+    app.state.store = LostStore(error)
+    with TestClient(app) as test_client:
+        calls = [
+            test_client.get("/participants"),
+            test_client.get("/participants/urn:test:fo"),
+            test_client.get("/participants/compatible/urn:test:fo"),
+            test_client.post("/participants", json=FO),
+            test_client.delete("/participants/urn:test:fo"),
+        ]
+        assert [call.status_code for call in calls] == [503] * 5
+        assert test_client.get("/health").status_code == 200
+    app.state.store = None
