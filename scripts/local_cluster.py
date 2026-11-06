@@ -274,6 +274,20 @@ def http(method: str, url: str, body: object = None, headers: dict | None = None
         return status, content.decode(errors="replace")
 
 
+def http_multipart(url: str, fields: dict[str, str], files: list[tuple[str, bytes]], headers: dict):
+    """Post a multipart form with files, and return (status, parsed body)."""
+    boundary = token_hex(16)
+    parts = []
+    for name, value in fields.items():
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+    for filename, content in files:
+        start = f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="{filename}"\r\n'
+        parts.append(f"{start}Content-Type: application/octet-stream\r\n\r\n".encode() + content + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    kind = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    return http("POST", url, b"".join(parts), {**headers, **kind})
+
+
 def http_form(url: str, form: dict[str, str]):
     """Post a form, and return (status, parsed body)."""
     request = urllib.request.Request(url, urllib.parse.urlencode(form).encode())
