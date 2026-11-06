@@ -120,7 +120,11 @@ def exchange(owner: Agent, builder: Agent) -> None:
 
     answer = {"recommendation": f"Replace the coolant filter {uuid.uuid4().hex}"}
     reply = builder.send(
-        FACTORY_OWNER, performative="inform", in_reply_to=sent, conversation_id=received["conversation_id"], payload=answer
+        FACTORY_OWNER,
+        performative="inform",
+        in_reply_to=sent,
+        conversation_id=received["conversation_id"],
+        payload=answer,
     )
     received = owner.receive(reply)
     assert received["payload"] == answer, received
@@ -133,7 +137,8 @@ def exchange(owner: Agent, builder: Agent) -> None:
     assert received["error_message"] is None
     print("Empty payload: delivered, not an error")
 
-    status, _ = lc.http("POST", f"{builder.base}/outbox/messages", {"receiver_participant": "urn:check:nobody", "payload": {}}, builder.headers())
+    nobody = {"receiver_participant": "urn:check:nobody", "payload": {}}
+    status, _ = lc.http("POST", f"{builder.base}/outbox/messages", nobody, builder.headers())
     assert status == 404, status
     print("Unregistered receiver: 404")
 
@@ -156,7 +161,8 @@ def main() -> int:
                 lc.port_forward(lc.PARTICIPANTS, f"adapter-{lc.slug(MACHINE_BUILDER)}", 8000) as builder_url,
             ):
                 owner = Agent("factory owner", FACTORY_OWNER, client_secrets[FACTORY_OWNER], keycloak, owner_url)
-                builder = Agent("machine builder", MACHINE_BUILDER, client_secrets[MACHINE_BUILDER], keycloak, builder_url)
+                builder_secret = client_secrets[MACHINE_BUILDER]
+                builder = Agent("machine builder", MACHINE_BUILDER, builder_secret, keycloak, builder_url)
                 exchange(owner, builder)
             print("PASS")
             return 0
