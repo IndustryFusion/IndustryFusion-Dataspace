@@ -124,7 +124,7 @@ cd <service>
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install ".[dev]"
 ruff check .     # lint
-pytest           # test
+pytest           # test. Set TEST_POSTGRES_HOST, and _PORT, _USER and _PASSWORD if needed, to include tests needing PostgreSQL
 docker build .   # image
 ```
 
@@ -138,6 +138,7 @@ The connector is built with `docker build connector`, which runs Gradle on Java 
 scripts/local-env.sh up       # create everything
 scripts/local-env.sh status   # show pods
 scripts/local-env.sh check    # mint a token and check its issuer
+scripts/local-env.sh services # build the services and deploy them to the cluster
 scripts/local-env.sh down     # remove the cluster and generated files
 ```
 
