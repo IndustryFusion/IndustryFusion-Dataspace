@@ -21,9 +21,11 @@ import os
 import uuid
 
 import asyncpg
+import httpx
 import pytest
 
 from app.config import Settings
+from app.main import app
 from app.store import PostgresStore
 
 HOST = os.environ.get("TEST_POSTGRES_HOST")
@@ -69,6 +71,42 @@ def test_creates_database_and_records_survive_restart():
         assert await second.delete("urn:test:mb") is False
         assert await second.get("urn:test:mb") is None
         await second.close()
+        await _drop(settings)
+
+    asyncio.run(scenario())
+
+
+def test_losing_the_database_after_startup_is_never_a_server_error():
+    settings = settings_for(f"registry_test_{uuid.uuid4().hex[:8]}")
+
+    async def scenario():
+        store = await PostgresStore.connect(settings)
+        await store.save({"participant_id": "urn:test:mb", "participant_type": "x"})
+        app.state.store = store
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://registry.test") as client:
+            assert (await client.get("/participants/urn:test:mb")).status_code == 200
+
+            admin = await asyncpg.connect(
+                host=settings.postgres_host,
+                port=settings.postgres_port,
+                user=settings.postgres_user,
+                password=settings.postgres_password,
+                database="postgres",
+            )
+            await admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1",
+                settings.registry_db,
+            )
+            await admin.close()
+            answer = await client.get("/participants/urn:test:mb")
+            assert answer.status_code in {200, 503}, answer.text
+
+            await store.close()
+            answer = await client.get("/participants/urn:test:mb")
+            assert answer.status_code == 503, answer.text
+            assert (await client.get("/health")).status_code == 200
+        app.state.store = None
         await _drop(settings)
 
     asyncio.run(scenario())
