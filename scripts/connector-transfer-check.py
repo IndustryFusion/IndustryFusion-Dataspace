@@ -129,7 +129,7 @@ def run(provider_service: str, consumer_service: str, key: str) -> int:
         for base in (provider, consumer):
             query = {"@context": EDC, "@type": "QuerySpec"}
             lc.poll(
-                lambda b=base: lc.http("POST", f"{b}/management/v3/assets/request", query, headers)[0] == 200,
+                lambda b=base, q=query: lc.http("POST", f"{b}/management/v3/assets/request", q, headers)[0] == 200,
                 what="management API",
             )
 
