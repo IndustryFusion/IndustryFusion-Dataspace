@@ -13,7 +13,7 @@
 
 ## 3. GitHub integration
 
-- [ ] 3.1 Add `.github/workflows/openspec-validate.yml` with the licence header, running `openspec validate --all --strict` with a pinned, checksum-verified binary on Pull Requests and pushes touching `openspec/`; verify the workflow runs green on this Pull Request and the checksum matches the release's `SHA256SUMS`
+- [x] 3.1 Add `.github/workflows/openspec-validate.yml` with the licence header, running `openspec validate --all --strict` with a pinned, checksum-verified binary on Pull Requests and pushes touching `openspec/`; verify the workflow runs green on this Pull Request and the checksum matches the release's `SHA256SUMS`
 - [x] 3.2 Add `.github/ISSUE_TEMPLATE/feature.yml`; verify it parses as YAML
 - [x] 3.3 Add `.github/pull_request_template.md` with issue link (`Refs #N`, or `Closes #N` for an archive), change ID, a reminder that the source branch is on the contributor's fork, and automated-versus-human checklist; verify the fields are present
 
@@ -27,7 +27,7 @@
 - [x] 5.1 Run `openspec validate --all --strict` and `openspec status --change gh-2-bootstrap-openspec`; verify validation passes and all artifacts are complete
 - [x] 5.2 Confirm a requirement without a scenario, and a scenario with three hashes instead of four, each fail strict validation (temporary, not committed); record the result in the Pull Request
 - [x] 5.3 Confirm the Pull Request adds no application code and leaves `manifest.md`, `architecture.md` and `LICENSE` unchanged, unless maintainers decide otherwise on Open Question 4; verify with `git diff --stat` against `main`
-- [ ] 5.4 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 5.4 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
 
 ## Workflow follow-up
 
