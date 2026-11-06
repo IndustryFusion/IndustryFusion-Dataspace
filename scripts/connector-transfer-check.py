@@ -36,7 +36,10 @@ import http.server
 received = {}
 class Handler(http.server.BaseHTTPRequestHandler):
     def _send(self, code, body=b""):
-        self.send_response(code); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
     def do_GET(self):
         if self.path == "/received":
             self._send(200, received.get("body", b""))
@@ -105,7 +108,9 @@ def main() -> int:
         lc.wait_ready(lc.PARTICIPANTS, consumer_service)
         return run(provider_service, consumer_service, key)
     finally:
-        lc.kubectl("-n", lc.PARTICIPANTS, "delete", "deploy,svc,configmap", "connector-check-stand-in", "--ignore-not-found")
+        lc.kubectl(
+            "-n", lc.PARTICIPANTS, "delete", "deploy,svc,configmap", "connector-check-stand-in", "--ignore-not-found"
+        )
         lc.remove_connector(PROVIDER)
         lc.remove_connector(CONSUMER)
 
@@ -122,7 +127,11 @@ def run(provider_service: str, consumer_service: str, key: str) -> int:
         lc.port_forward(lc.PARTICIPANTS, "connector-check-stand-in", 8000) as server,
     ):
         for base in (provider, consumer):
-            lc.poll(lambda b=base: lc.http("POST", f"{b}/management/v3/assets/request", {"@context": EDC, "@type": "QuerySpec"}, headers)[0] == 200, what="management API")
+            query = {"@context": EDC, "@type": "QuerySpec"}
+            lc.poll(
+                lambda b=base: lc.http("POST", f"{b}/management/v3/assets/request", query, headers)[0] == 200,
+                what="management API",
+            )
 
         status, _ = lc.http("POST", f"{provider}/management/v3/assets/request", {"@context": EDC, "@type": "QuerySpec"})
         print(f"Management API with no key: {status}")
@@ -213,7 +222,8 @@ def run(provider_service: str, consumer_service: str, key: str) -> int:
         assert status == 200, (status, negotiation)
 
         def negotiated():
-            _, answer = lc.http("GET", f"{consumer}/management/v3/contractnegotiations/{negotiation['@id']}", headers=headers)
+            address = f"{consumer}/management/v3/contractnegotiations/{negotiation['@id']}"
+            _, answer = lc.http("GET", address, headers=headers)
             assert answer["state"] != "TERMINATED", answer
             return answer if answer["state"] == "FINALIZED" else None
 

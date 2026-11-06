@@ -131,7 +131,10 @@ def port_forward(namespace: str, service: str, port: int) -> Iterator[str]:
     """Forward a Service port, and yield its local base URL."""
     local = _free_port()
     process = subprocess.Popen(
-        ["kubectl", "--kubeconfig", str(KUBECONFIG), "-n", namespace, "port-forward", f"svc/{service}", f"{local}:{port}"],
+        [
+            "kubectl", "--kubeconfig", str(KUBECONFIG), "-n", namespace,
+            "port-forward", f"svc/{service}", f"{local}:{port}",
+        ],  # fmt: skip
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
