@@ -41,6 +41,8 @@ context: |
   Specification and implementation Pull Requests use `Refs #N`; the archive Pull
   Request closes the issue with `Closes #N`. See AGENTS.md and CONTRIBUTING.md.
   Change IDs use the form gh-<issue>-<kebab-summary>.
+  Conventions: each service has its own directory, tests and Dockerfile. Python services
+  use pytest and Ruff. New source files carry the IndustryFusion Foundation Apache-2.0 header.
 
 rules:
   proposal:
