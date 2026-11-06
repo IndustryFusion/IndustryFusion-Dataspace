@@ -43,6 +43,24 @@ implementation Pull Requests, which adds overhead and splits the review history.
 `openspec/config.yaml` rules and the Pull Request template. Alternative: a GitHub
 integration service, rejected as unnecessary infrastructure.
 
+**Pull Requests come from forks; issues do not need one.** This applies to every
+contributor, including maintainers, so branches in this repository stay limited to
+`main`. Alternative: allow maintainers to use branches here, rejected by the
+maintainer in favour of one rule for everyone. The rule is documented and checked
+in review. A CI check that fails on same-repository Pull Requests was also
+considered, and it can be added later if the rule is missed in practice.
+Validation still works on fork Pull Requests, because it needs no secrets and only
+reads the repository. GitHub may ask a maintainer to approve the workflow run for a
+first-time contributor.
+
+**The archive Pull Request closes the issue.** Specification and implementation
+Pull Requests use `Refs #N`, and the archive Pull Request uses `Closes #N`, so an
+issue stays open until its specifications are merged into `openspec/specs/`.
+Alternative: close the issue when the implementation is merged, rejected because
+the archive step could then be forgotten with nothing left open to show it. An
+issue delivered through several changes is closed only by the archive Pull Request
+that completes the last of them.
+
 **`AGENTS.md` as the single instruction source.** Most coding agents read it
 natively, and `CLAUDE.md` points to it. Claude Code gets the native skills and
 `/opsx:*` commands first. Other agents can be added with
@@ -77,6 +95,9 @@ it, rather than picking a side.
 - [The first implementation issue may hit an undecided conflict] → The open
   questions below are named in the project context, so it surfaces during proposal
   review rather than during coding.
+- [The fork rule is not enforced technically, so someone with write access can still
+  open a Pull Request from a branch in this repository] → Reviewers check the source
+  of the Pull Request, and the template reminds contributors of the rule.
 - [Pinned OpenSpec version ages] → The version and checksum are set in one place in
   the workflow.
 - [Green CI is not functional correctness] → The contributor guide lists the checks

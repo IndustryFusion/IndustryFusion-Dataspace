@@ -69,6 +69,32 @@ Every Pull Request that contains an OpenSpec change SHALL name the change ID and
 - **WHEN** a Pull Request for change `gh-42-add-inbox-expiry` is opened
 - **THEN** its description names `gh-42-add-inbox-expiry` and references issue 42
 
+### Requirement: Pull Requests come from forks
+Every contributor, including maintainers, SHALL open Pull Requests from a branch on their own fork and not from a branch in this repository. Opening an issue SHALL NOT require a fork.
+
+#### Scenario: Contributor opens a Pull Request
+- **WHEN** a contributor opens a Pull Request against this repository
+- **THEN** its source branch is on the contributor's own fork
+
+#### Scenario: Contributor opens an issue
+- **WHEN** a contributor wants to propose a feature or report a problem
+- **THEN** they open the issue directly in this repository without creating a fork
+
+### Requirement: Merging the archive closes the issue
+The originating issue SHALL stay open until the change is archived. Specification and implementation Pull Requests SHALL reference the issue without a closing keyword, and the archive Pull Request SHALL close it with a closing keyword. When an issue is delivered through several changes, only the archive Pull Request that completes the last of them SHALL close it.
+
+#### Scenario: Implementation is merged
+- **WHEN** the Pull Request containing a change's specification and implementation is merged
+- **THEN** the originating issue stays open
+
+#### Scenario: Archive is merged
+- **WHEN** the archive Pull Request for a change is merged
+- **THEN** the originating issue is closed automatically
+
+#### Scenario: Issue delivered through several changes
+- **WHEN** an archive Pull Request is merged and another change for the same issue is not yet archived
+- **THEN** the originating issue stays open
+
 ### Requirement: Automated artifact validation
 Every Pull Request that modifies files under `openspec/` or the validation workflow SHALL run `openspec validate --all --strict` in CI, and a validation failure SHALL fail the check.
 

@@ -23,7 +23,11 @@ workflow now means the first line of dataspace code can already go through it.
   → Verification → Merge → Archive, with a `spec-approved` Pull Request label
   gating implementation.
 - Define traceability: change IDs `gh-<issue>-<kebab-summary>` and an
-  `Issue: #N` line in every proposal.
+  `Issue: #N` line in every proposal. Specification and implementation Pull
+  Requests use `Refs #N`, and the merged archive Pull Request closes the issue
+  with `Closes #N`.
+- Require every contributor to open Pull Requests from their own fork. Issues are
+  opened directly in this repository and need no fork.
 - Add a GitHub Actions workflow validating OpenSpec artifacts, a feature request
   form, a Pull Request template and a contributor guide.
 - Record the differences between `manifest.md` and `architecture.md` as decisions
@@ -65,4 +69,6 @@ None.
 - Enforcing who may apply the `spec-approved` label (`CODEOWNERS`, branch
   protection). These need repository admin settings and are documented as
   recommendations only.
+- Technically blocking Pull Requests from branches in this repository. The fork
+  rule is documented and checked in review.
 - Test and lint conventions for code that does not exist yet.
