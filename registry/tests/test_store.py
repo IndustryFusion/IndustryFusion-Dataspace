@@ -95,7 +95,8 @@ def test_losing_the_database_after_startup_is_never_a_server_error():
                 database="postgres",
             )
             await admin.execute(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", settings.registry_db
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1",
+                settings.registry_db,
             )
             await admin.close()
             answer = await client.get("/participants/urn:test:mb")
