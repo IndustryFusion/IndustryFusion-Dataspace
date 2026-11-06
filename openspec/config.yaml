@@ -33,7 +33,8 @@ context: |
   before assuming that something exists, and do not invent test, lint or
   dependency conventions for code that does not exist.
   The project documents differ on these points, and maintainers have not decided
-  them (see Open Questions in the gh-2-bootstrap-openspec design.md):
+  them (see Open Questions in
+  openspec/changes/archive/2026-11-06-gh-2-bootstrap-openspec/design.md):
     1. Deployment: manifest.md has a local docker-compose deployment;
        architecture.md is designed for Kubernetes.
     2. EDC connector: manifest.md has separate control and data planes per
