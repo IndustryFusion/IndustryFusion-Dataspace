@@ -28,6 +28,7 @@ CLUSTER="dataspace-local"
 export KUBECONFIG="$LOCAL/kubeconfig"
 KEYCLOAK_ISSUER_BASE="http://keycloak-service.iff:8080/auth"
 SERVICES="registry"
+PARTICIPANT_IMAGES="connector adapter"
 
 need() {
   for tool in "$@"; do
@@ -124,7 +125,7 @@ services() {
     --from-literal=postgres-user="$POSTGRES_USER" \
     --from-literal=postgres-password="$POSTGRES_PASSWORD" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  for service in $SERVICES connector; do
+  for service in $SERVICES $PARTICIPANT_IMAGES; do
     docker build -q -t "dataspace/$service:dev" "$ROOT/$service" >/dev/null
     kind load docker-image --name "$CLUSTER" "dataspace/$service:dev" >/dev/null
   done

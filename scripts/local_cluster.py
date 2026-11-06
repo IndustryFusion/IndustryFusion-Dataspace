@@ -25,8 +25,10 @@ import subprocess
 import textwrap
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterator
+from secrets import token_hex
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LOCAL = ROOT / ".local"
@@ -116,6 +118,107 @@ def remove_connector(participant_id: str) -> None:
     drop_database(f"edc_{name}")
 
 
+class KeycloakAdmin:
+    """Creates and removes a participant's realm role and client, as keycloak.md describes."""
+
+    def __init__(self, base_url: str) -> None:
+        self.base = f"{base_url}/admin/realms/dataspace"
+        secrets = credentials()
+        form = urllib.parse.urlencode(
+            {
+                "grant_type": "password",
+                "client_id": "admin-cli",
+                "username": secrets["KEYCLOAK_ADMIN_USER"],
+                "password": secrets["KEYCLOAK_ADMIN_PASSWORD"],
+            }
+        ).encode()
+        request = urllib.request.Request(f"{base_url}/realms/master/protocol/openid-connect/token", form)
+        with urllib.request.urlopen(request) as response:
+            self.headers = {"Authorization": f"Bearer {json.load(response)['access_token']}"}
+
+    def _call(self, method: str, path: str, body: object = None):
+        status, answer = http(method, f"{self.base}{path}", body, self.headers)
+        if status >= 300 and status != 404 and status != 409:
+            raise RuntimeError(f"{method} {path} gave {status}: {answer}")
+        return status, answer
+
+    def client_uuid(self, client_id: str) -> str | None:
+        _, found = self._call("GET", f"/clients?clientId={urllib.parse.quote(client_id, safe='')}")
+        return found[0]["id"] if found else None
+
+    def add_participant(self, participant_id: str) -> str:
+        """Create the role, client, claim mapper and role assignment, and return the client's secret."""
+        role = f"participant:{participant_id}"
+        self._call("POST", "/roles", {"name": role})
+        self._call(
+            "POST",
+            "/clients",
+            {
+                "clientId": participant_id,
+                "publicClient": False,
+                "serviceAccountsEnabled": True,
+                "standardFlowEnabled": False,
+                "directAccessGrantsEnabled": False,
+                "protocolMappers": [
+                    {
+                        "name": "participant_id",
+                        "protocol": "openid-connect",
+                        "protocolMapper": "oidc-hardcoded-claim-mapper",
+                        "config": {
+                            "claim.name": "participant_id",
+                            "claim.value": participant_id,
+                            "jsonType.label": "String",
+                            "access.token.claim": "true",
+                            "id.token.claim": "false",
+                        },
+                    }
+                ],
+            },
+        )
+        uuid = self.client_uuid(participant_id)
+        _, user = self._call("GET", f"/clients/{uuid}/service-account-user")
+        _, role_body = self._call("GET", f"/roles/{urllib.parse.quote(role, safe='')}")
+        self._call("POST", f"/users/{user['id']}/role-mappings/realm", [role_body])
+        _, secret = self._call("GET", f"/clients/{uuid}/client-secret")
+        return secret["value"]
+
+    def remove_participant(self, participant_id: str) -> None:
+        uuid = self.client_uuid(participant_id)
+        if uuid:
+            self._call("DELETE", f"/clients/{uuid}")
+        self._call("DELETE", f"/roles/{urllib.parse.quote(f'participant:{participant_id}', safe='')}")
+
+
+def deploy_adapter(participant_id: str, participant_type: str, api_key: str, client_secret: str) -> str:
+    """Deploy one participant's adapter, and return its Service name."""
+    name = slug(participant_id)
+    ensure_database(f"adapter_{name}")
+    secrets = credentials()
+    apply(
+        render(
+            "adapter.yaml.template",
+            SLUG=name,
+            PARTICIPANT_ID=participant_id,
+            PARTICIPANT_TYPE=participant_type,
+            POSTGRES_USER=secrets["POSTGRES_USER"],
+            POSTGRES_PASSWORD=secrets["POSTGRES_PASSWORD"],
+            EDC_API_KEY=api_key,
+            CLIENT_SECRET=client_secret,
+            S3_ACCESS_KEY=secrets["S3_ACCESS_KEY"],
+            S3_SECRET_KEY=secrets["S3_SECRET_KEY"],
+            INTERNAL_KEY=token_hex(16),
+        )
+    )
+    return f"adapter-{name}"
+
+
+def remove_adapter(participant_id: str) -> None:
+    name = slug(participant_id)
+    for kind in ("deployment", "service", "secret"):
+        kubectl("-n", PARTICIPANTS, "delete", kind, f"adapter-{name}", "--ignore-not-found")
+    drop_database(f"adapter_{name}")
+
+
 def wait_ready(namespace: str, deployment: str, timeout: int = 300) -> None:
     kubectl("-n", namespace, "rollout", "status", f"deploy/{deployment}", f"--timeout={timeout}s")
 
@@ -166,6 +269,16 @@ def http(method: str, url: str, body: object = None, headers: dict | None = None
         return status, json.loads(content) if content else None
     except ValueError:
         return status, content.decode(errors="replace")
+
+
+def http_form(url: str, form: dict[str, str]):
+    """Post a form, and return (status, parsed body)."""
+    request = urllib.request.Request(url, urllib.parse.urlencode(form).encode())
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode(errors="replace")
 
 
 def poll(check, timeout: float = 120, interval: float = 1, what: str = "condition"):

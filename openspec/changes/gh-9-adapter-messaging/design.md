@@ -29,6 +29,8 @@
 
 **A duplicate `message_id` at the receiver returns `202` and does nothing.** A retried notification is safe, and the insert uses the primary key. Alternative: `409`, which the sender would record as a failure of a message that was in fact delivered.
 
+**The adapter keeps idle connections for 600 seconds.** Found while testing: the connector's HTTP client keeps idle connections for 5 minutes, while the server's default is to close them after 5 seconds. A push that started as the server closed the connection failed, and the client couldn't retry because the body is a stream. The receiver then showed `error` for about 1 message in 10 during repeated sends, while the sender showed `notified`. With the longer setting, the client always closes first: 37 consecutive transfers ran with no write errors, where the same test had given 10 before. Alternative: retrying in the adapter, which would hide the cause and still fail the first attempt.
+
 **Failed notifications set the sender's status by cause.** A `4xx` answer means the receiver refused it, so the status is `rejected`. Anything else is `error`.
 
 **Unit tests use SQLite and an in-memory store, and the end-to-end check uses real services.** Route and flow tests stay fast, and `scripts/message-exchange-check.py` runs two participants on the local cluster. Alternative: PostgreSQL in every test, which is slower and adds little for these queries.

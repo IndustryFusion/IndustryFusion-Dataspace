@@ -1,0 +1,84 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+#
+# One participant's adapter, for the local environment. Placeholders are filled in by
+# scripts/local_cluster.py. #14 creates the same objects at runtime.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: adapter-${SLUG}
+  namespace: dataspace-participants
+stringData:
+  database-url: "postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@acid-cluster.iff:5432/adapter_${SLUG}"
+  edc-api-key: "${EDC_API_KEY}"
+  client-secret: "${CLIENT_SECRET}"
+  s3-access-key: "${S3_ACCESS_KEY}"
+  s3-secret-key: "${S3_SECRET_KEY}"
+  internal-key: "${INTERNAL_KEY}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adapter-${SLUG}
+  namespace: dataspace-participants
+spec:
+  selector:
+    matchLabels: { app: adapter-${SLUG} }
+  template:
+    metadata:
+      labels: { app: adapter-${SLUG} }
+    spec:
+      containers:
+        - name: adapter
+          image: dataspace/adapter:dev
+          imagePullPolicy: Never
+          ports: [{ containerPort: 8000 }]
+          env:
+            - { name: PARTICIPANT_ID, value: "${PARTICIPANT_ID}" }
+            - { name: PARTICIPANT_TYPE, value: "${PARTICIPANT_TYPE}" }
+            - { name: ADAPTER_URL, value: "http://adapter-${SLUG}.dataspace-participants:8000" }
+            - { name: EDC_MANAGEMENT_URL, value: "http://connector-${SLUG}.dataspace-participants:8081/management" }
+            - { name: EDC_DSP_URL, value: "http://connector-${SLUG}.dataspace-participants:8082/api/v1/dsp" }
+            - { name: REGISTRY_URL, value: "http://registry.dataspace:19000" }
+            - { name: KEYCLOAK_URL, value: "http://keycloak-service.iff:8080/auth" }
+            - { name: KEYCLOAK_REALM, value: dataspace }
+            - { name: SEAWEEDFS_ENDPOINT, value: "http://seaweedfs.iff:80" }
+            - { name: SEAWEEDFS_BUCKET, value: "participant-${SLUG}" }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: adapter-${SLUG}, key: database-url } }
+            - name: EDC_API_KEY
+              valueFrom: { secretKeyRef: { name: adapter-${SLUG}, key: edc-api-key } }
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: adapter-${SLUG}, key: client-secret } }
+            - name: SEAWEEDFS_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: adapter-${SLUG}, key: s3-access-key } }
+            - name: SEAWEEDFS_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: adapter-${SLUG}, key: s3-secret-key } }
+            - name: ADAPTER_INTERNAL_KEY
+              valueFrom: { secretKeyRef: { name: adapter-${SLUG}, key: internal-key } }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adapter-${SLUG}
+  namespace: dataspace-participants
+spec:
+  selector: { app: adapter-${SLUG} }
+  ports: [{ port: 8000 }]
