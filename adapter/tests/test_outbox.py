@@ -17,7 +17,14 @@
 import json
 
 import httpx
+import pytest
+from botocore.exceptions import EndpointConnectionError
 from conftest import ME, PEER, ConnectorError, auth
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+
+from app import delivery
+from app.db import OutboxMessage
 
 
 def status_of(harness, message_id: str) -> dict:
@@ -193,3 +200,116 @@ def test_missing_payload_is_stored_as_null(harness):
     response = harness.client.get(f"/internal/payload/{message_id}")
     assert response.status_code == 200
     assert response.json() is None
+
+
+def test_row_starts_as_pending(harness):
+    seen = []
+
+    async def look(asset_id: str) -> None:
+        async with harness.services.db.session() as session:
+            seen.append((await session.get(OutboxMessage, asset_id)).status)
+
+    harness.connector.on_offer = look
+    answer = harness.send(payload={"a": 1}).json()
+    assert answer["status"] == "pending"
+    assert seen == ["pending"]
+
+
+@pytest.mark.parametrize("error", [KeyError("@id"), ValueError("not JSON")], ids=["KeyError", "ValueError"])
+def test_unexpected_failure_while_delivering_is_error(harness, error):
+    harness.connector.offer_error = error
+    message_id = harness.send(payload={"a": 1}).json()["message_id"]
+    state = status_of(harness, message_id)
+    assert state["status"] == "error"
+    assert type(error).__name__ in state["error_message"]
+
+
+def test_unreadable_token_answer_while_delivering_is_error(harness, monkeypatch):
+    async def broken() -> str:
+        raise KeyError("expires_in")
+
+    monkeypatch.setattr(harness.services.own_token, "get", broken)
+    message_id = harness.send(payload={"a": 1}).json()["message_id"]
+    state = status_of(harness, message_id)
+    assert state["status"] == "error"
+    assert "expires_in" in state["error_message"]
+
+
+@pytest.mark.parametrize("failing_status", ["registered", "notified"])
+def test_database_failure_while_delivering_is_error(harness, monkeypatch, failing_status):
+    real = delivery.set_outbox
+    failed = []
+
+    async def fail_once(services, message_id, **values):
+        if values.get("status") == failing_status and not failed:
+            failed.append(values)
+            raise OperationalError("UPDATE", {}, Exception("connection lost"))
+        await real(services, message_id, **values)
+
+    monkeypatch.setattr(delivery, "set_outbox", fail_once)
+    message_id = harness.send(payload={"a": 1}).json()["message_id"]
+    state = status_of(harness, message_id)
+    assert failed
+    assert state["status"] == "error"
+    assert "OperationalError" in state["error_message"]
+
+
+def test_failing_to_record_a_failure_does_not_escape_the_task(harness, monkeypatch):
+    async def always_fails(*_args, **_values):
+        raise OperationalError("UPDATE", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(delivery, "set_outbox", always_fails)
+    message = {"message_id": "m", "content_ref": None}
+    harness.run(delivery.deliver, harness.services, message, {"adapter_url": "http://peer.test"})
+
+
+def test_failed_save_leaves_no_object_behind(harness):
+    async def drop() -> None:
+        async with harness.services.db.engine.begin() as connection:
+            await connection.execute(text("DROP TABLE outbox_messages"))
+
+    harness.run(drop)
+    body = {"receiver_participant": PEER, "payload": {"a": 1}}
+    answer = harness.client.post("/outbox/messages", json=body, headers=auth())
+    assert answer.status_code == 503
+    assert harness.storage.objects == {}
+
+
+def test_receiver_id_cannot_change_the_registry_address(harness):
+    harness.world.registered["urn:test:a"] = {"participant_id": "urn:test:a", "adapter_url": "http://peer.test"}
+    harness.world.compatible.append("urn:test:a")
+    answer = harness.client.post(
+        "/outbox/messages", json={"receiver_participant": "urn:test:a#b", "payload": {}}, headers=auth()
+    )
+    assert answer.status_code == 404
+    assert harness.storage.objects == {}
+
+
+def test_transfer_id_is_set_when_the_provider_serves_content(harness):
+    message_id = harness.send(payload={"a": 1}).json()["message_id"]
+    assert status_of(harness, message_id)["edc_transfer_id"] is None
+    assert harness.client.get(f"/internal/payload/{message_id}").status_code == 200
+    harness.settle()
+    assert status_of(harness, message_id)["edc_transfer_id"] == "provider-transfer"
+    assert status_of(harness, message_id)["status"] == "notified"
+
+
+def test_transfer_lookup_failure_changes_nothing_else(harness):
+    harness.connector.transfer_lookup_error = KeyError("@id")
+    message_id = harness.send(payload={"a": 1}).json()["message_id"]
+    assert harness.client.get(f"/internal/payload/{message_id}").status_code == 200
+    harness.settle()
+    state = status_of(harness, message_id)
+    assert state["edc_transfer_id"] is None
+    assert state["status"] == "notified"
+    assert state["error_message"] is None
+
+
+def test_storage_outage_on_the_payload_route_is_unavailable(harness, monkeypatch):
+    message_id = harness.send(payload={"a": 1}).json()["message_id"]
+
+    async def down(_ref: str) -> None:
+        raise EndpointConnectionError(endpoint_url="http://s3.test")
+
+    monkeypatch.setattr(harness.storage, "get", down)
+    assert harness.client.get(f"/internal/payload/{message_id}").status_code == 503

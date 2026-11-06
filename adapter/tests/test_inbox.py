@@ -14,13 +14,19 @@
 # limitations under the License.
 #
 
+from datetime import datetime, timedelta
 from functools import partial
 
+import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
 from conftest import ME, PEER, ConnectorError, auth
 from sqlalchemy import update
+from sqlalchemy.exc import OperationalError
 
-from app.db import InboxMessage
-from app.delivery import set_inbox_in_transfer
+from app import delivery
+from app.db import InboxMessage, now
+from app.delivery import fetch, set_inbox_in_transfer
+from app.retention import purge_expired
 
 
 def read(harness, message_id: str = "m1") -> dict:
@@ -121,8 +127,15 @@ def read_status_code(harness) -> int:
     return harness.client.get("/inbox/messages/m1", headers=auth()).status_code
 
 
+def test_second_message_on_a_conversation_is_kept(harness):
+    assert harness.notify("m1").json()["status"] == "transferring"
+    assert harness.notify("m2").json()["status"] == "transferring"
+    harness.settle()
+    assert len(harness.client.get("/inbox/messages", headers=auth()).json()) == 2
+
+
 def test_duplicate_is_accepted_and_keeps_one_entry(harness):
-    assert harness.notify().status_code == 202
+    assert harness.notify().json()["status"] == "transferring"
     harness.settle()
     pushes = []
 
@@ -130,7 +143,7 @@ def test_duplicate_is_accepted_and_keeps_one_entry(harness):
         pushes.append(destination)
 
     harness.connector.on_push = count
-    assert harness.notify().status_code == 202
+    assert harness.notify().json()["status"] == "duplicate"
     harness.settle()
     assert pushes == []
     assert len(harness.client.get("/inbox/messages", headers=auth()).json()) == 1
@@ -192,14 +205,182 @@ def test_content_for_an_unknown_message_is_not_found(harness):
 
 
 def test_list_is_newest_first_and_filters(harness):
-    arrive(harness, "older", created_at="2026-01-01T00:00:00+00:00")
-    arrive(harness, "newer", created_at="2026-06-01T00:00:00+00:00")
-    harness.notify("waiting", created_at="2026-03-01T00:00:00+00:00")
+    arrive(harness, "older")
+    arrive(harness, "newer")
+    harness.notify("waiting")
     harness.settle()
     every = [row["message_id"] for row in harness.client.get("/inbox/messages", headers=auth()).json()]
-    assert every == ["newer", "waiting", "older"]
+    assert every == ["waiting", "newer", "older"]
     received = harness.client.get("/inbox/messages", params={"status": "received"}, headers=auth()).json()
     assert [row["message_id"] for row in received] == ["newer", "older"]
+
+
+@pytest.mark.parametrize("stated", ["1970-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00"])
+def test_a_senders_stated_time_does_not_decide_order_or_age(harness, stated):
+    arrive(harness, "first")
+    arrive(harness, "second", created_at=stated)
+    arrive(harness, "third")
+    every = [row["message_id"] for row in harness.client.get("/inbox/messages", headers=auth()).json()]
+    assert every == ["third", "second", "first"]
+    year = datetime.fromisoformat(read(harness, "second")["created_at"]).year
+    assert year == now().year
+
+
+def test_old_stated_time_does_not_shorten_retention(harness):
+    arrive(harness, created_at="1970-01-01T00:00:00+00:00")
+    harness.client.post("/inbox/messages/m1/ack", headers=auth())
+    harness.run(purge_expired, harness.services)
+    message = read(harness)
+    assert message["status"] == "acked"
+    assert message["payload"] == {"a": 1}
+
+
+def test_future_stated_time_does_not_extend_retention(harness):
+    arrive(harness, created_at="2999-01-01T00:00:00+00:00")
+    harness.client.post("/inbox/messages/m1/ack", headers=auth())
+
+    async def age() -> None:
+        async with harness.services.db.session() as session:
+            row = await session.get(InboxMessage, "m1")
+            row.created_at = now() - timedelta(hours=25)
+            await session.commit()
+
+    harness.run(age)
+    harness.run(purge_expired, harness.services)
+    assert read(harness)["payload"] is None
+
+
+def test_files_read_as_a_bundle_marker(harness):
+    arrive(harness)
+
+    async def mark() -> None:
+        async with harness.services.db.session() as session:
+            row = await session.get(InboxMessage, "m1")
+            row.has_files = True
+            await session.commit()
+
+    harness.run(mark)
+    assert read(harness)["payload"] == {"_bundle": True}
+    assert read(harness)["has_files"] is True
+
+
+@pytest.mark.parametrize("bad", ["victim?x", "a/b", "../x", "..", "a b", "a#b", "%2e%2e", ""])
+def test_unsafe_message_id_is_refused(harness, bad):
+    assert harness.notify(bad, asset_id="asset").status_code == 422
+    assert harness.client.get("/inbox/messages", headers=auth()).json() == []
+
+
+def test_identifier_style_message_id_is_accepted(harness):
+    assert harness.notify("urn:test:message-1.2_3").status_code == 202
+
+
+def test_content_address_is_quoted(harness):
+    pushed = []
+
+    async def record(destination: str) -> None:
+        pushed.append(destination)
+
+    harness.connector.on_push = record
+    harness.run(fetch, harness.services, "a b?x", PEER, "asset", "http://peer-connector.test/dsp")
+    assert pushed == ["http://me.test/internal/inbox-receive/a%20b%3Fx"]
+
+
+def test_late_content_does_not_replace_acknowledged_content(harness):
+    arrive(harness)
+    harness.client.post("/inbox/messages/m1/ack", headers=auth())
+    answer = harness.client.post("/internal/inbox-receive/m1", content=b'{"a": "changed"}')
+    assert answer.status_code == 200
+    assert read(harness)["payload"] == {"a": 1}
+
+
+def test_late_content_does_not_bring_back_purged_content(harness):
+    arrive(harness)
+    harness.client.post("/inbox/messages/m1/ack", headers=auth())
+
+    async def age() -> None:
+        async with harness.services.db.session() as session:
+            row = await session.get(InboxMessage, "m1")
+            row.created_at = now() - timedelta(hours=25)
+            await session.commit()
+
+    harness.run(age)
+    harness.run(purge_expired, harness.services)
+    assert harness.storage.objects == {}
+    assert harness.client.post("/internal/inbox-receive/m1", content=b'{"a": 1}').status_code == 200
+    assert harness.storage.objects == {}
+    assert read(harness)["payload"] is None
+
+
+OUTAGE = EndpointConnectionError(endpoint_url="http://s3.test")
+
+
+def test_storage_outage_is_unavailable_when_reading(harness, monkeypatch):
+    arrive(harness)
+
+    async def down(_ref: str) -> None:
+        raise OUTAGE
+
+    monkeypatch.setattr(harness.storage, "get", down)
+    assert harness.client.get("/inbox/messages", headers=auth()).status_code == 503
+    assert harness.client.get("/inbox/messages/m1", headers=auth()).status_code == 503
+
+
+def test_storage_outage_is_unavailable_when_content_arrives(harness, monkeypatch):
+    assert harness.notify().status_code == 202
+    harness.settle()
+
+    async def down(_key: str, _content: bytes) -> None:
+        raise OUTAGE
+
+    monkeypatch.setattr(harness.storage, "put", down)
+    assert harness.client.post("/internal/inbox-receive/m1", content=b"{}").status_code == 503
+
+
+def test_one_unreadable_object_does_not_fail_the_list(harness, monkeypatch):
+    arrive(harness, "good")
+    arrive(harness, "bad")
+    real_get = harness.storage.get
+
+    async def get(ref: str) -> bytes | None:
+        if "bad" in ref:
+            raise ClientError({"Error": {"Code": "InternalError", "Message": "broken"}}, "GetObject")
+        return await real_get(ref)
+
+    monkeypatch.setattr(harness.storage, "get", get)
+    answer = harness.client.get("/inbox/messages", headers=auth())
+    assert answer.status_code == 200
+    payloads = {row["message_id"]: row["payload"] for row in answer.json()}
+    assert payloads == {"good": {"a": 1}, "bad": None}
+    assert harness.client.get("/inbox/messages/bad", headers=auth()).status_code == 503
+
+
+@pytest.mark.parametrize("error", [KeyError("agreement"), ValueError("not JSON")], ids=["KeyError", "ValueError"])
+def test_unexpected_failure_while_fetching_is_error(harness, error):
+    harness.connector.fetch_error = error
+    assert harness.notify().status_code == 202
+    harness.settle()
+    message = read(harness)
+    assert message["status"] == "error"
+    assert type(error).__name__ in message["error_message"]
+
+
+def test_database_failure_while_fetching_is_error(harness, monkeypatch):
+    real = delivery.set_inbox_in_transfer
+    failed = []
+
+    async def fail_once(services, message_id, **values):
+        if not failed:
+            failed.append(values)
+            raise OperationalError("UPDATE", {}, Exception("connection lost"))
+        await real(services, message_id, **values)
+
+    monkeypatch.setattr(delivery, "set_inbox_in_transfer", fail_once)
+    assert harness.notify().status_code == 202
+    harness.settle()
+    message = read(harness)
+    assert failed
+    assert message["status"] == "error"
+    assert "OperationalError" in message["error_message"]
 
 
 def test_acknowledge_twice(harness):

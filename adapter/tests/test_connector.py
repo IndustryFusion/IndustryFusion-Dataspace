@@ -135,3 +135,23 @@ def test_terminated_transfer_is_an_error():
     connector = connector_with(lambda _: httpx.Response(200, json={"state": "TERMINATED"}))
     with pytest.raises(ConnectorError, match="terminated"):
         run(connector.wait_for_transfer("t1", time.monotonic() + 5))
+
+
+def test_transfer_lookup_finds_the_process_for_an_asset():
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/management/v3/transferprocesses/request"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=[{"@id": "transfer-9"}])
+
+    assert run(connector_with(handler).transfer_for_asset("asset-1")) == "transfer-9"
+    assert bodies[0]["filterExpression"] == [{"operandLeft": "assetId", "operator": "=", "operandRight": "asset-1"}]
+
+
+def test_transfer_lookup_with_no_process_is_none():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    assert run(connector_with(handler).transfer_for_asset("asset-1")) is None
+

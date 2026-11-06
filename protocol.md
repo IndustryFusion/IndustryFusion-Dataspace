@@ -127,6 +127,7 @@ These behaviours are deliberately not provided at this stage:
 - **`cancel` changes no state of its own.** It is recorded, and it is for the applications to act on.
 - **No delivery guarantee to the sender.** `notified` means the receiver accepted the notification, not that it has the data.
 - **No idempotency key.** Retrying a send can create a second message.
+- **A restart strands messages in progress.** Sending and fetching run inside the adapter process. A message in progress when it stops stays in its current status, with no retry, and retention does not remove it.
 - **No ordering across messages.** Each message runs its own transfer, so a later message can arrive first.
 - **Every message runs a full connector cycle,** including messages with an empty payload.
 - **Connector policies permit everything,** and DSP identity is mocked. Tracked in #20.

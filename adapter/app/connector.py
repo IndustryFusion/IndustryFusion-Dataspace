@@ -158,3 +158,16 @@ class Connector:
 
     async def wait_for_transfer(self, transfer_id: str, deadline: float) -> None:
         await self._wait(f"transferprocesses/{transfer_id}", "COMPLETED", deadline, "The transfer")
+
+    async def transfer_for_asset(self, asset_id: str) -> str | None:
+        """This connector's transfer process for an asset, if it has one."""
+        answer = await self._post(
+            "transferprocesses/request",
+            {
+                "@context": EDC_CONTEXT,
+                "@type": "QuerySpec",
+                "filterExpression": [{"operandLeft": "assetId", "operator": "=", "operandRight": asset_id}],
+            },
+        )
+        return answer[0]["@id"] if answer else None
+

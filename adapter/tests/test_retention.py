@@ -14,14 +14,17 @@
 # limitations under the License.
 #
 
+import asyncio
+import time
+from dataclasses import replace
 from datetime import timedelta
 
 from conftest import auth
-from sqlalchemy import text, update
+from sqlalchemy import inspect, text, update
 from test_inbox import arrive, read
 
-from app.db import InboxMessage, OutboxMessage, now
-from app.retention import purge_expired
+from app.db import Conversation, InboxMessage, OutboxMessage, now
+from app.retention import purge_expired, retention_loop, schema_loop
 
 
 def age(harness, model, message_id: str, **values) -> None:
@@ -154,3 +157,138 @@ def test_schema_check_recreates_a_dropped_table(harness):
     assert harness.run(harness.services.db.ensure_schema) == ["inbox_messages"]
     assert harness.client.get("/inbox/messages", headers=auth()).json() == []
     assert harness.run(harness.services.db.ensure_schema) == []
+
+
+def test_row_with_later_content_expiry_keeps_row_and_object(harness):
+    arrive(harness)
+    harness.client.post("/inbox/messages/m1/ack", headers=auth())
+    far = now() + timedelta(days=3650)
+    age(harness, InboxMessage, "m1", expires_at=far, created_at=now() - timedelta(days=31))
+    purge(harness)
+    assert read(harness)["payload"] == {"a": 1}
+    assert len(harness.storage.objects) == 1
+
+    age(harness, InboxMessage, "m1", expires_at=now() - timedelta(minutes=1))
+    purge(harness)
+    assert harness.client.get("/inbox/messages/m1", headers=auth()).status_code == 404
+    assert harness.storage.objects == {}
+
+
+def test_outbox_row_with_later_content_expiry_is_kept(harness):
+    message_id = harness.send(payload={"a": 1}).json()["message_id"]
+    age(
+        harness,
+        OutboxMessage,
+        message_id,
+        expires_at=now() + timedelta(days=3650),
+        created_at=now() - timedelta(days=31),
+    )
+    purge(harness)
+    assert outbox_row(harness, message_id) is not None
+    assert len(harness.storage.objects) == 1
+
+
+def conversation(harness, conversation_id: str) -> Conversation | None:
+    async def get():
+        async with harness.services.db.session() as session:
+            return await session.get(Conversation, conversation_id)
+
+    return harness.run(get)
+
+
+def test_conversation_is_purged_only_after_the_row_period(harness):
+    assert harness.notify("old", conversation_id="old-conversation").status_code == 202
+    assert harness.notify("new", conversation_id="new-conversation").status_code == 202
+    harness.settle()
+
+    async def age_conversation() -> None:
+        async with harness.services.db.session() as session:
+            (await session.get(Conversation, "old-conversation")).last_message_at = now() - timedelta(days=31)
+            (await session.get(Conversation, "new-conversation")).last_message_at = now() - timedelta(days=29)
+            await session.commit()
+
+    harness.run(age_conversation)
+    purge(harness)
+    assert conversation(harness, "old-conversation") is None
+    assert conversation(harness, "new-conversation") is not None
+
+
+def faster(harness, **values) -> None:
+    harness.services.settings = replace(harness.services.settings, **values)
+
+
+async def until(check, seconds: float = 5.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not await check():
+        assert time.monotonic() < deadline, "The loop did not do its work in time"
+        await asyncio.sleep(0.01)
+
+
+def test_schema_loop_recreates_a_dropped_table_and_outlives_a_failure(harness, monkeypatch):
+    arrive(harness)
+    faster(harness, schema_check_seconds=0.01)
+    services = harness.services
+    real_ready = services.storage.ensure_ready
+    outage = []
+
+    async def fails_once() -> None:
+        if not outage:
+            outage.append(True)
+            raise OSError("storage is starting")
+        await real_ready()
+
+    monkeypatch.setattr(services.storage, "ensure_ready", fails_once)
+
+    async def scenario() -> None:
+        async with services.db.engine.begin() as connection:
+            await connection.execute(text("DROP TABLE inbox_messages"))
+
+        async def table_is_back() -> bool:
+            async with services.db.engine.begin() as connection:
+                names = await connection.run_sync(lambda sync: inspect(sync).get_table_names())
+            return "inbox_messages" in names
+
+        loop = asyncio.create_task(schema_loop(services))
+        try:
+            await until(table_is_back)
+            await until(lambda: asyncio.sleep(0, bool(outage)))
+            await asyncio.sleep(0.05)
+        finally:
+            loop.cancel()
+
+    harness.run(scenario)
+    assert outage == [True]
+    assert harness.client.get("/inbox/messages", headers=auth()).json() == []
+
+
+def test_retention_loop_purges_and_outlives_a_failure(harness, monkeypatch):
+    arrive(harness)
+    harness.client.post("/inbox/messages/m1/ack", headers=auth())
+    age(harness, InboxMessage, "m1", created_at=now() - timedelta(hours=25))
+    faster(harness, retention_interval_seconds=0.01)
+    services = harness.services
+    real_delete = services.storage.delete
+    outage = []
+
+    async def fails_once(ref: str) -> None:
+        if not outage:
+            outage.append(True)
+            raise OSError("storage is unavailable")
+        await real_delete(ref)
+
+    monkeypatch.setattr(services.storage, "delete", fails_once)
+
+    async def scenario() -> None:
+        async def purged() -> bool:
+            return harness.storage.objects == {}
+
+        loop = asyncio.create_task(retention_loop(services))
+        try:
+            await until(purged)
+        finally:
+            loop.cancel()
+
+    harness.run(scenario)
+    assert outage == [True]
+    assert read(harness)["payload"] is None
+

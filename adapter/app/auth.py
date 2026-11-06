@@ -39,11 +39,14 @@ class TokenVerifier:
             response.raise_for_status()
         except httpx.HTTPError as error:
             raise HTTPException(status_code=502, detail="Signing keys are unreachable") from error
-        self.keys = {
-            key["kid"]: jwt.PyJWK(key).key
-            for key in response.json()["keys"]
-            if key.get("use", "sig") == "sig" and key.get("kty") == "RSA"
-        }
+        try:
+            self.keys = {
+                key["kid"]: jwt.PyJWK(key).key
+                for key in response.json()["keys"]
+                if key.get("use", "sig") == "sig" and key.get("kty") == "RSA"
+            }
+        except (ValueError, KeyError, TypeError, jwt.PyJWTError) as error:
+            raise HTTPException(status_code=502, detail="Signing keys are unreadable") from error
 
     async def claims(self, token: str) -> dict:
         try:
@@ -56,7 +59,13 @@ class TokenVerifier:
         if key is None:
             raise HTTPException(status_code=401, detail="Invalid token")
         try:
-            return jwt.decode(token, key, algorithms=["RS256"], issuer=self.issuer, options={"verify_aud": False})
+            return jwt.decode(
+                token,
+                key,
+                algorithms=["RS256"],
+                issuer=self.issuer,
+                options={"verify_aud": False, "require": ["exp"]},
+            )
         except jwt.PyJWTError as error:
             raise HTTPException(status_code=401, detail="Invalid token") from error
 

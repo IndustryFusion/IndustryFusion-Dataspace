@@ -14,7 +14,13 @@
 # limitations under the License.
 #
 
-from conftest import ISSUER, ME, OTHER_KEY, PEER, auth, token
+import time
+
+import httpx
+import jwt
+from conftest import ISSUER, KEY, ME, OTHER_KEY, PEER, auth, token
+
+from app.config import role_for
 
 
 def bearer(value: str) -> dict[str, str]:
@@ -66,3 +72,40 @@ def test_stated_sender_is_ignored(harness):
     response = harness.send(payload={"a": 1}, sender_participant="urn:test:someone-else")
     read = harness.client.get(f"/outbox/messages/{response.json()['message_id']}", headers=auth())
     assert read.json()["sender_participant"] == ME
+
+
+def claims_for_me(**overrides) -> dict:
+    return {
+        "iss": ISSUER,
+        "exp": int(time.time()) + 300,
+        "participant_id": ME,
+        "realm_access": {"roles": [role_for(ME)]},
+        **overrides,
+    }
+
+
+def test_token_without_expiry_is_refused(harness):
+    claims = claims_for_me()
+    del claims["exp"]
+    signed = jwt.encode(claims, KEY, algorithm="RS256", headers={"kid": "test"})
+    assert harness.client.get("/inbox/messages", headers=bearer(signed)).status_code == 401
+
+
+def test_only_rs256_is_accepted(harness):
+    signed = jwt.encode(claims_for_me(), KEY, algorithm="RS512", headers={"kid": "test"})
+    assert harness.client.get("/inbox/messages", headers=bearer(signed)).status_code == 401
+    good = jwt.encode(claims_for_me(), KEY, algorithm="RS256", headers={"kid": "test"})
+    assert harness.client.get("/inbox/messages", headers=bearer(good)).status_code == 200
+
+
+def test_unreadable_signing_keys_are_a_bad_gateway(harness):
+    real = harness.world.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/protocol/openid-connect/certs"):
+            return httpx.Response(200, text="not JSON")
+        return real(request)
+
+    harness.services.verifier.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    assert harness.client.get("/inbox/messages", headers=auth()).status_code == 502
+

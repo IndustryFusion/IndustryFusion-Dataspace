@@ -17,6 +17,7 @@
 """Sending messages."""
 
 import json
+import logging
 import uuid
 from datetime import datetime
 
@@ -25,8 +26,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.auth import require_participant
-from app.db import Conversation, OutboxMessage, iso, now
+from app.db import Conversation, OutboxMessage, iso, touch_conversation
 from app.delivery import deliver
+
+log = logging.getLogger("adapter")
 
 router = APIRouter(dependencies=[Depends(require_participant)])
 
@@ -54,14 +57,6 @@ class OutgoingMessage(BaseModel):
 async def conversation_state(session, conversation_id: str) -> str:
     conversation = await session.get(Conversation, conversation_id)
     return conversation.state if conversation else "OPEN"
-
-
-async def touch_conversation(session, conversation_id: str, counterpart: str) -> None:
-    conversation = await session.get(Conversation, conversation_id)
-    if conversation is None:
-        session.add(Conversation(conversation_id=conversation_id, counterpart_participant=counterpart))
-    else:
-        conversation.last_message_at = now()
 
 
 @router.post("/outbox/messages", status_code=202)
@@ -109,10 +104,20 @@ async def send_message(body: OutgoingMessage, request: Request):
         status="pending",
         applied=True,
     )
+    try:
+        async with services.db.session() as session:
+            session.add(row)
+            await touch_conversation(session, conversation_id, body.receiver_participant)
+            await session.commit()
+    except Exception:
+        # Without a row, retention could never remove what was just uploaded.
+        if payload_ref:
+            try:
+                await services.storage.delete(payload_ref)
+            except Exception as error:
+                log.warning("Could not remove the content of unsaved message %s: %s", message_id, error)
+        raise
     async with services.db.session() as session:
-        session.add(row)
-        await touch_conversation(session, conversation_id, body.receiver_participant)
-        await session.commit()
         state = await conversation_state(session, conversation_id)
 
     notification = {
@@ -126,7 +131,6 @@ async def send_message(body: OutgoingMessage, request: Request):
         "sender_participant": own_id,
         "receiver_participant": body.receiver_participant,
         "reply_expected": body.reply_expected,
-        "created_at": iso(row.created_at),
         "expires_at": iso(body.expires_at),
         "response_due_at": iso(body.response_due_at),
         "content_ref": row.content_ref,

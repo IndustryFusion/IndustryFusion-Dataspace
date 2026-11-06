@@ -21,6 +21,7 @@ import logging
 import time
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import update
@@ -84,6 +85,21 @@ async def set_inbox_in_transfer(services: Services, message_id: str, **values) -
         await session.commit()
 
 
+def reason_for(error: Exception) -> str:
+    """Expected failures explain themselves. Anything else needs its type to make sense."""
+    expected = isinstance(error, ConnectorError | httpx.HTTPError | OSError)
+    text = str(error) if expected else f"Unexpected {type(error).__name__}: {error}"
+    return text[:1000]
+
+
+async def fail_outbox(services: Services, message_id: str, error: Exception) -> None:
+    log.warning("Delivery of %s failed: %s", message_id, reason_for(error))
+    try:
+        await set_outbox(services, message_id, status="error", error_message=reason_for(error))
+    except Exception as second:  # most likely the database is down too, and the row can't be updated
+        log.error("Could not record the failed delivery of %s: %s", message_id, second)
+
+
 async def deliver(services: Services, message: dict, peer: dict) -> None:
     """Offer the content through the connector, then notify the receiver."""
     message_id = message["message_id"]
@@ -94,7 +110,7 @@ async def deliver(services: Services, message: dict, peer: dict) -> None:
             asset_id = message["content_ref"]["asset_id"]
             provider_dsp = message["content_ref"]["dsp_url"]
         else:
-            source = f"{settings.adapter_url}/internal/payload/{message_id}"
+            source = f"{settings.adapter_url}/internal/payload/{quote(message_id, safe='')}"
             await services.connector.offer(message_id, source)
         await set_outbox(services, message_id, status="registered")
 
@@ -111,19 +127,16 @@ async def deliver(services: Services, message: dict, peer: dict) -> None:
             },
             headers={"Authorization": f"Bearer {token}"},
         )
-    except (ConnectorError, httpx.HTTPError, OSError) as error:
-        log.warning("Delivery of %s failed: %s", message_id, error)
-        await set_outbox(services, message_id, status="error", error_message=str(error)[:1000])
-        return
-
-    if response.status_code < 300:
-        await set_outbox(services, message_id, status="notified")
-    elif response.status_code < 500:
-        reason = f"The receiver refused it: {response.status_code} {response.text[:500]}"
-        await set_outbox(services, message_id, status="rejected", error_message=reason)
-    else:
-        reason = f"The receiver gave {response.status_code}: {response.text[:500]}"
-        await set_outbox(services, message_id, status="error", error_message=reason)
+        if response.status_code < 300:
+            await set_outbox(services, message_id, status="notified")
+        elif response.status_code < 500:
+            reason = f"The receiver refused it: {response.status_code} {response.text[:500]}"
+            await set_outbox(services, message_id, status="rejected", error_message=reason)
+        else:
+            reason = f"The receiver gave {response.status_code}: {response.text[:500]}"
+            await set_outbox(services, message_id, status="error", error_message=reason)
+    except Exception as error:  # a background task has nobody to report to, so the row must say what happened
+        await fail_outbox(services, message_id, error)
 
 
 async def fetch(services: Services, message_id: str, sender: str, asset_id: str, provider_dsp: str) -> None:
@@ -138,9 +151,22 @@ async def fetch(services: Services, message_id: str, sender: str, asset_id: str,
         agreement = await connector.wait_for_agreement(negotiation, deadline)
         await set_inbox_in_transfer(services, message_id, status="negotiated")
         await set_inbox_in_transfer(services, message_id, status="transferring")
-        destination = f"{settings.adapter_url}/internal/inbox-receive/{message_id}"
+        destination = f"{settings.adapter_url}/internal/inbox-receive/{quote(message_id, safe='')}"
         transfer = await connector.push(agreement, provider_dsp, destination)
         await connector.wait_for_transfer(transfer, deadline)
-    except (ConnectorError, httpx.HTTPError, OSError) as error:
-        log.warning("Fetching %s failed: %s", message_id, error)
-        await set_inbox_in_transfer(services, message_id, status="error", error_message=str(error)[:1000])
+    except Exception as error:  # a background task has nobody to report to, so the row must say what happened
+        log.warning("Fetching %s failed: %s", message_id, reason_for(error))
+        try:
+            await set_inbox_in_transfer(services, message_id, status="error", error_message=reason_for(error))
+        except Exception as second:  # most likely the database is down too, and the row can't be updated
+            log.error("Could not record the failed fetch of %s: %s", message_id, second)
+
+
+async def note_transfer(services: Services, message_id: str) -> None:
+    """Record the provider's transfer id. It is for information, so failing to get it changes nothing."""
+    try:
+        transfer_id = await services.connector.transfer_for_asset(message_id)
+        if transfer_id:
+            await set_outbox(services, message_id, edc_transfer_id=transfer_id)
+    except Exception as error:
+        log.warning("Could not read the transfer id of %s: %s", message_id, error)

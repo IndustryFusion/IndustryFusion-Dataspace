@@ -16,6 +16,8 @@
 
 """Participant lookups in the registry."""
 
+from urllib.parse import quote
+
 import httpx
 from fastapi import HTTPException
 
@@ -36,11 +38,11 @@ class Registry:
 
     async def receiver(self, own_id: str, receiver_id: str) -> dict:
         """Return the receiver's record, if it is registered and its role is compatible."""
-        response = await self._get(f"/participants/{receiver_id}")
+        response = await self._get(f"/participants/{quote(receiver_id, safe=':')}")
         if response.status_code == 404:
             raise HTTPException(status_code=404, detail=f"Receiver is not registered: {receiver_id}")
         record = response.json()
-        compatible = await self._get(f"/participants/compatible/{own_id}")
+        compatible = await self._get(f"/participants/compatible/{quote(own_id, safe=':')}")
         if compatible.status_code == 404:
             raise HTTPException(status_code=403, detail="This participant is not registered")
         if receiver_id not in {participant["participant_id"] for participant in compatible.json()}:
