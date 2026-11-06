@@ -10,9 +10,9 @@
 - [x] 1.6 Add the internal routes; verify tests for each credential and each scenario in "Internal routes"
 - [x] 1.7 Show concurrent requests store one row, and concurrent decisions have one winner; verify tests on PostgreSQL that fail with a read-then-write version
 
-- [ ] 1.8 Make a description follow the effective default; verify a test for each view
-- [ ] 1.9 Make a request racing a reset give a normal answer; verify a test on PostgreSQL
-- [ ] 1.10 Give `503` for an unusable answer from a provider; verify tests
+- [x] 1.8 Make a description follow the effective default; verify a test for each view
+- [x] 1.9 Make a request racing a reset give a normal answer; verify a test on PostgreSQL
+- [x] 1.10 Give `503` for an unusable answer from a provider; verify tests
 
 ## 2. Addressing
 
@@ -27,7 +27,7 @@
 
 - [x] 4.1 Update `gateway-api.md` for `403` and `decision_note`; update `protocol.md`, `architecture.md` and `manifest.md` on advisory access; verify by reading against the delta specs
 
-- [ ] 4.2 Record in `keycloak.md` and `design.md` what an unchecked audience means for a token sent to peers; verify by reading
+- [x] 4.2 Record in `keycloak.md` and `design.md` what an unchecked audience means for a token sent to peers; verify by reading
 
 ## 5. End to end
 
