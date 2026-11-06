@@ -60,6 +60,9 @@ class FakeConnector:
 
     def __init__(self) -> None:
         self.offered: list[tuple[str, str]] = []
+        self.on_offer = None
+        self.transfer_id: str | None = "provider-transfer"
+        self.transfer_lookup_error: Exception | None = None
         self.offer_error: Exception | None = None
         self.fetch_error: Exception | None = None
         self.on_push = None
@@ -68,6 +71,8 @@ class FakeConnector:
     async def offer(self, asset_id: str, source_url: str) -> None:
         if self.offer_error:
             raise self.offer_error
+        if self.on_offer:
+            await self.on_offer(asset_id)
         self.offered.append((asset_id, source_url))
 
     async def find_offer(self, asset_id: str, provider_id: str, provider_dsp: str) -> str:
@@ -89,6 +94,11 @@ class FakeConnector:
     async def wait_for_transfer(self, transfer_id: str, deadline: float) -> None:
         if self.after_push_error:
             raise self.after_push_error
+
+    async def transfer_for_asset(self, asset_id: str) -> str | None:
+        if self.transfer_lookup_error:
+            raise self.transfer_lookup_error
+        return self.transfer_id
 
 
 class World:

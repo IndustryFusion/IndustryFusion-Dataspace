@@ -14,6 +14,10 @@
 - [x] 2.3 Run the tests needing PostgreSQL in CI; verify in CI, or by running the same steps locally
 - [x] 2.4 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
 
+## 3. Review follow-up
+
+- [x] 3.1 Report the service as unavailable when the database goes away after startup; verify tests with lost-connection errors on every route, and one that terminates the connections on a real PostgreSQL
+
 ## Workflow follow-up
 
 - After merge, archive with the other milestone changes in a follow-up Pull Request with `Closes #7`.

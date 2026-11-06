@@ -19,6 +19,8 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, String, Text, inspect
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -90,6 +92,33 @@ class Conversation(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_message_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     escalated_by: Mapped[str | None] = mapped_column(String)
+
+
+def insert_for(session: AsyncSession):
+    """The insert that supports ON CONFLICT on this database. Production uses PostgreSQL, unit tests SQLite."""
+    return postgres_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
+
+
+async def touch_conversation(session: AsyncSession, conversation_id: str, counterpart: str) -> None:
+    """Create the conversation, or note the new message. Safe when many messages open it at once."""
+    stamp = now()
+    statement = (
+        insert_for(session)(Conversation)
+        .values(conversation_id=conversation_id, counterpart_participant=counterpart, last_message_at=stamp)
+        .on_conflict_do_update(index_elements=["conversation_id"], set_={"last_message_at": stamp})
+    )
+    await session.execute(statement)
+
+
+async def add_inbox_row(session: AsyncSession, **values) -> bool:
+    """Add an inbox row, and return False if this message id already has one."""
+    statement = (
+        insert_for(session)(InboxMessage)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["message_id"])
+        .returning(InboxMessage.message_id)
+    )
+    return (await session.execute(statement)).first() is not None
 
 
 class Database:

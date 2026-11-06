@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, OperationalError
@@ -72,6 +73,8 @@ def create_app(services: Services | None = None) -> FastAPI:
     @application.exception_handler(OperationalError)
     @application.exception_handler(DBAPIError)
     @application.exception_handler(OSError)
+    @application.exception_handler(BotoCoreError)
+    @application.exception_handler(ClientError)
     async def unavailable(_: Request, __: Exception) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": "A dependency is unavailable"})
 

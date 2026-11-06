@@ -50,7 +50,8 @@ async def purge_expired(services: Services) -> None:
                     row.payload_ref = None
             await session.execute(
                 delete(model)
-                .where(model.status.in_(final), model.created_at <= row_limit)
+                # A row still pointing at content stays, or nothing could ever remove that content.
+                .where(model.status.in_(final), model.created_at <= row_limit, model.payload_ref.is_(None))
                 .execution_options(synchronize_session=False)
             )
         await session.execute(

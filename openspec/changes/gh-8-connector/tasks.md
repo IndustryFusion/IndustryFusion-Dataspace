@@ -13,6 +13,11 @@
 - [x] 2.3 Confirm no route offered to other participants goes to the control port; verify the DSP callback address and the Service definitions
 - [x] 2.4 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
 
+## 3. Review follow-up
+
+- [x] 3.1 Record the mock DSP identity as a known limit in `architecture.md`; verify by reading the EDC Connector section
+- [x] 3.2 Add the licence header to the service registration file; verify the connector image builds and starts with its extension
+
 ## Workflow follow-up
 
 - After merge, archive with the other milestone changes in a follow-up Pull Request with `Closes #8`.

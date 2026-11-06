@@ -17,12 +17,16 @@
 """Reading received messages."""
 
 import json
+import logging
 
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select, update
 
 from app.auth import require_participant
 from app.db import InboxMessage, iso, now
+
+log = logging.getLogger("adapter")
 
 router = APIRouter(dependencies=[Depends(require_participant)])
 
@@ -41,7 +45,16 @@ async def _payload(services, row: InboxMessage) -> dict | None:
         return None
 
 
-async def _view(services, row: InboxMessage) -> dict:
+async def _listed_payload(services, row: InboxMessage) -> dict | None:
+    """One object the store refuses to serve must not hide every other message. An outage still fails the list."""
+    try:
+        return await _payload(services, row)
+    except ClientError as error:
+        log.warning("Could not read the content of %s: %s", row.message_id, error)
+        return None
+
+
+async def _view(services, row: InboxMessage, listing: bool = False) -> dict:
     return {
         "message_id": row.message_id,
         "conversation_id": row.conversation_id,
@@ -56,7 +69,7 @@ async def _view(services, row: InboxMessage) -> dict:
         "receiver_participant": row.receiver_participant,
         "created_at": iso(row.created_at),
         "received_at": iso(row.received_at),
-        "payload": await _payload(services, row),
+        "payload": await (_listed_payload if listing else _payload)(services, row),
         "status": row.status,
         "applied": row.applied,
         "error_message": row.error_message,
@@ -72,7 +85,7 @@ async def list_messages(request: Request, status: str | None = None) -> list[dic
         query = query.where(InboxMessage.status == status)
     async with services.db.session() as session:
         rows = (await session.execute(query)).scalars().all()
-    return [await _view(services, row) for row in rows]
+    return [await _view(services, row, listing=True) for row in rows]
 
 
 @router.get("/inbox/messages/{message_id}")

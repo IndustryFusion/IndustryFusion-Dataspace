@@ -19,19 +19,19 @@
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import update
-from sqlalchemy.exc import IntegrityError
 
 from app.auth import bearer_token, holds_role
-from app.db import Conversation, InboxMessage, OutboxMessage, now
-from app.delivery import fetch
+from app.db import InboxMessage, OutboxMessage, add_inbox_row, now, touch_conversation
+from app.delivery import fetch, note_transfer
 
 router = APIRouter(prefix="/internal")
 
 
 class TransferRequest(BaseModel):
-    message_id: str
+    # A peer chooses this id, and it becomes part of addresses and storage keys here.
+    message_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
     conversation_id: str
     performative: str = "inform"
     capability: str | None = None
@@ -41,7 +41,6 @@ class TransferRequest(BaseModel):
     sender_participant: str
     receiver_participant: str
     reply_expected: bool = False
-    created_at: datetime | None = None
     expires_at: datetime | None = None
     response_due_at: datetime | None = None
     asset_id: str
@@ -57,42 +56,33 @@ async def transfer_request(body: TransferRequest, request: Request) -> dict:
     if body.receiver_participant != services.settings.participant_id:
         raise HTTPException(status_code=403, detail="This message is for a different receiver")
 
-    row = InboxMessage(
-        message_id=body.message_id,
-        conversation_id=body.conversation_id,
-        performative=body.performative,
-        capability=body.capability,
-        in_reply_to=body.in_reply_to,
-        authorization=body.authorization,
-        outcome=body.outcome,
-        sender_participant=body.sender_participant,
-        receiver_participant=body.receiver_participant,
-        reply_expected=body.reply_expected,
-        created_at=body.created_at or now(),
-        expires_at=body.expires_at,
-        response_due_at=body.response_due_at,
-        status="transferring",
-        applied=True,
-        asset_id=body.asset_id,
-        provider_dsp_url=body.provider_dsp_url,
-    )
-    try:
-        async with services.db.session() as session:
-            session.add(row)
-            conversation = await session.get(Conversation, body.conversation_id)
-            if conversation is None:
-                session.add(
-                    Conversation(
-                        conversation_id=body.conversation_id,
-                        counterpart_participant=body.sender_participant,
-                    )
-                )
-            else:
-                conversation.last_message_at = now()
-            await session.commit()
-    except IntegrityError:
-        # The same message was notified before. There's nothing more to do.
-        return {"message_id": body.message_id, "status": "duplicate"}
+    async with services.db.session() as session:
+        added = await add_inbox_row(
+            session,
+            message_id=body.message_id,
+            conversation_id=body.conversation_id,
+            performative=body.performative,
+            capability=body.capability,
+            in_reply_to=body.in_reply_to,
+            authorization=body.authorization,
+            outcome=body.outcome,
+            sender_participant=body.sender_participant,
+            receiver_participant=body.receiver_participant,
+            reply_expected=body.reply_expected,
+            # This adapter's own clock: retention and order must not depend on what a peer states.
+            created_at=now(),
+            expires_at=body.expires_at,
+            response_due_at=body.response_due_at,
+            status="transferring",
+            applied=True,
+            asset_id=body.asset_id,
+            provider_dsp_url=body.provider_dsp_url,
+        )
+        if not added:
+            # The same message was notified before. There's nothing more to do.
+            return {"message_id": body.message_id, "status": "duplicate"}
+        await touch_conversation(session, body.conversation_id, body.sender_participant)
+        await session.commit()
 
     services.spawn(fetch(services, body.message_id, body.sender_participant, body.asset_id, body.provider_dsp_url))
     return {"message_id": body.message_id, "status": "transferring"}
@@ -106,6 +96,8 @@ async def payload(message_id: str, request: Request) -> Response:
     content = await services.storage.get(row.payload_ref) if row and row.payload_ref else None
     if content is None:
         raise HTTPException(status_code=404, detail="No content for this message")
+    # The connector's data plane reads this once a transfer has started.
+    services.spawn(note_transfer(services, message_id))
     return Response(content=content, media_type="application/json")
 
 
@@ -116,6 +108,9 @@ async def inbox_receive(message_id: str, request: Request) -> dict:
         row = await session.get(InboxMessage, message_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Unknown message")
+    if row.status == "acked":
+        # The agent has finished with it, and its content may already have been purged.
+        return {"message_id": message_id, "status": row.status}
     ref = await services.storage.put(f"messages/{message_id}.json", await request.body())
     async with services.db.session() as session:
         await session.execute(
