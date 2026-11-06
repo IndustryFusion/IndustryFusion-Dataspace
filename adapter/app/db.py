@@ -18,7 +18,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, String, Text, inspect
+from sqlalchemy import JSON, Boolean, DateTime, String, Text, inspect, text
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -92,22 +92,13 @@ class Conversation(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_message_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     escalated_by: Mapped[str | None] = mapped_column(String)
+    # The message that made the state what it is. Used to settle simultaneous steps.
+    state_message_id: Mapped[str | None] = mapped_column(String)
 
 
 def insert_for(session: AsyncSession):
     """The insert that supports ON CONFLICT on this database. Production uses PostgreSQL, unit tests SQLite."""
     return postgres_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
-
-
-async def touch_conversation(session: AsyncSession, conversation_id: str, counterpart: str) -> None:
-    """Create the conversation, or note the new message. Safe when many messages open it at once."""
-    stamp = now()
-    statement = (
-        insert_for(session)(Conversation)
-        .values(conversation_id=conversation_id, counterpart_participant=counterpart, last_message_at=stamp)
-        .on_conflict_do_update(index_elements=["conversation_id"], set_={"last_message_at": stamp})
-    )
-    await session.execute(statement)
 
 
 async def add_inbox_row(session: AsyncSession, **values) -> bool:
@@ -127,13 +118,20 @@ class Database:
         self.session = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
 
     async def ensure_schema(self) -> list[str]:
-        """Create whatever tables are missing, and return their names."""
+        """Create whatever tables are missing, and return their names. Older tables gain newer nullable columns."""
 
         def create(connection) -> list[str]:
-            existing = set(inspect(connection).get_table_names())
+            inspector = inspect(connection)
+            existing = set(inspector.get_table_names())
             missing = [name for name in Base.metadata.tables if name not in existing]
             if missing:
                 Base.metadata.create_all(connection)
+            for name in existing & set(Base.metadata.tables):
+                present = {column["name"] for column in inspector.get_columns(name)}
+                for column in Base.metadata.tables[name].columns:
+                    if column.name not in present and column.nullable:
+                        kind = column.type.compile(connection.dialect)
+                        connection.execute(text(f'ALTER TABLE "{name}" ADD COLUMN "{column.name}" {kind}'))
             return missing
 
         async with self.engine.begin() as connection:

@@ -63,7 +63,13 @@ def test_received_with_payload(harness):
 
 
 def test_read_has_the_documented_fields(harness):
-    arrive(harness, authorization={"scope": "conversation"}, performative="grant", capability="twin:history")
+    arrive(
+        harness,
+        authorization={"scope": "conversation"},
+        performative="grant",
+        capability="twin:history",
+        in_reply_to="m0",
+    )
     message = read(harness)
     assert set(message) == {
         "message_id", "conversation_id", "performative", "capability", "in_reply_to", "outcome",
