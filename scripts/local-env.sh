@@ -124,7 +124,7 @@ services() {
     --from-literal=postgres-user="$POSTGRES_USER" \
     --from-literal=postgres-password="$POSTGRES_PASSWORD" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  for service in $SERVICES; do
+  for service in $SERVICES connector; do
     docker build -q -t "dataspace/$service:dev" "$ROOT/$service" >/dev/null
     kind load docker-image --name "$CLUSTER" "dataspace/$service:dev" >/dev/null
   done

@@ -313,6 +313,8 @@ Eclipse Dataspace Components 0.9.0 — one instance per participant. Handles the
 | DSP endpoint (`:8082`) | Protocol endpoint — used only by other EDC connectors |
 | Management API (`:8081`) | Used only by the local adapter |
 
+**Known limit:** the connector uses a mock identity on the DSP layer, so one connector does not verify which participant another connector belongs to. Replacing it is tracked in #20.
+
 Hosted EDC connectors communicate with each other over DSP **inside the cluster**, and their DSP endpoints are never exposed directly. External participants reach a hosted connector only through the DSP gateway.
 
 ### DSP Gateway
