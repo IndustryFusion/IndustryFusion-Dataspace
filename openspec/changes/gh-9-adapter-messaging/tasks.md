@@ -14,7 +14,7 @@
 ## 2. End to end
 
 - [x] 2.1 Add `scripts/message-exchange-check.py`; verify two adapters on the local cluster exchange JSON in both directions through their connectors, including an empty payload
-- [ ] 2.2 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 2.2 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
 
 ## Workflow follow-up
 
