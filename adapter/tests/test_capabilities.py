@@ -20,7 +20,7 @@ from dataclasses import replace
 
 import httpx
 import pytest
-from conftest import ME, PEER, auth
+from conftest import ME, PEER, auth, token
 from test_two_sided import AUTHORIZATION, FO, HOST, INTERNAL_KEY, MB, OTHER_FO, Mesh, Side, assert_same, settle
 from test_two_sided import two_sided as two_sided_on_postgres
 
@@ -97,10 +97,10 @@ def test_catalogue_for_each_role(role, expected):
 def test_every_description_matches_its_default(name):
     capability = CATALOGUE[name]
     if capability.default_policy == "auto":
-        assert "by default" in capability.description
-        assert "approv" not in capability.description.lower()
+        assert "by default" in capability.describe("auto")
+        assert "approv" not in capability.describe("auto").lower()
     else:
-        assert "once approved" in capability.description
+        assert "once approved" in capability.describe("on-request")
     assert capability.label and capability.data_classification in {"operational", "confidential"}
 
 
@@ -584,5 +584,106 @@ def test_grant_and_deny_messages_leave_approval_records_alone():
         assert await access_to(mb, fo) == access_before
         assert await requests_on(mb) == []
         assert (await requests_on(fo, "pending"))[0]["id"] == pending["id"]
+
+    two_sided(scenario)
+
+
+def test_a_description_follows_a_changed_default_in_every_view():
+    async def scenario(fo: Side, mb: Side, _: Mesh) -> None:
+        def says(entry: dict, expected: str, other: str) -> None:
+            assert expected in entry["description"] and other not in entry["description"], entry
+
+        assert "by default" in (await access_to(fo, mb))["mb:confidential"]["description"]
+        answer = await mb.client.patch(
+            "/internal/capabilities/mb:confidential", json={"default_policy": "on-request"}, headers=KEY_HEADER
+        )
+        assert answer.status_code == 200
+        says((await access_to(fo, mb))["mb:confidential"], "once approved", "by default")
+        says((await view_of(mb, FO))["mb:confidential"], "once approved", "by default")
+        state = (await mb.client.get("/internal/capabilities", headers=KEY_HEADER)).json()
+        says(state["capabilities"][0], "once approved", "by default")
+
+        answer = await fo.client.patch(
+            "/internal/capabilities/twin:history", json={"default_policy": "auto"}, headers=KEY_HEADER
+        )
+        assert answer.status_code == 200
+        says((await access_to(mb, fo))["twin:history"], "by default", "once approved")
+
+    two_sided(scenario)
+
+
+def test_a_request_racing_a_reset_gets_a_normal_answer():
+    async def scenario(fo: Side, mb: Side, _: Mesh) -> None:
+        peer = {"Authorization": f"Bearer {token(MB)}"}
+        body = {"consumer_id": MB, "capability": "twin:history", "action": "request"}
+        transport = httpx.ASGITransport(app=fo.client._transport.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://fo.test") as quiet:
+
+            async def ask_for() -> int:
+                return (await quiet.post("/internal/capabilities/approvals", json=body, headers=peer)).status_code
+
+            async def reset() -> int:
+                action = {"consumer_id": MB, "capability": "twin:history", "action": "reset"}
+                return (await quiet.post("/capabilities/policy", json=action, headers=auth(FO))).status_code
+
+            for _round in range(40):
+                codes = await asyncio.gather(ask_for(), reset(), ask_for(), reset())
+                assert set(codes) <= {200, 202}, codes
+
+    two_sided(scenario)
+
+
+def test_a_decision_racing_a_reset_gets_a_normal_answer():
+    async def scenario(fo: Side, mb: Side, _: Mesh) -> None:
+        for _round in range(20):
+            codes = await asyncio.gather(
+                policy(fo, MB, "twin:history", "approve"),
+                policy(fo, MB, "twin:history", "reset"),
+                policy(fo, MB, "twin:history", "deny"),
+            )
+            assert {answer.status_code for answer in codes} == {200}
+
+    two_sided(scenario)
+
+
+@pytest.mark.parametrize(
+    "status, body, expected",
+    [
+        (200, "<html>a proxy</html>", 503),
+        (200, ["a", "list"], 503),
+        (200, {"something": "else"}, 503),
+        (200, {"capabilities": [{"no": "fields"}], "approvals": []}, 503),
+        (200, {"capabilities": "text", "approvals": 5}, 503),
+        (403, ["a", "list"], 403),
+        (404, "<html>not found</html>", 404),
+    ],
+)
+def test_an_answer_from_a_provider_that_cant_be_used(harness, status, body, expected):
+    original = harness.world.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith("http://peer.test/internal/capabilities"):
+            if isinstance(body, str):
+                return httpx.Response(status, text=body)
+            return httpx.Response(status, json=body)
+        return original(request)
+
+    harness.services.http._transport = httpx.MockTransport(handle)
+    answer = harness.client.get("/capabilities/access", params={"provider": PEER}, headers=auth())
+    assert answer.status_code == expected
+    request = {"provider_participant": PEER, "capability": "mb:confidential"}
+    asked = harness.client.post("/capabilities/requests", json=request, headers=auth())
+    assert asked.status_code in {expected, 202}
+
+
+def test_a_peer_token_must_hold_the_role_it_claims():
+    async def scenario(fo: Side, mb: Side, _: Mesh) -> None:
+        claims_only = {"Authorization": f"Bearer {token(MB, roles=[])}"}
+        assert (await fo.client.get("/internal/capabilities", headers=claims_only)).status_code == 403
+        other_role = {"Authorization": f"Bearer {token(MB, roles=['participant:urn:test:someone'])}"}
+        own = {"consumer_id": MB, "capability": "twin:history", "action": "request"}
+        answer = await fo.client.post("/internal/capabilities/approvals", json=own, headers=other_role)
+        assert answer.status_code == 403
+        assert await requests_on(fo) == []
 
     two_sided(scenario)

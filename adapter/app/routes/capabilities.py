@@ -51,7 +51,18 @@ class PolicyAction(BaseModel):
 STATUS_FOR = {"approve": store.APPROVED, "deny": store.DENIED}
 
 
-async def _call_provider(services, provider: dict, method: str, path: str, **arguments) -> httpx.Response:
+def _object_from(answer: httpx.Response) -> dict | None:
+    try:
+        body = answer.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+UNUSABLE = HTTPException(status_code=503, detail="The provider's adapter is unavailable")
+
+
+async def _call_provider(services, provider: dict, method: str, path: str, **arguments) -> dict:
     """Call a provider's adapter directly. Going through the gateway's peer route belongs with #18."""
     address = (provider.get("adapter_url") or "").rstrip("/")
     if not address:
@@ -62,16 +73,14 @@ async def _call_provider(services, provider: dict, method: str, path: str, **arg
             method, f"{address}{path}", headers={"Authorization": f"Bearer {token}"}, **arguments
         )
     except httpx.HTTPError as error:
-        raise HTTPException(status_code=503, detail="The provider's adapter is unavailable") from error
+        raise UNUSABLE from error
+    body = _object_from(answer)
     if answer.status_code in {403, 404, 409, 422}:
-        try:
-            detail = answer.json().get("detail", "The provider refused this")
-        except ValueError:
-            detail = "The provider refused this"
-        raise HTTPException(status_code=answer.status_code, detail=detail)
-    if answer.status_code >= 300:
-        raise HTTPException(status_code=503, detail="The provider's adapter is unavailable")
-    return answer
+        detail = body.get("detail") if body else None
+        raise HTTPException(status_code=answer.status_code, detail=detail or "The provider refused this")
+    if answer.status_code >= 300 or body is None:
+        raise UNUSABLE
+    return body
 
 
 @router.get("/capabilities/access")
@@ -87,17 +96,17 @@ async def access(request: Request, provider: str | None = None, consumer: str | 
             rows = await session.execute(select(CapabilityApproval).where(CapabilityApproval.consumer_id == consumer))
             approvals = {row.capability: store.approval_view(row) for row in rows.scalars()}
         return [
-            store.access_entry(name, capability, defaults[name], approvals.get(name))
+            store.access_entry(store.offered_view(name, capability, defaults[name]), approvals.get(name))
             for name, capability in store.offered_by(settings.participant_type).items()
         ]
 
     record = await services.registry.receiver(settings.participant_id, provider)
-    state = (await _call_provider(services, record, "GET", "/internal/capabilities")).json()
-    approvals = {item["capability"]: item for item in state["approvals"]}
-    return [
-        store.access_entry(item["capability"], item, item["default_policy"], approvals.get(item["capability"]))
-        for item in state["capabilities"]
-    ]
+    state = await _call_provider(services, record, "GET", "/internal/capabilities")
+    try:
+        approvals = {item["capability"]: item for item in state["approvals"]}
+        return [store.access_entry(item, approvals.get(item["capability"])) for item in state["capabilities"]]
+    except (KeyError, TypeError) as error:
+        raise UNUSABLE from error
 
 
 @router.post("/capabilities/requests", status_code=202)
@@ -105,7 +114,7 @@ async def ask(body: CapabilityRequest, request: Request) -> dict:
     services = request.app.state.services
     own_id = services.settings.participant_id
     record = await services.registry.receiver(own_id, body.provider_participant)
-    answer = await _call_provider(
+    return await _call_provider(
         services,
         record,
         "POST",
@@ -119,7 +128,6 @@ async def ask(body: CapabilityRequest, request: Request) -> dict:
             "note": body.note,
         },
     )
-    return answer.json()
 
 
 @router.get("/capabilities/requests")

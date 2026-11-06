@@ -47,6 +47,12 @@ The management API creates this at registration, for hosted and external partici
 
 A user login is not a substitute. A user's token can be given a `participant_id` claim, which would pass the gateway, but it would not hold the realm role the adapter requires. Agents use the participant's client.
 
+## A token sent to a peer can be replayed
+
+An adapter authenticates to a peer's adapter with its own token, on notifications and capability calls, and the audience isn't checked. So a peer that keeps such a token can use it at the sender's own adapter, as the sender, until it expires. For example, a machine builder could use a factory owner's token at that factory owner's `POST /capabilities/policy`, and approve itself.
+
+Inside the hub the operator runs every adapter, and the traffic stays in the cluster. It matters most for an `adapter_url` or `peer_notify_url` outside the hub, which #18 introduces. Changing this affects tokens across the platform, so it is recorded here as an open decision.
+
 ## The issuer must match
 
 Services compare a token's issuer exactly with the URL they are configured with. So mint tokens through that same URL. A token minted through a different address for the same Keycloak is refused.

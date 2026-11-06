@@ -97,13 +97,7 @@ async def read_state(request: Request, peer: str | None = Depends(_caller)) -> d
         approvals = [store.approval_view(row) for row in (await session.execute(query)).scalars()]
     return {
         "capabilities": [
-            {
-                "capability": name,
-                "label": capability.label,
-                "description": capability.description,
-                "data_classification": capability.data_classification,
-                "default_policy": defaults[name],
-            }
+            store.offered_view(name, capability, defaults[name])
             for name, capability in store.offered_by(participant_type).items()
         ],
         "approvals": approvals,
