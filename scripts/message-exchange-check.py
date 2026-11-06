@@ -306,6 +306,28 @@ def large_file(owner: Agent, builder: Agent, size_mib: int) -> None:
         print("Over the limit of 1 GiB: 413")
 
 
+def size_limits(owner: Agent) -> None:
+    """Routes other than the file route refuse a large body, with or without a stated length."""
+    large = {"receiver_participant": MACHINE_BUILDER, "payload": {"x": "a" * (5 * 1024**2)}}
+    status, _ = lc.http("POST", f"{owner.base}/outbox/messages", large, owner.headers())
+    assert status == 413, status
+    route = f"{owner.base}/peer/{MACHINE_BUILDER}/internal/transfer-request"
+    status, _ = lc.http("POST", route, large, owner.headers())
+    assert status == 413, status
+    print("JSON over 4 MiB: 413, on the agent route and the peer route")
+
+    with tempfile.NamedTemporaryFile(suffix=".json") as body:
+        body.write(json.dumps(large).encode())
+        body.flush()
+        code = curl(
+            "-o", "/dev/null", "-w", "%{http_code}", "-H", f"Authorization: {owner.headers()['Authorization']}",
+            "-H", "Content-Type: application/json", "-H", "Transfer-Encoding: chunked",
+            "--data-binary", f"@{body.name}", f"{owner.base}/outbox/messages",
+        )  # fmt: skip
+    assert code == "413", code
+    print("JSON over 4 MiB with no stated length: 413")
+
+
 def isolation(owner: Agent, builder: Agent, delivered_to_builder: str) -> None:
     base = owner.base
     status, _ = lc.http("GET", f"{base}/inbox/messages")
@@ -363,6 +385,7 @@ def main() -> int:
                 burst(owner, builder)
                 file_transfer(owner, builder, delivered)
                 large_file(owner, builder, args.large_file_mib)
+                size_limits(owner)
             print("PASS")
             return 0
         finally:
