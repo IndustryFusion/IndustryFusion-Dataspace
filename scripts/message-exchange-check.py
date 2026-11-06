@@ -423,6 +423,91 @@ def simultaneous_close(owner: Agent, builder: Agent, rounds: int = 6) -> None:
         print(f"Simultaneous close ({kind}): both CLOSED_{outcome.upper()}")
 
 
+CLOSE = {"performative": "close", "payload": {}}
+
+
+def crossing_steps(owner: Agent, builder: Agent, rounds: int = 4) -> None:
+    """Steps that cross, through real notifications, end in the same state on both sides."""
+    for _ in range(rounds):
+        chat = str(uuid.uuid4())
+        builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
+
+        def close_and_reopen(chat: str = chat) -> None:
+            post(owner, MACHINE_BUILDER, conversation_id=chat, **CLOSE, outcome="resolved")
+            post(owner, MACHINE_BUILDER, conversation_id=chat, performative="reopen", payload={})
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pool.submit(close_and_reopen)
+            pool.submit(post, builder, FACTORY_OWNER, conversation_id=chat, **CLOSE, outcome="withdrawn")
+
+        def settled(chat: str = chat):
+            first, second = conversation_on(owner, chat), conversation_on(builder, chat)
+            in_progress = {"pending", "registered", "transferring", "negotiating", "negotiated"}
+            messages = first["messages"] + second["messages"]
+            if any(item["status"] in in_progress for item in messages):
+                return None
+            return first if (first["state"], first["outcome"]) == (second["state"], second["outcome"]) else None
+
+        state = lc.poll(settled, timeout=90, what="both copies")["state"]
+        print(f"close and reopen crossing a close: both {state}")
+
+        chat = str(uuid.uuid4())
+        builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pool.submit(post, owner, MACHINE_BUILDER, **CLOSE, conversation_id=chat, outcome="failed")
+            pool.submit(post, builder, FACTORY_OWNER, conversation_id=chat, performative="escalate", payload={})
+        state = lc.poll(lambda c=chat: settled(c), timeout=90, what="both copies")["state"]
+        print(f"close crossing escalate: both {state}")
+
+
+def failed_notification(owner: Agent, builder: Agent) -> None:
+    """The receiver's adapter is down while a close is sent. A repeat afterwards settles the two copies."""
+    chat = str(uuid.uuid4())
+    builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
+    adapter = f"adapter-{lc.slug(MACHINE_BUILDER)}"
+    lc.kubectl("-n", lc.PARTICIPANTS, "scale", f"deploy/{adapter}", "--replicas=0")
+    pods = ("-n", lc.PARTICIPANTS, "get", "pods", "-l", f"app={adapter}", "-o", "name")
+    lc.poll(lambda: not lc.kubectl(*pods), what="the adapter to stop")
+    closing = {"conversation_id": chat, "performative": "close", "outcome": "superseded", "payload": {}}
+    try:
+        status, first = post(owner, MACHINE_BUILDER, **closing)
+        assert status == 202, first
+
+        def failed():
+            path = f"{owner.base}/outbox/messages/{first['message_id']}/status"
+            state = lc.http("GET", path, headers=owner.headers())[1]
+            return state if state["status"] == "error" else None
+
+        lc.poll(failed, what="the notification to fail")
+    finally:
+        lc.kubectl("-n", lc.PARTICIPANTS, "scale", f"deploy/{adapter}", "--replicas=1")
+        lc.wait_ready(lc.PARTICIPANTS, adapter)
+    assert conversation_on(owner, chat)["state"] == "CLOSED_SUPERSEDED"
+    assert conversation_on(builder, chat)["state"] == "OPEN"
+    print("Failed notification: the sender is closed, the receiver is still OPEN, and the status is error")
+
+    status, again = post(owner, MACHINE_BUILDER, **closing)
+    assert status == 202 and again["applied"] is True, (status, again)
+    owner.wait_notified(again["message_id"])
+    expect_same(owner, builder, chat, "CLOSED_SUPERSEDED", "superseded")
+    print("Failed notification: the repeat reads applied, reaches the receiver, and both are closed")
+
+
+def role_rules_at_the_receiver(owner: Agent) -> None:
+    notification = {
+        "message_id": str(uuid.uuid4()),
+        "conversation_id": str(uuid.uuid4()),
+        "sender_participant": FACTORY_OWNER,
+        "receiver_participant": FACTORY_OWNER,
+        "asset_id": "none",
+        "provider_dsp_url": "http://nowhere.invalid",
+    }
+    route = f"{owner.base}/peer/{FACTORY_OWNER}/internal/transfer-request"
+    status, answer = lc.http("POST", route, notification, owner.headers())
+    assert status == 403, (status, answer)
+    print("A notification from a sender whose role isn't compatible: 403")
+
+
 def conversation_burst(owner: Agent, builder: Agent, count: int = BURST) -> None:
     """Concurrent messages from both sides on one conversation, then racing with a close."""
     chat = str(uuid.uuid4())
@@ -565,6 +650,9 @@ def main() -> int:
                 conversations(owner, builder)
                 simultaneous_close(owner, builder)
                 conversation_burst(owner, builder)
+                crossing_steps(owner, builder)
+                role_rules_at_the_receiver(owner)
+                failed_notification(owner, builder)
                 size_limits(owner)
             print("PASS")
             return 0
