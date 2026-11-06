@@ -27,7 +27,7 @@ None.
 
 - Documentation only. No service code or deployment files.
 - `architecture.md`: Overview, Deployment Topology, Kubernetes Service Names, Component Breakdown, Request Flow (external participant), Security Layers, Participant Types and Communication Rules, Technology Stack.
-- `manifest.md`: sections 3, 7, 8, 9 and 11, and removal of the duplicated text.
+- `manifest.md`: sections 1, 2, 3, 5, 7, 8, 9, 11 and 12, and removal of the duplicated text.
 - `openspec/config.yaml`: project context.
 - The contract is the input for the service changes that follow, and for the connection work in IndustryFusion/XANA-AI-PDT#26.
 

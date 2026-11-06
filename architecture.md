@@ -4,7 +4,9 @@
 
 The dataspace provides a **governed communication fabric** between participants (factory owners and machine builders). Agents never talk to each other directly. Every message travels through a single API Gateway, then to the sender's Dataspace Adapter, through an EDC connector pair, and into the receiver's adapter inbox.
 
-The platform is designed for Kubernetes. Participants do not run any infrastructure themselves — they only interact with the public Gateway API using a Keycloak JWT.
+The platform is designed for Kubernetes. Participants do not run any infrastructure themselves — they only interact with the public Gateway API using a Keycloak JWT. Agents receive messages by polling their inbox; the platform does not push to them.
+
+This document leads on the system's design. Goals and the definition of done are in [manifest.md](manifest.md), message semantics in [protocol.md](protocol.md), and the HTTP contracts in [gateway-api.md](gateway-api.md) and [management-api.md](management-api.md). Identity setup is in [keycloak.md](keycloak.md).
 
 ---
 
@@ -22,12 +24,14 @@ The operator (hub) runs the connectors in a common protected space. Participants
 
 ### The federation seam
 
-The architecture does not prevent federation — it defers it. The participant registry stores an `adapter_url` per participant. In the managed model this points to the hub-operated adapter. In a federated model it points to the participant's own externally-accessible DSP endpoint.
+The architecture does not prevent federation — it defers it. The participant registry stores an `adapter_url` and `dsp_url` per participant, along with `hosted`, `externally_reachable` and `peer_notify_url`. In the managed model the addresses point to the hub-operated adapter and connector. In a federated model they point to the participant's own.
+
+`adapter_url` always holds an adapter's real address. Peers outside the cluster reach a hosted adapter through `peer_notify_url`, which is the gateway's peer route; setting `adapter_url` to the gateway instead would make the gateway forward to itself.
 
 A participant can "graduate" to self-hosted infrastructure in three steps:
 
-1. Stand up their own EDC connector, externally reachable at a stable DSP URL.
-2. Update their `adapter_url` in the registry to point at their own connector.
+1. Stand up their own adapter and EDC connector, externally reachable at stable URLs.
+2. Register as an external participant, with `adapter_url` and `dsp_url` pointing at their own services.
 3. Keep using the same Keycloak client credentials and Gateway API — nothing changes from their agent's perspective.
 
 The capability and consent model transfers cleanly: it is already participant-scoped, not adapter-scoped. Keycloak can be federated too if a participant wants their own identity provider rather than the hub's realm.
@@ -94,15 +98,20 @@ SMBs start in the managed tier. Participants that need full sovereignty can grad
 ║                              │   calls stay inside the cluster)          ║
 ║                                                                          ║
 ║  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ║
-║  │registry  │  │PostgreSQL│  │  MinIO   │  │Keycloak  │  │management│  ║
-║  │:19000    │  │:5432     │  │:9000     │  │:8080     │  │:3000     │  ║
+║  │registry  │  │PostgreSQL│  │ S3 store │  │Keycloak  │  │management│  ║
+║  │:19000    │  │:5432     │  │:80       │  │:8080     │  │:3000     │  ║
 ║  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘  ║
+║                                                                          ║
+║  ┌───────────┐                                                           ║
+║  │dsp-gateway│  routes external DSP traffic to hosted connectors         ║
+║  │:8085      │  (see "External participant ↔ hosted participant")        ║
+║  └───────────┘                                                           ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
 
 The diagram above shows the *request* path (gateway → adapter → EDC
 connector) — it deliberately doesn't draw every component's connection down
-to PostgreSQL/MinIO, since that would be four more criss-crossing lines on
+to PostgreSQL/S3 storage, since that would be four more criss-crossing lines on
 top of an already dense diagram. Drawn out explicitly instead, per adapter
 (every `adapter-{slug}` has both of these — this is the actual mechanism
 that splits protocol from content):
@@ -115,7 +124,7 @@ that splits protocol from content):
                            │       │
                            ▼       ▼
                   ┌────────────┐ ┌───────────┐
-                  │ PostgreSQL │ │   MinIO   │
+                  │ PostgreSQL │ │ S3 store  │
                   │ db: adapter│ │  bucket:  │
                   │  _{slug}   │ │this part. │
                   └────────────┘ └───────────┘
@@ -127,11 +136,12 @@ that splits protocol from content):
 ```
 
 The EDC connector (`connector-{slug}`) has the same shape toward
-PostgreSQL — its own `edc_{slug}` database, Flyway-managed, that this
-project never touches directly — but no direct MinIO connection of its
+PostgreSQL — its own `edc_{slug}` database, whose schema the connector
+manages and this project never touches directly — but no direct object
+storage connection of its
 own: it fetches/pushes payload bytes over HTTP from/to the *adapter*
 (`GET /internal/payload`, `POST /internal/inbox-receive`, already shown in
-the main diagram), and the adapter is what actually talks to MinIO on
+the main diagram), and the adapter is what actually talks to S3 storage on
 either end. `registry` similarly has its own `registry` database;
 `management` only ever provisions the databases above (`CREATE DATABASE`),
 it owns none of its own.
@@ -149,17 +159,18 @@ different databases entirely, just hosted on the same cluster.
 | Management GUI | Ops team only | Behind VPN or separate Ingress with IP allowlist |
 | Registry | No | Cluster-internal |
 | Adapters | No | Cluster-internal; only reachable via gateway |
-| EDC connectors | No | Cluster-internal; DSP only between connectors |
+| EDC connectors | No | Cluster-internal. Hosted connectors are never exposed directly; external participants reach them only through the DSP gateway |
+| DSP gateway | Optional (via Ingress) | Enabled when external participants are in use; never exposes a connector's control port |
 | Keycloak | Yes | Agents need to fetch tokens; standard OIDC endpoint |
-| MinIO / PostgreSQL | No | Managed / cluster-internal |
+| S3 storage / PostgreSQL | No | Managed / cluster-internal |
 
 ---
 
 ## Kubernetes Service Names
 
 Fixed infra lives in namespace `dataspace`; per-participant adapter/connector
-pods live in `dataspace-participants`, created by the management API
-(`k8s_admin.py`) — not by hand-written manifests.
+pods live in `dataspace-participants`, created by the management API — not
+by hand-written manifests.
 
 Per-participant Service names use a short slug
 (`sha256(participant_id)[:8]`, e.g. `2593a25b`) rather than the raw
@@ -175,16 +186,15 @@ shortened.
 | `gateway` | dataspace | 8080 | API Gateway |
 | `registry` | dataspace | 19000 | Participant Registry |
 | `management` | dataspace | 3000 | Management GUI + API |
+| `dsp-gateway` | dataspace | 8085 | Routes external DSP traffic to hosted connectors |
 | `adapter-{slug}` | dataspace-participants | 8000 | Adapter for that participant |
 | `connector-{slug}` | dataspace-participants | 8080 (default), 8081 (mgmt), 8082 (DSP), 8083 (ctrl), 8084 (public) | EDC connector for that participant |
 | `keycloak-service` | iff | 8080 | Identity provider (shared with DigitalTwin) |
-| `minio` | iff | 9000 | Object storage (shared) |
+| `seaweedfs` | iff | 80 | S3-compatible object storage (shared) |
 | `acid-cluster` | iff | 5432 | Relational database (shared, Zalando postgres-operator) |
 
 Every adapter/connector listens on its normal port — no per-participant port
-offsetting needed, since each gets its own Pod IP and Service (unlike the
-docker-compose-era `network_mode: host` setup, where every participant
-needed a unique host port to avoid collisions on `localhost`).
+offsetting needed, since each gets its own Pod IP and Service.
 
 ---
 
@@ -192,9 +202,10 @@ needed a unique host port to avoid collisions on `localhost`).
 
 ### API Gateway
 
-Thin FastAPI proxy. No business logic — routing only. It exposes **two**
-routes, checked in this order (the first is registered before the
-catch-all, so it wins the match when both could apply):
+Thin FastAPI proxy. No business logic — routing only. Besides `GET /health`
+and `GET /participants/compatible`, which the registry answers, it exposes
+**two** forwarding routes, checked in this order (the first is registered
+before the catch-all, so it wins the match when both could apply):
 
 **1. `POST /peer/{receiver_participant}/internal/transfer-request`** — the
 one deliberate exception to "block `internal/*`" below, and the mechanism
@@ -241,18 +252,19 @@ The gateway does not know about participant types, contract negotiation, or EDC.
 FastAPI service. Source of truth for which participants are active and where their adapters live. Participants are registered by the management API (`POST /api/participants` or `POST /api/demo`), not by the adapter itself — an adapter never calls the registry; it only ever reads it (to resolve a peer's `adapter_url`/`dsp_url` before sending).
 
 ```
-POST /participants          { participant_id, participant_type, adapter_url, dsp_url }
+POST /participants          { participant_id, participant_type, adapter_url, dsp_url,
+                              hosted, externally_reachable, peer_notify_url }
 GET  /participants          list all (optional ?type= filter)
 GET  /participants/{id}     lookup one
 GET  /participants/compatible/{id}  who can this participant communicate with?
 DELETE /participants/{id}   remove (admin JWT required via management API)
 ```
 
-In k8s: participant records are persisted in the shared Postgres cluster (registry/app.py provisions its own `registry` database there on startup, the same cluster management uses for per-participant databases), so a registry pod restart no longer forgets registered participants.
+Participant records are persisted in the shared Postgres cluster. The registry provisions its own `registry` database there on startup, on the same cluster management uses for per-participant databases, so a pod restart keeps registered participants.
 
 ### Dataspace Adapter
 
-Python/FastAPI service — the only component that knows about EDC, MinIO, and the dataspace protocol. One instance per participant.
+Python/FastAPI service — the only component that knows about EDC, S3 storage, and the dataspace protocol. One instance per participant.
 
 **Agent-facing endpoints** (authenticated via gateway + JWT):
 ```
@@ -264,13 +276,28 @@ GET  /inbox/messages               list received messages
 GET  /inbox/messages/{id}          get message + payload
 GET  /inbox/messages/{id}/download download file bundle (ZIP)
 POST /inbox/messages/{id}/ack      mark as processed
+
+GET  /conversations                conversations, optionally by state
+GET  /conversations/{id}           state, messages and outstanding requests
+
+GET   /capabilities/access         effective access for a provider or consumer
+POST  /capabilities/requests       ask a provider for access
+GET   /capabilities/requests       requests
+PATCH /capabilities/requests/{id}  approve or deny a request
+POST  /capabilities/policy         set access for a consumer
 ```
+
+Agents learn about new messages by polling `GET /inbox/messages`. [gateway-api.md](gateway-api.md) is the full contract.
 
 **Internal endpoints** (never exposed via gateway):
 ```
 GET  /internal/payload/{id}        EDC data plane fetches payload from here
 POST /internal/inbox-receive/{id}  EDC data plane pushes received payload here
 POST /internal/transfer-request    peer adapter triggers consumer-side EDC flow
+GET  /internal/capabilities        peers and management read capability state
+POST /internal/capabilities/approvals            record an access request or decision
+PATCH /internal/capabilities/approvals/{id}      management resolves a request
+PATCH /internal/capabilities/{capability}        management sets a default
 ```
 
 **Participant type enforcement**: before sending, the adapter verifies via the registry that sender and receiver are of different types (factory_owner ↔ machine_builder). Same-type sends are rejected with HTTP 403.
@@ -281,21 +308,28 @@ Eclipse Dataspace Components 0.9.0 — one instance per participant. Handles the
 
 | Layer | Purpose |
 |-------|---------|
-| Control Plane | Asset registry, policy engine, contract negotiation state machine |
-| Data Plane | Executes the data transfer (HttpData-PUSH: GET from provider adapter, POST to consumer adapter) |
+| Control plane (same JVM) | Asset registry, policy engine, contract negotiation state machine |
+| Data plane (same JVM) | Executes the data transfer (HttpData-PUSH: GET from provider adapter, POST to consumer adapter) |
 | DSP endpoint (`:8082`) | Protocol endpoint — used only by other EDC connectors |
 | Management API (`:8081`) | Used only by the local adapter |
 
-EDC connectors communicate with each other over DSP **inside the cluster**. No DSP endpoint is ever publicly exposed.
+Hosted EDC connectors communicate with each other over DSP **inside the cluster**, and their DSP endpoints are never exposed directly. External participants reach a hosted connector only through the DSP gateway.
+
+### DSP Gateway
+
+Stateless path router for DSP traffic from external participants. It maps `/{slug}/api/v1/dsp/{path}` to a hosted connector's port 8082 and `/{slug}/api/v1/public/{path}` to its port 8084, where the slug is `sha256(participant_id)[:8]`. It never exposes the control port, and does no authentication of its own: DSP traffic is authorized by the connectors. See "Request Flow — External participant ↔ hosted participant".
+
+Hosted-only installations do not need to expose it.
 
 ### Management GUI
 
 React SPA + FastAPI backend. Ops-facing, not agent-facing.
 
 - **Health tab**: probes all services every 15 s
-- **Participants tab**: shows the registry; admin JWT unlocks add/remove
+- **Participants tab**: shows the registry; admin mode unlocks add/remove, credentials and reachability
+- **Policies tab**: shows capability access for a factory owner and machine builder pair; admin mode unlocks approve, deny and reset
 
-Admin JWT requires the `dataspace-admin` realm role in Keycloak (see `keycloak.md`).
+Admin mode requires the `dataspace-admin` realm role in Keycloak (see `keycloak.md`).
 
 ---
 
@@ -314,7 +348,7 @@ Admin JWT requires the `dataspace-admin` realm role in Keycloak (see `keycloak.m
     │               ├──────────────►│               │               │               │            │
     │               │               │ 1. store      │               │               │            │
     │               │               │    payload    │               │               │            │
-    │               │               │    MinIO      │               │               │            │
+    │               │               │    S3 storage │               │               │            │
     │               │               │               │               │               │            │
     │               │               │ 2. register   │               │               │            │
     │               │               │    asset +    │               │               │            │
@@ -343,7 +377,7 @@ Admin JWT requires the `dataspace-admin` realm role in Keycloak (see `keycloak.m
     │               │               │               ├───────────────────────────────►            │
     │               │               │               │               │ 7. store      │            │
     │               │               │               │               │    inbox DB   │            │
-    │               │               │               │               │    + MinIO    │            │
+    │               │               │               │               │    + S3       │            │
     │               │               │               │               │               │            │
     │               │               │               │               │               │  GET       │
     │               │               │               │               │               │◄───────────┤
@@ -353,7 +387,7 @@ Admin JWT requires the `dataspace-admin` realm role in Keycloak (see `keycloak.m
 1. Agent A `POST`s `/outbox/messages` with a Keycloak JWT carrying
    `participant_id=A`. `gateway` validates the JWT and resolves `adapter-A`
    from the registry.
-2. Adapter A uploads the payload to its own MinIO.
+2. Adapter A uploads the payload to its own S3 storage.
 3. Adapter A registers an asset, an (empty, permit-everything) policy, and
    a contract definition with its own EDC connector — the asset's
    `dataAddress` is Adapter A's own `/internal/payload/{id}` endpoint (see
@@ -368,7 +402,7 @@ Admin JWT requires the `dataspace-admin` realm role in Keycloak (see `keycloak.m
 7. EDC A executes the transfer (`HttpData-PUSH`): it `GET`s the payload
    from Adapter A's own `/internal/payload/{id}` and `POST`s it to Adapter
    B's `/internal/inbox-receive/{id}`.
-8. Adapter B stores the received content in its own MinIO and marks the
+8. Adapter B stores the received content in its own S3 storage and marks the
    inbox row `received`; Agent B sees it on its next `GET /inbox/messages`.
 
 Steps 6–7 (catalog, negotiation, transfer) happen entirely inside the cluster between EDC connectors. No external network access is needed for these steps.
@@ -378,7 +412,7 @@ Steps 6–7 (catalog, negotiation, transfer) happen entirely inside the cluster 
 ## Request Flow — External participant ↔ hosted participant
 
 Not trivial — this is the one flow that actually exercises the "two public
-doors" (`protocol_concept.md`, "Third-party interoperability"), and the two
+doors" ([protocol.md](protocol.md)), and the two
 directions use a *different* door each. Concrete example: `thirdparty-mb`
 (external, self-hosted) and the hosted factory owner FO.
 
@@ -393,7 +427,7 @@ Agent MB         Adapter MB       EDC MB           gateway          EDC FO      
 ├───────────────►│                │                │                │                │                │
 │                │ 1. store       │                │                │                │                │
 │                │    payload     │                │                │                │                │
-│                │    (own MinIO) │                │                │                │                │
+│                │    (own S3)    │                │                │                │                │
 │                │ 2. register    │                │                │                │                │
 │                │    asset       │                │                │                │                │
 │                ├───────────────►│                │                │                │                │
@@ -432,7 +466,7 @@ Agent MB         Adapter MB       EDC MB           gateway          EDC FO      
 │                │                │                │                │                │ 7. store       │
 │                │                │                │                │                │    received    │
 │                │                │                │                │                │    content     │
-│                │                │                │                │                │    (own MinIO) │
+│                │                │                │                │                │    (own S3)    │
 │                │                │                │                │                │◄───────────────┤
 │                │                │                │                │                │                │  GET
 │                │                │                │                │                ├───────────────►│
@@ -440,7 +474,7 @@ Agent MB         Adapter MB       EDC MB           gateway          EDC FO      
 
 1. MB's agent `POST`s `/outbox/messages` straight to **MB's own adapter** —
    no `gateway` hop at all; MB operates its own infrastructure end to end.
-2. MB's adapter uploads the payload to its own MinIO and registers the
+2. MB's adapter uploads the payload to its own S3 storage and registers the
    asset with its own EDC connector, exactly like a hosted participant
    would with its own.
 3. MB's adapter mints its own Keycloak token and `POST`s the transfer
@@ -456,7 +490,7 @@ Agent MB         Adapter MB       EDC MB           gateway          EDC FO      
    own EDC connector's real DSP address — MB is self-hosted, so its DSP
    endpoint is already genuinely reachable; no `dsp-gateway` hop needed
    in this direction.
-7. FO's adapter stores the received content in its own MinIO; FO's agent
+7. FO's adapter stores the received content in its own S3 storage; FO's agent
    polls its own inbox as usual, through `gateway` (FO is hosted).
 
 Step 6 crosses the external/hosted boundary just as much as anything in
@@ -481,7 +515,7 @@ to the pure-hosted flow above, so the diagram picks up from there:
 Adapter FO       EDC FO           dsp-gateway      EDC MB           Adapter MB       Agent MB
 │                │                │                │                │                │
 │ 1. store payload                │                │                │                │
-│    (own MinIO),│                │                │                │                │
+│    (own S3)   ,│                │                │                │                │
 │    register asset               │                │                │                │
 │    — dsp address                │                │                │                │
 │    advertised =│                │                │                │                │
@@ -520,7 +554,7 @@ Adapter FO       EDC FO           dsp-gateway      EDC MB           Adapter MB  
 │ payload/id     │                │                │                │                │
 │                │                │                │                │ 7. store received
 │                │                │                │                │    content     │
-│                │                │                │                │    (own MinIO) │
+│                │                │                │                │    (own S3)    │
 │                │                │                │                │◄───────────────┤
 │                │                │                │                │                │  GET
 │                │                │                │                ├───────────────►│
@@ -528,7 +562,7 @@ Adapter FO       EDC FO           dsp-gateway      EDC MB           Adapter MB  
 
 1. FO's agent `POST`s `/outbox/messages` through `gateway` as usual (FO's
    own traffic, same as the pure-hosted flow above).
-2. FO's adapter uploads the payload to its own MinIO and registers the
+2. FO's adapter uploads the payload to its own S3 storage and registers the
    asset with its own EDC connector — but because FO is
    `externally_reachable`, the DSP address it advertises for this asset
    is `dsp-gateway`'s form, not its real connector address.
@@ -541,7 +575,7 @@ Adapter FO       EDC FO           dsp-gateway      EDC MB           Adapter MB  
    `dsp-gateway` resolves the participant slug from the URL path and
    proxies the DSP request through to FO's real, otherwise-unreachable
    connector.
-6. MB's adapter stores the received content in its own MinIO; MB's agent
+6. MB's adapter stores the received content in its own S3 storage; MB's agent
    polls its own inbox directly — no `gateway` involved, MB operates its
    own infrastructure end to end.
 
@@ -603,7 +637,7 @@ Agent A POSTs JSON or files
   │                                           
   ▼                                           
 Adapter A:                                    
-  • stores payload in MinIO                   
+  • stores payload in S3                      
     messages/{id}.json  or files/{id}.zip     
   • registers EDC asset with:                 
     dataAddress.baseUrl =                     
@@ -620,16 +654,16 @@ EDC-A DSP ◄══════ contract negotiation ═════ EDC-B
                                               
                                               EDC-B initiates transfer →
 EDC-A data plane: GET /internal/payload/{id}
-  → Adapter A reads from MinIO               
+  → Adapter A reads from S3                  
   → returns bytes                            
   → EDC-A data plane POSTs to: ────────────► Adapter B /internal/inbox-receive/{id}:
                                                 • detects JSON vs binary
-                                                • stores to MinIO
+                                                • stores to S3
                                                 • updates inbox row (status=received)
                                               
                                               Agent B: GET /inbox/messages → sees message
                                               Agent B: GET /inbox/messages/{id}/download
-                                                → streams ZIP from MinIO
+                                                → streams ZIP from S3
 ```
 
 ---
@@ -643,11 +677,12 @@ EDC-A data plane: GET /internal/payload/{id}
 | Dataspace Adapter | Python 3.12 / FastAPI + SQLAlchemy asyncpg | One per participant |
 | EDC Connector | Eclipse EDC 0.9.0 (Java 21) | One per participant; combined CP+DP |
 | Adapter database | PostgreSQL | One separate database per adapter (`adapter_{slug}` — outbox_messages, inbox_messages, conversations, capability_policies, capability_approvals), not a shared schema |
-| EDC database | PostgreSQL | One separate database per EDC connector (`edc_{slug}`, Flyway-managed) |
-| Payload storage | MinIO (S3-compatible) | One bucket per participant |
+| EDC database | PostgreSQL | One separate database per EDC connector (`edc_{slug}`) |
+| Payload storage | S3-compatible; SeaweedFS by default | One bucket per participant |
 | Transfer type | HttpData-PUSH | Provider pushes to consumer's internal endpoint |
-| Identity | Keycloak (OIDC) | RS256 JWT; realm `dataspace`; see keycloak.md |
-| Management UI | React 18 + Vite / FastAPI | Health + participant administration |
+| Identity | Keycloak (OIDC) | RS256 JWT; realm `dataspace`; see [keycloak.md](keycloak.md) |
+| DSP Gateway | Python 3.12 / FastAPI + httpx | Stateless path router; external DSP traffic only |
+| Management UI | React 18 + Vite / FastAPI | Health, participant administration, policies |
 
 ---
 
@@ -663,8 +698,7 @@ curl -s -X POST http://dataspace-management.local/api/participants \
   -d '{"participant_id": "urn:ifric:...", "participant_type": "machine_builder"}'
 ```
 
-The management API (`management/api/app/routes/participants.py`,
-`k8s_admin.py`) does everything in one request: creates the Postgres
+The management API does everything in one request: creates the Postgres
 databases, creates the adapter + EDC connector Deployments/Services in
 `dataspace-participants`, provisions the Keycloak client/role, and registers
 the participant. `adapter_url`/`dsp_url` are derived automatically from
@@ -674,3 +708,5 @@ the participant. `adapter_url`/`dsp_url` are derived automatically from
 pods — no orphaned Deployments left behind.
 
 No existing participants need to be reconfigured. The registry and gateway handle discovery automatically.
+
+An external participant runs its own adapter and connector, so registering one creates only its Keycloak client and registry entry. See [management-api.md](management-api.md).

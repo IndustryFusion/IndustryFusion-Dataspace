@@ -20,31 +20,21 @@ context: |
   The IndustryFusion Dataspace is a governed communication fabric between
   participants (factory owners and machine builders). Agents never talk to each
   other directly; messages pass through an inbox/outbox pattern over Eclipse
-  Dataspace Components (EDC) connectors, governed by contracts and policies. The
-  project does not implement the agents themselves.
-  Purpose and MVP scope are in manifest.md; the target system is in
-  architecture.md. Read them before proposing a change and cite the sections a
-  change affects.
+  Dataspace Components (EDC) connectors under role and conversation rules. Capability
+  access is advisory, and the sending application checks it. The project does not
+  implement the agents themselves.
+  Each document leads on its own subject: manifest.md on goals and definition of
+  done, architecture.md on design, protocol.md on message semantics, gateway-api.md
+  and management-api.md on their HTTP contracts, keycloak.md on identity setup.
+  Read them before proposing a change and cite the sections a change affects.
   Target stack per architecture.md "Technology Stack": Python 3.12 / FastAPI for
   the API Gateway, Participant Registry and Dataspace Adapter; Eclipse EDC 0.9.0
-  (Java 21); PostgreSQL; MinIO; Keycloak; React 18 + Vite for the management UI.
-  architecture.md describes a target system. The components and files it mentions,
-  such as management/api/ and keycloak.md, are not in this repository yet. Check
-  before assuming that something exists, and do not invent test, lint or
-  dependency conventions for code that does not exist.
-  The project documents differ on these points, and maintainers have not decided
-  them (see Open Questions in
-  openspec/changes/archive/2026-11-06-gh-2-bootstrap-openspec/design.md):
-    1. Deployment: manifest.md has a local docker-compose deployment;
-       architecture.md is designed for Kubernetes.
-    2. EDC connector: manifest.md has separate control and data planes per
-       participant; architecture.md has one combined plane per participant.
-    3. Components: the API Gateway, Participant Registry and Keycloak are in
-       architecture.md but not in manifest.md, and neither document is named as
-       leading.
-    4. manifest.md contains its full content twice.
-  If a change depends on one of these, state the difference in design.md and
-  present the alternatives. Do not choose one silently.
+  (Java 21); PostgreSQL; S3-compatible storage (SeaweedFS by default); Keycloak; React 18 + Vite for the management UI.
+  The target is Kubernetes, with one combined EDC control and data plane per
+  participant. architecture.md describes a target system, and the components it
+  mentions may not be in this repository yet. Check before assuming that something
+  exists, and do not invent test, lint or dependency conventions for code that does
+  not exist.
   Governance: specs in openspec/specs/ are authoritative once approved.
   Implementation starts only after a maintainer adds the `spec-approved` label to
   the change's Pull Request. Pull Requests come from the contributor's own fork.
