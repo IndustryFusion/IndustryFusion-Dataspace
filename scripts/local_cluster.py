@@ -189,7 +189,9 @@ class KeycloakAdmin:
         self._call("DELETE", f"/roles/{urllib.parse.quote(f'participant:{participant_id}', safe='')}")
 
 
-def deploy_adapter(participant_id: str, participant_type: str, api_key: str, client_secret: str) -> str:
+def deploy_adapter(
+    participant_id: str, participant_type: str, api_key: str, client_secret: str, internal_key: str | None = None
+) -> str:
     """Deploy one participant's adapter, and return its Service name."""
     name = slug(participant_id)
     ensure_database(f"adapter_{name}")
@@ -206,7 +208,7 @@ def deploy_adapter(participant_id: str, participant_type: str, api_key: str, cli
             CLIENT_SECRET=client_secret,
             S3_ACCESS_KEY=secrets["S3_ACCESS_KEY"],
             S3_SECRET_KEY=secrets["S3_SECRET_KEY"],
-            INTERNAL_KEY=token_hex(16),
+            INTERNAL_KEY=internal_key or token_hex(16),
         )
     )
     return f"adapter-{name}"
