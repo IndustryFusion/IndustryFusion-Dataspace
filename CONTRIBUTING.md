@@ -144,6 +144,8 @@ scripts/local-env.sh down     # remove the cluster and generated files
 
 It uses only its own kubeconfig, `.local/kubeconfig`, so your other clusters aren't touched. Generated credentials are in `.local/`, which git ignores.
 
+With the services deployed, `scripts/message-exchange-check.py` runs two agents exchanging messages through the gateway, and `scripts/connector-transfer-check.py` tests two connectors on their own.
+
 `scripts/setup-local-hosts.sh add` adds host entries for reaching the environment by name, and `remove` takes them out.
 
 ## Working locally (optional)

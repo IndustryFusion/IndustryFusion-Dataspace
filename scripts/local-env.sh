@@ -27,7 +27,7 @@ LOCAL="$ROOT/.local"
 CLUSTER="dataspace-local"
 export KUBECONFIG="$LOCAL/kubeconfig"
 KEYCLOAK_ISSUER_BASE="http://keycloak-service.iff:8080/auth"
-SERVICES="registry"
+SERVICES="registry gateway"
 PARTICIPANT_IMAGES="connector adapter"
 
 need() {
