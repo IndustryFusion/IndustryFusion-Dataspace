@@ -25,6 +25,7 @@ import argparse
 import secrets
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import local_cluster as lc
 
@@ -33,6 +34,7 @@ MACHINE_BUILDER = "urn:check:machine-builder"
 KEYCLOAK_NS, KEYCLOAK_SERVICE, KEYCLOAK_PORT = "iff", "keycloak-service", 8080
 REGISTRY_NS, REGISTRY_SERVICE, REGISTRY_PORT = "dataspace", "registry", 19000
 GATEWAY_NS, GATEWAY_SERVICE, GATEWAY_PORT = "dataspace", "gateway", 8080
+BURST = 12
 
 
 def setup(keycloak: str, registry: str, key: str) -> dict[str, str]:
@@ -144,6 +146,41 @@ def exchange(owner: Agent, builder: Agent) -> str:
     return sent
 
 
+def burst(owner: Agent, builder: Agent, count: int = BURST) -> None:
+    """Many messages opening one new conversation at once must all arrive, with none taken for a duplicate."""
+    conversation = str(uuid.uuid4())
+    headers = owner.headers()
+    bodies = [
+        {"receiver_participant": MACHINE_BUILDER, "conversation_id": conversation, "payload": {"item": item}}
+        for item in range(count)
+    ]
+
+    def post(body: dict) -> str:
+        status, answer = lc.http("POST", f"{owner.base}/outbox/messages", body, headers)
+        assert status == 202, (status, answer)
+        return answer["message_id"]
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        sent = list(pool.map(post, bodies))
+    assert len(set(sent)) == count
+    print(f"Burst: {count} concurrent sends accepted")
+
+    for item, message_id in enumerate(sent):
+        received = builder.receive(message_id)
+        assert received["payload"] == {"item": item}, received
+        assert received["conversation_id"] == conversation, received
+    print(f"Burst: all {count} delivered to the receiver, in one conversation")
+
+    def transfer_id(message_id: str) -> str | None:
+        _, state = lc.http("GET", f"{owner.base}/outbox/messages/{message_id}/status", headers=owner.headers())
+        assert state["status"] == "notified", state
+        return state["edc_transfer_id"]
+
+    for message_id in sent:
+        lc.poll(lambda chosen=message_id: transfer_id(chosen), timeout=30, what=f"the transfer id of {message_id}")
+    print("Burst: every sender status has a transfer id")
+
+
 def isolation(owner: Agent, builder: Agent, delivered_to_builder: str) -> None:
     base = owner.base
     status, _ = lc.http("GET", f"{base}/inbox/messages")
@@ -197,6 +234,7 @@ def main() -> int:
                 builder = Agent("machine builder", MACHINE_BUILDER, client_secrets[MACHINE_BUILDER], keycloak, gateway)
                 delivered = exchange(owner, builder)
                 isolation(owner, builder, delivered)
+                burst(owner, builder)
             print("PASS")
             return 0
         finally:

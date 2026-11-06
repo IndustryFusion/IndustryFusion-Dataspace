@@ -35,8 +35,10 @@ ADAPTER_TIMEOUT_SECONDS = 120
 METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"]
 NOT_FORWARDED = {
     "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
-    "transfer-encoding", "upgrade", "content-length", "content-encoding",
+    "transfer-encoding", "upgrade", "content-length",
 }  # fmt: skip
+# The HTTP client decodes answers, so an answer's Content-Encoding would no longer be true.
+NOT_RETURNED = NOT_FORWARDED | {"content-encoding"}
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,10 @@ class Settings:
         return f"{self.keycloak_url}/realms/{self.keycloak_realm}"
 
 
+class KeysUnavailable(Exception):
+    """The signing keys could not be fetched, or what came back can't be used."""
+
+
 class TokenChecker:
     def __init__(self, issuer: str, http: httpx.AsyncClient, clock: Callable[[], float]) -> None:
         self.issuer = issuer
@@ -59,13 +65,16 @@ class TokenChecker:
         self.fetched_at: float | None = None
 
     async def _fetch_keys(self) -> None:
-        response = await self.http.get(f"{self.issuer}/protocol/openid-connect/certs")
-        response.raise_for_status()
-        self.keys = {
-            key["kid"]: jwt.PyJWK(key).key
-            for key in response.json()["keys"]
-            if key.get("use", "sig") == "sig" and key.get("kty") == "RSA"
-        }
+        try:
+            response = await self.http.get(f"{self.issuer}/protocol/openid-connect/certs")
+            response.raise_for_status()
+            self.keys = {
+                key["kid"]: jwt.PyJWK(key).key
+                for key in response.json()["keys"]
+                if key.get("use", "sig") == "sig" and key.get("kty") == "RSA"
+            }
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, jwt.PyJWTError) as error:
+            raise KeysUnavailable(str(error)) from error
         self.fetched_at = self.clock()
 
     async def _refresh(self) -> bool:
@@ -76,7 +85,13 @@ class TokenChecker:
         return True
 
     def _decode(self, token: str, key: object) -> dict:
-        return jwt.decode(token, key, algorithms=["RS256"], issuer=self.issuer, options={"verify_aud": False})
+        return jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            issuer=self.issuer,
+            options={"verify_aud": False, "require": ["exp"]},
+        )
 
     async def claims(self, authorization: str | None) -> dict:
         scheme, _, token = (authorization or "").partition(" ")
@@ -90,8 +105,8 @@ class TokenChecker:
         if kid not in self.keys:
             try:
                 await self._refresh()
-            except httpx.HTTPError as error:
-                raise HTTPException(status_code=502, detail="Signing keys are unreachable") from error
+            except KeysUnavailable as error:
+                raise HTTPException(status_code=502, detail="Signing keys are unavailable") from error
         key = self.keys.get(kid)
         if key is None:
             raise HTTPException(status_code=401, detail="Invalid token")
@@ -102,7 +117,7 @@ class TokenChecker:
             # A rotation can reuse a key id, so look again before refusing.
             try:
                 refreshed = await self._refresh()
-            except httpx.HTTPError:
+            except KeysUnavailable:
                 refreshed = False
             if not refreshed or kid not in self.keys:
                 raise HTTPException(status_code=401, detail="Invalid token") from first_error
@@ -141,6 +156,10 @@ class Directory:
             self.cache.pop(participant_id, None)
             return None
         record = response.json()
+        # An id containing a path can land on another registry route, such as a listing.
+        if not isinstance(record, dict) or record.get("participant_id") != participant_id:
+            self.cache.pop(participant_id, None)
+            return None
         self.cache[participant_id] = (self.clock(), record)
         return record
 
@@ -165,6 +184,8 @@ def clean_path(raw: str) -> str:
 
 async def forward(http: httpx.AsyncClient, request: Request, target: str) -> Response:
     headers = {key: value for key, value in request.headers.items() if key.lower() not in NOT_FORWARDED}
+    # With repeated headers, send on the one that was validated, which is the first.
+    headers["authorization"] = request.headers["authorization"]
     try:
         answer = await http.request(
             request.method,
@@ -178,7 +199,7 @@ async def forward(http: httpx.AsyncClient, request: Request, target: str) -> Res
         raise HTTPException(status_code=504, detail="The adapter did not answer in time") from error
     except httpx.HTTPError as error:
         raise HTTPException(status_code=503, detail="The adapter is unavailable") from error
-    returned = {key: value for key, value in answer.headers.items() if key.lower() not in NOT_FORWARDED}
+    returned = {key: value for key, value in answer.headers.items() if key.lower() not in NOT_RETURNED}
     return Response(content=answer.content, status_code=answer.status_code, headers=returned)
 
 

@@ -16,6 +16,15 @@
 - [x] 2.2 Verify on the local cluster that one participant's token can't read the other's inbox, and that `internal/*` gives `404`
 - [x] 2.3 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
 
+## 3. Review follow-up
+
+- [x] 3.1 Require `exp` and only RS256; verify two tests
+- [x] 3.2 Give 404 when the peer route's lookup doesn't return that participant's record; verify tests with a listing and with another participant's record
+- [x] 3.3 Give 502 for unreadable signing keys; verify a test for each malformed answer
+- [x] 3.4 Keep a request's `Content-Encoding`, and forward only the validated `Authorization`; verify two tests
+- [x] 3.5 Pin the 120 second adapter timeout; verify a test
+- [x] 3.6 Add a burst of concurrent messages on one new conversation to `scripts/message-exchange-check.py`, and check `edc_transfer_id`; verify on the local cluster
+
 ## Workflow follow-up
 
 - After merge, archive with the other milestone changes in a follow-up Pull Request with `Closes #10`.

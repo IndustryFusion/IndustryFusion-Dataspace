@@ -58,6 +58,8 @@ class World:
             BUILDER: {"participant_id": BUILDER, "adapter_url": "http://builder.test/"},
         }
         self.adapter_error: Exception | None = None
+        self.jwks_answer: httpx.Response | None = None
+        self.registry_list_for: set[str] = set()
         self.forwarded: list[httpx.Request] = []
         self.time = 1000.0
 
@@ -67,17 +69,20 @@ class World:
             self.jwks_fetches += 1
             if not self.jwks_up:
                 raise httpx.ConnectError("down")
-            return httpx.Response(200, json={"keys": self.jwks})
+            return self.jwks_answer or httpx.Response(200, json={"keys": self.jwks})
         if url.startswith("http://registry.test"):
             self.registry_calls.append(request.url.path)
             if not self.registry_up:
                 raise httpx.ConnectError("down")
-            if request.url.path.startswith("/participants/compatible/"):
+            if request.url.path.startswith("/participants/compatible/") and not self.registry_list_for:
                 who = request.url.path.removeprefix("/participants/compatible/")
                 if who not in self.participants:
                     return httpx.Response(404, json={})
                 return httpx.Response(200, json=[{"participant_id": "peer-of-" + who}])
-            record = self.participants.get(request.url.path.removeprefix("/participants/"))
+            wanted = request.url.path.removeprefix("/participants/")
+            if wanted in self.registry_list_for:
+                return httpx.Response(200, json=[{"participant_id": "someone"}])
+            record = self.participants.get(wanted)
             return httpx.Response(200, json=record) if record else httpx.Response(404, json={})
         if self.adapter_error:
             raise self.adapter_error
@@ -318,7 +323,7 @@ def test_failures_are_not_cached(client, world):
 
 def test_not_registered_is_not_cached(client, world):
     assert client.get("/x", headers=auth("urn:test:new")).status_code == 403
-    world.participants["urn:test:new"] = {"adapter_url": "http://new.test"}
+    world.participants["urn:test:new"] = {"participant_id": "urn:test:new", "adapter_url": "http://new.test"}
     assert client.get("/x", headers=auth("urn:test:new")).status_code == 201
 
 
@@ -360,3 +365,69 @@ def test_adapter_errors_are_returned_as_they_are(client, world):
         response = other.get("/x", headers=auth())
     assert response.status_code == 409
     assert response.json() == {"error": "conversation_state_violation"}
+
+
+def test_token_without_expiry_is_refused(client, world):
+    signed = jwt.encode({"iss": ISSUER, "participant_id": OWNER}, KEY, algorithm="RS256", headers={"kid": "k1"})
+    assert client.get("/inbox/messages", headers={"Authorization": f"Bearer {signed}"}).status_code == 401
+    assert world.forwarded == []
+
+
+def test_only_rs256_is_accepted(client, world):
+    claims = {"iss": ISSUER, "exp": int(time.time()) + 300, "participant_id": OWNER}
+    signed = jwt.encode(claims, KEY, algorithm="RS512", headers={"kid": "k1"})
+    assert client.get("/inbox/messages", headers={"Authorization": f"Bearer {signed}"}).status_code == 401
+    assert world.forwarded == []
+
+
+def test_peer_route_cannot_reach_a_registry_listing(client, world):
+    path = f"/peer/compatible/{OWNER}/internal/transfer-request"
+    world.participants[f"compatible/{OWNER}"] = None
+    world.registry_list_for.add(f"compatible/{OWNER}")
+    assert client.post(path, json={}, headers=auth()).status_code == 404
+    assert world.forwarded == []
+
+
+def test_record_for_another_participant_is_not_trusted(client, world):
+    world.participants["urn:test:alias"] = {"participant_id": BUILDER, "adapter_url": "http://builder.test"}
+    path = "/peer/urn:test:alias/internal/transfer-request"
+    assert client.post(path, json={}, headers=auth()).status_code == 404
+    assert world.forwarded == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(200, text="not JSON"),
+        httpx.Response(200, json={"no": "keys"}),
+        httpx.Response(200, json={"keys": [{"kty": "RSA", "use": "sig"}]}),
+        httpx.Response(200, json={"keys": [{"kty": "RSA", "use": "sig", "kid": "k1", "n": "!", "e": "!"}]}),
+    ],
+    ids=["not-json", "no-keys", "no-kid", "bad-key"],
+)
+def test_unreadable_signing_keys_give_bad_gateway(client, world, answer):
+    world.jwks_answer = answer
+    assert client.get("/inbox/messages", headers=auth()).status_code == 502
+    assert world.forwarded == []
+
+
+def test_content_encoding_of_a_request_is_kept(client, world):
+    headers = {**auth(), "Content-Encoding": "gzip", "Content-Type": "application/json"}
+    assert client.post("/outbox/messages", content=b"compressed", headers=headers).status_code == 201
+    assert world.forwarded[0].headers["content-encoding"] == "gzip"
+    assert world.forwarded[0].content == b"compressed"
+
+
+def test_only_the_validated_authorization_header_is_forwarded(client, world):
+    good = auth()["Authorization"]
+    other = auth(BUILDER)["Authorization"]
+    answer = client.get("/inbox/messages", headers=[("Authorization", good), ("Authorization", other)])
+    assert answer.status_code == 201
+    assert world.forwarded[0].url.host == "owner.test"
+    assert world.forwarded[0].headers.get_list("authorization") == [good]
+
+
+def test_adapter_timeout_is_120_seconds(client, world):
+    assert client.get("/inbox/messages", headers=auth()).status_code == 201
+    assert world.forwarded[0].extensions["timeout"]["read"] == 120
+
