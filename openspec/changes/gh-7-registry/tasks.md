@@ -11,8 +11,8 @@
 
 - [x] 2.1 Build the image and deploy it to the local environment with `scripts/local-env.sh`; verify the routes through a port-forward, and that a pod restart keeps records
 - [x] 2.2 Confirm the deployment has no Ingress; verify by listing Ingress objects
-- [ ] 2.3 Run the tests needing PostgreSQL in CI; verify in CI, or by running the same steps locally
-- [ ] 2.4 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 2.3 Run the tests needing PostgreSQL in CI; verify in CI, or by running the same steps locally
+- [x] 2.4 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
 
 ## Workflow follow-up
 
