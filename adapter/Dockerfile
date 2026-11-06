@@ -21,4 +21,6 @@ COPY app ./app
 RUN pip install --no-cache-dir .
 USER 65534
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Keep idle connections longer than the connector's HTTP client does (5 minutes), so it always
+# closes them first. Otherwise a push can race the server's close, and it can't be retried.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "600"]
