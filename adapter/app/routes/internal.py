@@ -16,15 +16,29 @@
 
 """Routes for peers and the connector. The gateway never forwards agents to these."""
 
+import asyncio
+import tempfile
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import update
 
 from app.auth import bearer_token, holds_role
-from app.db import InboxMessage, OutboxMessage, add_inbox_row, now, touch_conversation
-from app.delivery import fetch, note_transfer
+from app.conversations import (
+    apply,
+    invalid_answer,
+    locked_decision,
+    locked_for_unapplied,
+    refusal_text,
+    refused_answer,
+    settle_simultaneous,
+)
+from app.db import InboxMessage, OutboxMessage, add_inbox_row, now
+from app.delivery import fetch, note_transfer, set_inbox_in_transfer
+from app.limits import ARRIVAL_MARGIN_BYTES, BodyTooLarge, over_limit
+from app.protocol import check_validity
 
 router = APIRouter(prefix="/internal")
 
@@ -45,10 +59,12 @@ class TransferRequest(BaseModel):
     response_due_at: datetime | None = None
     asset_id: str
     provider_dsp_url: str
+    has_files: bool = False
+    sender_applied: bool = True
 
 
 @router.post("/transfer-request", status_code=202)
-async def transfer_request(body: TransferRequest, request: Request) -> dict:
+async def transfer_request(body: TransferRequest, request: Request):
     services = request.app.state.services
     claims = await services.verifier.claims(bearer_token(request))
     if not holds_role(claims, body.sender_participant):
@@ -56,32 +72,66 @@ async def transfer_request(body: TransferRequest, request: Request) -> dict:
     if body.receiver_participant != services.settings.participant_id:
         raise HTTPException(status_code=403, detail="This message is for a different receiver")
 
+    row = {
+        "message_id": body.message_id,
+        "conversation_id": body.conversation_id,
+        "performative": body.performative,
+        "capability": body.capability,
+        "in_reply_to": body.in_reply_to,
+        "authorization": body.authorization,
+        "outcome": body.outcome,
+        "sender_participant": body.sender_participant,
+        "receiver_participant": body.receiver_participant,
+        "reply_expected": body.reply_expected,
+        # This adapter's own clock: retention and order must not depend on what a peer states.
+        "created_at": now(),
+        "expires_at": body.expires_at,
+        "response_due_at": body.response_due_at,
+        "asset_id": body.asset_id,
+        "provider_dsp_url": body.provider_dsp_url,
+        "has_files": body.has_files,
+    }
+    duplicate = {"message_id": body.message_id, "status": "duplicate"}
+
+    invalid = check_validity(body.performative, body.capability, body.in_reply_to, body.authorization, body.outcome)
+    if invalid:
+        reason = refusal_text(invalid.reason, invalid.detail)
+        async with services.db.session() as session:
+            added = await add_inbox_row(session, **row, status="error", applied=False, error_message=reason)
+            await session.commit()
+        return invalid_answer(invalid, body.performative) if added else duplicate
+
     async with services.db.session() as session:
-        added = await add_inbox_row(
-            session,
-            message_id=body.message_id,
-            conversation_id=body.conversation_id,
-            performative=body.performative,
-            capability=body.capability,
-            in_reply_to=body.in_reply_to,
-            authorization=body.authorization,
-            outcome=body.outcome,
-            sender_participant=body.sender_participant,
-            receiver_participant=body.receiver_participant,
-            reply_expected=body.reply_expected,
-            # This adapter's own clock: retention and order must not depend on what a peer states.
-            created_at=now(),
-            expires_at=body.expires_at,
-            response_due_at=body.response_due_at,
-            status="transferring",
-            applied=True,
-            asset_id=body.asset_id,
-            provider_dsp_url=body.provider_dsp_url,
-        )
+        if body.sender_applied:
+            conversation, decision = await locked_decision(
+                session,
+                body.conversation_id,
+                body.sender_participant,
+                body.performative,
+                body.sender_participant,
+                body.outcome,
+            )
+            if conversation is not None and decision.reason != "counterpart_mismatch":
+                settled = await settle_simultaneous(session, conversation, body.message_id, body.performative)
+                decision = settled or decision
+        else:
+            conversation, decision = await locked_for_unapplied(
+                session, body.conversation_id, body.sender_participant
+            )
+
+        if decision.refused:
+            reason = refusal_text(decision.reason, decision.detail)
+            added = await add_inbox_row(session, **row, status="error", applied=False, error_message=reason)
+            await session.commit()
+            return refused_answer(decision, conversation, body.conversation_id, body.message_id) if added else duplicate
+
+        added = await add_inbox_row(session, **row, status="transferring", applied=decision.applied)
         if not added:
-            # The same message was notified before. There's nothing more to do.
-            return {"message_id": body.message_id, "status": "duplicate"}
-        await touch_conversation(session, body.conversation_id, body.sender_participant)
+            # The same message was notified before. There's nothing more to do, and nothing may change.
+            await session.rollback()
+            return duplicate
+        if conversation is not None:
+            apply(conversation, decision, body.message_id, body.sender_participant, body.outcome)
         await session.commit()
 
     services.spawn(fetch(services, body.message_id, body.sender_participant, body.asset_id, body.provider_dsp_url))
@@ -93,16 +143,33 @@ async def payload(message_id: str, request: Request) -> Response:
     services = request.app.state.services
     async with services.db.session() as session:
         row = await session.get(OutboxMessage, message_id)
-    content = await services.storage.get(row.payload_ref) if row and row.payload_ref else None
+    content = await services.storage.read_stream(row.payload_ref) if row and row.payload_ref else None
     if content is None:
         raise HTTPException(status_code=404, detail="No content for this message")
     # The connector's data plane reads this once a transfer has started.
     services.spawn(note_transfer(services, message_id))
-    return Response(content=content, media_type="application/json")
+    is_bundle = row.payload_ref.endswith(".zip")
+    return StreamingResponse(
+        content.chunks,
+        media_type="application/zip" if is_bundle else "application/json",
+        headers={"Content-Length": str(content.size)},
+    )
+
+
+async def _write_body(request: Request, target, limit: int) -> None:
+    if over_limit(request.headers.get("content-length"), limit):
+        raise BodyTooLarge
+    seen = 0
+    async for chunk in request.stream():
+        seen += len(chunk)
+        if seen > limit:
+            raise BodyTooLarge
+        await asyncio.to_thread(target.write, chunk)
+    await asyncio.to_thread(target.flush)
 
 
 @router.post("/inbox-receive/{message_id}")
-async def inbox_receive(message_id: str, request: Request) -> dict:
+async def inbox_receive(message_id: str, request: Request):
     services = request.app.state.services
     async with services.db.session() as session:
         row = await session.get(InboxMessage, message_id)
@@ -111,7 +178,16 @@ async def inbox_receive(message_id: str, request: Request) -> dict:
     if row.status == "acked":
         # The agent has finished with it, and its content may already have been purged.
         return {"message_id": message_id, "status": row.status}
-    ref = await services.storage.put(f"messages/{message_id}.json", await request.body())
+    key = f"files/{message_id}.zip" if row.has_files else f"messages/{message_id}.json"
+    limit = services.settings.max_upload_bytes + ARRIVAL_MARGIN_BYTES
+    with tempfile.NamedTemporaryFile(prefix="arrival-") as target:
+        try:
+            await _write_body(request, target, limit)
+        except BodyTooLarge:
+            reason = f"The content is larger than this participant accepts, {limit} bytes"
+            await set_inbox_in_transfer(services, message_id, status="error", error_message=reason)
+            return JSONResponse(status_code=413, content={"detail": reason})
+        ref = await services.storage.put_file(key, target.name)
     async with services.db.session() as session:
         await session.execute(
             update(InboxMessage)

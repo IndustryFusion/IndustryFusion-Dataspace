@@ -311,5 +311,5 @@ def test_storage_outage_on_the_payload_route_is_unavailable(harness, monkeypatch
     async def down(_ref: str) -> None:
         raise EndpointConnectionError(endpoint_url="http://s3.test")
 
-    monkeypatch.setattr(harness.storage, "get", down)
+    monkeypatch.setattr(harness.storage, "read_stream", down)
     assert harness.client.get(f"/internal/payload/{message_id}").status_code == 503

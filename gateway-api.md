@@ -91,7 +91,9 @@ Multipart form. Returns `202` with the same body as `POST /outbox/messages`. The
 | `conversation_id` | no | |
 | `in_reply_to` | no | Marks the file as a reply |
 
-The largest accepted upload is set by the deployment and documented with it.
+The whole request, including its multipart framing, can be up to `MAX_UPLOAD_BYTES`, which each deployment sets on the gateway and adapters. The default is 1 GiB. Over that, the answer is `413`. An Ingress in front of the gateway must allow at least the same body size.
+
+A file's name in the ZIP keeps only its last path part. A repeated name gets a number, as in `data-2.csv`, and an empty one becomes `file-<n>`. Files are stored in the ZIP uncompressed.
 
 ### `GET /outbox/messages/{id}`
 
@@ -135,7 +137,7 @@ Newest first. To see only messages ready to read, use `status=received`. Without
 | `transferring`, `negotiating`, `negotiated` | On their way |
 | `received` | Ready to read |
 | `acked` | Acknowledged |
-| `error` | Could not be received. See `error_message` |
+| `error` | Could not be received, or refused by the conversation rules. See `error_message`. A refused message has `applied: false` |
 
 ### `GET /inbox/messages/{id}`
 
@@ -160,7 +162,7 @@ Returns `204`, and is safe to repeat. Content of a message that is not acknowled
 
 ### `GET /inbox/messages/{id}/download`
 
-Returns the message's files as a ZIP. Gives `400` if it has none.
+Returns the message's files as a ZIP, with the same bytes that were sent. Gives `400` if it has none, and `404` if they have not arrived yet, or have been removed by retention.
 
 ## Conversations
 
@@ -189,14 +191,15 @@ The same object, plus:
       "message_id": "...", "direction": "sent", "performative": "request",
       "capability": null, "in_reply_to": null, "outcome": null,
       "sender_participant": "...", "receiver_participant": "...",
-      "created_at": "...", "applied": true, "replied_at": null, "payload": {}
+      "created_at": "...", "applied": true, "status": "notified", "has_files": false,
+      "replied_at": null, "payload": {}
     }
   ],
   "outstanding_requests": []
 }
 ```
 
-`outstanding_requests` holds requests that have no reply yet, in the same form as `messages`.
+`outstanding_requests` holds requests that have no reply yet, in the same form as `messages`. A reply is an accepted message that names the request in `in_reply_to`. Messages refused for audit are listed too, with `applied: false`, and with `status` `rejected` if sent or `error` if received. They answer nothing.
 
 ## Capabilities
 
@@ -270,6 +273,7 @@ Sets access for one consumer, without a request.
 | `404` | Unknown message, conversation or request, or an unregistered receiver. `internal/*` paths also give `404` | Standard |
 | `409` | Message not allowed in this conversation state | See below |
 | `409` | Capability request already resolved | Standard |
+| `413` | The request is larger than `MAX_UPLOAD_BYTES` | Standard |
 | `422` | Message breaks a validity rule | See below |
 | `422` | Request does not match the schema | Standard validation body |
 | `502` | Keycloak's signing keys are unreachable | Standard |
@@ -283,9 +287,11 @@ A state violation (`409`) and an invalid message (`422`) have these bodies. A `4
 ```json
 {
   "error": "conversation_state_violation", "reason": "...", "detail": "...",
-  "conversation_id": "...", "conversation_state": "CLOSED_RESOLVED", "closed_at": "..."
+  "conversation_id": "...", "conversation_state": "CLOSED_RESOLVED", "closed_at": "...", "message_id": "..."
 }
 ```
+
+`message_id` is the refused message, kept for audit and readable with `GET /outbox/messages/{id}`. `conversation_state` is `null` if this participant has no such conversation, as in `GET /outbox/messages/{id}/status` for that message. protocol.md lists the values of `reason`.
 
 ```json
 { "error": "invalid_message", "reason": "...", "detail": "...", "performative": "grant" }

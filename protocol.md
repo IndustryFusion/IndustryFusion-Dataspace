@@ -74,6 +74,16 @@ A refused message returns `409` with error `conversation_state_violation`, and i
 
 `applied` tells a client whether its message changed the conversation.
 
+The table above leaves these situations open. They are refused too, with these reasons:
+
+| Situation | `reason` |
+|---|---|
+| `close`, `reopen` or `deescalate` on a conversation this participant doesn't have. `conversation_state` is `null`, and no conversation is created | `conversation_not_found` |
+| `deescalate` while `OPEN` | `not_escalated` |
+| `reopen` while `ESCALATING` | `not_closed` |
+| `escalate` while `ESCALATING`, by the other side, having seen the escalation | `already_escalated` |
+| A message on a conversation that is with a different participant | `counterpart_mismatch` |
+
 ## Both sides keep state
 
 Each participant holds its own copy of the conversation's state. The sender applies these rules when it accepts a message, and the receiver applies the same rules to its own copy when notified. The receiver also checks that:
@@ -81,7 +91,17 @@ Each participant holds its own copy of the conversation's state. The sender appl
 - `receiver_participant` is itself.
 - The sender is the conversation's counterpart, on later messages in a conversation.
 
-If the receiver refuses a message, the sender sees status `error` or `rejected`. The sender's state has already moved at that point, so the two copies can differ until a further message settles them. Use `GET /conversations/{id}` on each side to compare.
+A message its sender did not apply (`applied: false`) is still delivered, and it does not move the receiver's state.
+
+### Simultaneous steps
+
+Both sides can send `close`, or both `escalate`, before either has seen the other's. Each side then knows both message ids, so each reaches the same answer with no further message: **the lower `message_id` wins**. The side whose message lost takes the winner's state or `escalated_by`, and marks its own message `applied: false`. If a side's own message was refused by the other side, the other side's message wins whatever the ids.
+
+### When the two copies differ
+
+If the receiver refuses a message, the sender sees status `rejected`, or `error` if the receiver could not answer. The receiver keeps the message for audit, with status `error`, `applied: false` and the reason in `error_message`, and starts no transfer. The sender's state has already moved at that point, and is not moved back, so the two copies can differ until a further message settles them. Use `GET /conversations/{id}` on each side to compare.
+
+For example, if one side sends `close` while the other sends `escalate`, each refuses the other's message. One side stays closed, and the other stays `ESCALATING`. Each sees its own message as `rejected`. The escalator's own `close` then settles them, on the state and outcome. `escalated_by` can still differ afterwards, as one side never recorded the escalation.
 
 ## Delivery
 
@@ -128,7 +148,8 @@ These behaviours are deliberately not provided at this stage:
 - **No delivery guarantee to the sender.** `notified` means the receiver accepted the notification, not that it has the data.
 - **No idempotency key.** Retrying a send can create a second message.
 - **A restart strands messages in progress.** Sending and fetching run inside the adapter process. A message in progress when it stops stays in its current status, with no retry, and retention does not remove it.
-- **No ordering across messages.** Each message runs its own transfer, so a later message can arrive first.
+- **No ordering of content.** Each message runs its own transfer, so a later message's content can arrive first. Notifications within one conversation are sent in the order the sender accepted the messages, one at a time, and state changes when a notification arrives, so both copies apply them in the same order. That order is kept in the adapter's process, so a restart loses it.
+- **A reply removed by retention stops counting.** `outstanding_requests` and `replied_at` come from the messages kept, so a request shows as outstanding again once its reply's row has been removed.
 - **Every message runs a full connector cycle,** including messages with an empty payload.
 - **Connector policies permit everything,** and DSP identity is mocked. Tracked in #20.
 - **The connector's calls to internal adapter routes are unauthenticated.** Tracked in #20.

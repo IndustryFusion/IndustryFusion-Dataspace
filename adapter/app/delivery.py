@@ -50,16 +50,49 @@ class Services:
     registry: Registry
     http: httpx.AsyncClient
     tasks: set[asyncio.Task] = field(default_factory=set)
+    last_delivery: dict[str, asyncio.Task] = field(default_factory=dict)
 
     def spawn(self, work: Coroutine) -> None:
         task = asyncio.create_task(work)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
+    def deliver_in_order(self, conversation_id: str, work: Coroutine) -> asyncio.Future:
+        """Queue work behind this conversation's earlier deliveries, and return its gate.
+
+        Call this while holding the conversation's row, so that the queue has the order the messages were accepted
+        in. The work starts once the gate is given True, after the commit. Given False, it never runs.
+        """
+        gate: asyncio.Future = asyncio.get_running_loop().create_future()
+        previous = self.last_delivery.get(conversation_id)
+
+        async def in_turn() -> None:
+            go_ahead = await gate
+            if previous is not None:
+                await asyncio.wait([previous])
+            if go_ahead:
+                await work
+            else:
+                work.close()
+
+        task = asyncio.create_task(in_turn())
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        self.last_delivery[conversation_id] = task
+
+        def forget(finished: asyncio.Task) -> None:
+            if self.last_delivery.get(conversation_id) is finished:
+                del self.last_delivery[conversation_id]
+
+        task.add_done_callback(forget)
+        return gate
+
     async def settle(self) -> None:
         """Wait for background work. Used at shutdown and in tests."""
         while self.tasks:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)
+            # With every task already done, that doesn't yield, and they leave the set only once the loop runs.
+            await asyncio.sleep(0)
 
 
 async def set_outbox(services: Services, message_id: str, **values) -> None:

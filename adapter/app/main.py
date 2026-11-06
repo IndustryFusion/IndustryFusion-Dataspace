@@ -31,9 +31,10 @@ from app.config import Settings
 from app.connector import Connector
 from app.db import Database
 from app.delivery import Services
+from app.limits import BodyLimit
 from app.registry import Registry
 from app.retention import retention_loop, schema_loop
-from app.routes import inbox, internal, outbox
+from app.routes import conversations, inbox, internal, outbox
 from app.storage import S3Storage
 
 
@@ -69,6 +70,7 @@ def create_app(services: Services | None = None) -> FastAPI:
         await built.db.close()
 
     application = FastAPI(title="Dataspace Adapter", lifespan=lifespan)
+    application.add_middleware(BodyLimit)
 
     @application.exception_handler(OperationalError)
     @application.exception_handler(DBAPIError)
@@ -84,6 +86,7 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     application.include_router(outbox.router)
     application.include_router(inbox.router)
+    application.include_router(conversations.router)
     application.include_router(internal.router)
     return application
 
