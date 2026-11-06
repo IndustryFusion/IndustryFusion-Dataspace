@@ -11,16 +11,22 @@
 - [x] 1.7 Confirm retention removes file content; verify a test
 - [x] 1.8 Confirm a storage failure leaves no message and no temporary file; verify a test
 - [x] 1.9 Show concurrent uploads each keep their own bytes; verify a test on PostgreSQL
+- [x] 1.10 Give every other route a small limit, enforced while reading; verify tests with and without a stated length that count what was read
+- [x] 1.11 Don't repeat the input in validation errors; verify a test
+- [x] 1.12 Make the stored size of a JSON message agree with the arrival limit; verify tests
+- [x] 1.13 Keep a form's parts on disk, and limit their number; verify a test that measures allocated memory
+- [x] 1.14 Refuse file names with a meaning to a file system; verify tests
 
 ## 2. Gateway
 
 - [x] 2.1 Stream request and answer bodies; verify existing forwarding tests still pass, and a new test with a body that arrives in parts
-- [x] 2.2 Enforce the limit; verify tests with a stated length and with no stated length
+- [x] 2.2 Enforce the limit; verify tests with a stated length over the limit and a shorter body, and with no stated length
+- [x] 2.3 Show an answer is passed on before the adapter has finished; verify a test
 
 ## 3. Documents and deployment
 
 - [x] 3.1 Update `gateway-api.md` with the limit and `413`, and `architecture.md` with the setting; verify by reading against the delta specs
-- [x] 3.2 Set `MAX_UPLOAD_BYTES` in the local deployment; verify on the local cluster that the gateway and adapter use it
+- [x] 3.2 Set `MAX_UPLOAD_BYTES`, `MAX_JSON_BYTES` and a memory limit in the local deployment; verify on the local cluster that a file at the limit still passes
 
 ## 4. End to end
 

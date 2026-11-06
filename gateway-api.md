@@ -66,7 +66,7 @@ The participants this one may communicate with.
 | `authorization` | object | by performative | `{scope, expires_at, constraints}` |
 | `outcome` | string | by performative | |
 | `conversation_id` | string | no | Omit to start a conversation |
-| `payload` | object | no | May be empty. Not with `content_ref` |
+| `payload` | object | no | May be empty. Not with `content_ref`. The whole request can be up to `MAX_JSON_BYTES`, by default 4 MiB, so send larger data as files |
 | `content_ref` | object | no | `{asset_id, dsp_url}`, an asset already registered with a connector. Not with `payload` |
 | `reply_expected` | boolean | no | |
 | `expires_at` | date-time | no | The content is purged after this time |
@@ -93,7 +93,7 @@ Multipart form. Returns `202` with the same body as `POST /outbox/messages`. The
 
 The whole request, including its multipart framing, can be up to `MAX_UPLOAD_BYTES`, which each deployment sets on the gateway and adapters. The default is 1 GiB. Over that, the answer is `413`. An Ingress in front of the gateway must allow at least the same body size.
 
-A file's name in the ZIP keeps only its last path part. A repeated name gets a number, as in `data-2.csv`, and an empty one becomes `file-<n>`. Files are stored in the ZIP uncompressed.
+A form can have up to 256 files. A file's name in the ZIP keeps only its last part, where `/`, `\\` and `:` all separate parts, without trailing dots or spaces. A name reserved on Windows, such as `CON`, gets a leading `_`. A repeated name gets a number, as in `data-2.csv`, and an empty one becomes `file-<n>`. Files are stored in the ZIP uncompressed.
 
 ### `GET /outbox/messages/{id}`
 
@@ -273,9 +273,9 @@ Sets access for one consumer, without a request.
 | `404` | Unknown message, conversation or request, or an unregistered receiver. `internal/*` paths also give `404` | Standard |
 | `409` | Message not allowed in this conversation state | See below |
 | `409` | Capability request already resolved | Standard |
-| `413` | The request is larger than `MAX_UPLOAD_BYTES` | Standard |
+| `413` | The request is larger than `MAX_UPLOAD_BYTES` for `POST /outbox/files`, or `MAX_JSON_BYTES` for any other route | Standard |
 | `422` | Message breaks a validity rule | See below |
-| `422` | Request does not match the schema | Standard validation body |
+| `422` | Request does not match the schema | Standard validation body, without the values sent |
 | `502` | Keycloak's signing keys are unreachable | Standard |
 | `503` | Adapter or registry unavailable | Standard |
 | `504` | Adapter did not answer within 120 seconds | Standard |

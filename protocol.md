@@ -150,6 +150,7 @@ These behaviours are deliberately not provided at this stage:
 - **A restart strands messages in progress.** Sending and fetching run inside the adapter process. A message in progress when it stops stays in its current status, with no retry, and retention does not remove it.
 - **No ordering of content.** Each message runs its own transfer, so a later message's content can arrive first. Notifications within one conversation are sent in the order the sender accepted the messages, one at a time, and state changes when a notification arrives, so both copies apply them in the same order. That order is kept in the adapter's process, so a restart loses it.
 - **A reply removed by retention stops counting.** `outstanding_requests` and `replied_at` come from the messages kept, so a request shows as outstanding again once its reply's row has been removed.
+- **Content without files is limited to `MAX_JSON_BYTES` on arrival,** including a `content_ref` asset, as it is read into memory when an agent reads the message. A larger asset gives the message status `error`.
 - **Every message runs a full connector cycle,** including messages with an empty payload.
 - **Connector policies permit everything,** and DSP identity is mocked. Tracked in #20.
 - **The connector's calls to internal adapter routes are unauthenticated.** Tracked in #20.

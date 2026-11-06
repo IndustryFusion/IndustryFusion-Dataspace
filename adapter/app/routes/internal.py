@@ -37,7 +37,7 @@ from app.conversations import (
 )
 from app.db import InboxMessage, OutboxMessage, add_inbox_row, now
 from app.delivery import fetch, note_transfer, set_inbox_in_transfer
-from app.limits import ARRIVAL_MARGIN_BYTES, BodyTooLarge, over_limit
+from app.limits import BodyTooLarge, arrival_limit, over_limit
 from app.protocol import check_validity
 
 router = APIRouter(prefix="/internal")
@@ -179,7 +179,7 @@ async def inbox_receive(message_id: str, request: Request):
         # The agent has finished with it, and its content may already have been purged.
         return {"message_id": message_id, "status": row.status}
     key = f"files/{message_id}.zip" if row.has_files else f"messages/{message_id}.json"
-    limit = services.settings.max_upload_bytes + ARRIVAL_MARGIN_BYTES
+    limit = arrival_limit(row.has_files, services.settings)
     with tempfile.NamedTemporaryFile(prefix="arrival-") as target:
         try:
             await _write_body(request, target, limit)

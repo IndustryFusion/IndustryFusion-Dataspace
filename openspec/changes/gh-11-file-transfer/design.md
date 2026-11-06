@@ -25,13 +25,21 @@
 
 **The limit counts the request body, including multipart framing.** It is simple to state and to check before parsing. Default 1 GiB, set by `MAX_UPLOAD_BYTES`. The ZIP sent onward adds a small overhead per file, so the receiving side allows a margin of 1 MiB plus the limit.
 
+**Only the file routes have the large limit.** A declared JSON body is read whole into memory and parsed before a route's dependencies run, so before its token is checked. A large limit there let 500 MiB with no token take an adapter to 7.5 GiB. So `POST /outbox/messages` has `MAX_JSON_BYTES` (default 4 MiB), and every other adapter route that takes a body has a fixed 256 KiB. The check runs while reading and before parsing, with or without a stated length. The gateway applies `MAX_JSON_BYTES` to everything but `POST /outbox/files`. Alternatives: reading JSON by hand after authentication on every route, which loses declared models and still leaves a signed peer able to send a huge body; and a single small limit, which is too tight for a message or too loose for a control call.
+
+**Validation errors don't repeat the input.** The standard validation body would echo what was sent, which made a 200 MiB request answer with 1.2 GB. The adapter's answers keep `loc`, `msg` and `type`. Identifying fields such as `receiver_participant` are limited to 512 characters, and refusals that name a value shorten it.
+
+**A stored JSON message is no larger than the body that carried it.** It is written without escaping non-ASCII characters, so `é` stays 2 bytes and doesn't become 6. So a message under `MAX_JSON_BYTES` at the sender is under it at the receiver, which applies the same limit to any arrival without files, including a `content_ref` asset. Such content is read into memory when an agent reads the message, so it can't have the file limit. Alternative: a larger arrival limit, which would only move the problem to the read.
+
 **Read the form inside the route, after authentication.** A route that declares file parameters has its body parsed before its dependencies run, so an unauthenticated caller could fill the disk. Reading the form by hand keeps authentication first. Alternative: declared `File` parameters, which are shorter but read the body first.
 
 **Store the ZIP uncompressed.** Files are bundled with the `stored` method, so a large upload does not spend time compressing, and its size is known from its parts. Alternative: deflate, which saves space on the internal path only, at a cost for files that are already compressed.
 
-**File names are reduced to a safe base name.** A name with a path keeps only its last part, control characters are removed, an empty name becomes `file-<n>`, and a repeated name gets a number. So nothing unpacks outside its folder, and no file replaces another. Alternative: refusing such uploads, which fails for clients that send a full path.
+**File names are reduced to a safe base name.** A name with a path keeps only its last part, where `/`, `\\` and `:` all separate parts, so a drive letter or an alternate data stream goes too. Control characters and trailing dots and spaces are removed, a name reserved on Windows such as `CON` gets a leading `_`, an empty name becomes `file-<n>`, and a repeated name gets a number. So nothing unpacks outside its folder, and no file replaces another. Alternative: refusing such uploads, which fails for clients that send a full path.
 
 **Temporary files in the adapter, streaming to storage.** The form is read to temporary files, the ZIP is written to one, and storage reads from that. Received content goes to a temporary file before storage too. A pod needs temporary disk of about twice its largest upload. Alternative: holding parts in memory, which is what this change removes.
+
+**Many small parts stay on disk too.** The form reader keeps a part in memory up to a size, 1 MiB by default, so 1000 parts just under that took an adapter to 1.1 GiB. Here a part moves to disk after 64 KiB, an upload has at most 256 files and 16 other fields, and such a field at most 64 KiB. That bounds memory for a form at about 17 MiB. Alternative: a cap on the number of parts alone, which either stays large or refuses real uploads.
 
 **A purged file message reads as `payload: null`, and keeps `has_files: true`.** `gateway-api.md` says `payload` is `null` when its content was purged. The download then gives `404`. So does a download before the content has arrived. `400` stays for a message with no files.
 
