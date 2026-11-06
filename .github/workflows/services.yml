@@ -1,0 +1,88 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+name: Services
+
+on:
+  pull_request:
+    paths:
+      - "gateway/**"
+      - "registry/**"
+      - "adapter/**"
+      - "dsp-gateway/**"
+      - "management/**"
+      - "connector/**"
+      - "scripts/**"
+      - "deploy/**"
+      - ".github/workflows/services.yml"
+  push:
+    branches: [main]
+    paths:
+      - "gateway/**"
+      - "registry/**"
+      - "adapter/**"
+      - "dsp-gateway/**"
+      - "management/**"
+      - "connector/**"
+      - "scripts/**"
+      - "deploy/**"
+      - ".github/workflows/services.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [gateway, registry, adapter, dsp-gateway, management/api]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Test
+        run: pytest
+      - name: Build image
+        run: docker build .
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install "ruff>=0.6,<1"
+      - name: Lint
+        run: ruff check --line-length 120 --select E,F,I,B,UP scripts
+
+  connector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build connector

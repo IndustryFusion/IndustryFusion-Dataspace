@@ -1,0 +1,15 @@
+# Local environment output, including generated credentials
+.local/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+
+# Connector build
+connector/.gradle/
+connector/build/

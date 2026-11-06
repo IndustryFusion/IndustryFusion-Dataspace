@@ -1,0 +1,131 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+#
+# Local stand-ins for the platform's PostgreSQL, S3 storage and Keycloak. They use
+# the platform's service names and ports, and hold data only for the pod's life.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acid-cluster
+  namespace: iff
+spec:
+  selector:
+    matchLabels: { app: acid-cluster }
+  template:
+    metadata:
+      labels: { app: acid-cluster }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports: [{ containerPort: 5432 }]
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: infra-credentials, key: postgres-user } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: infra-credentials, key: postgres-password } }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "dataspace"] }
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: acid-cluster
+  namespace: iff
+spec:
+  selector: { app: acid-cluster }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  namespace: iff
+spec:
+  selector:
+    matchLabels: { app: seaweedfs }
+  template:
+    metadata:
+      labels: { app: seaweedfs }
+    spec:
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:3.80
+          args: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/config/s3.json"]
+          ports: [{ containerPort: 8333 }]
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /config }
+          readinessProbe:
+            tcpSocket: { port: 8333 }
+            periodSeconds: 3
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          secret:
+            secretName: infra-credentials
+            items: [{ key: s3-config, path: s3.json }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs
+  namespace: iff
+spec:
+  selector: { app: seaweedfs }
+  ports: [{ port: 80, targetPort: 8333 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-service
+  namespace: iff
+spec:
+  selector:
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: { app: keycloak }
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0
+          args: ["start-dev"]
+          ports: [{ containerPort: 8080 }]
+          env:
+            - { name: KC_HTTP_RELATIVE_PATH, value: /auth }
+            - { name: KC_HOSTNAME, value: "http://keycloak-service.iff:8080/auth" }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom: { secretKeyRef: { name: infra-credentials, key: keycloak-admin-user } }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: infra-credentials, key: keycloak-admin-password } }
+          readinessProbe:
+            httpGet: { path: /auth/health/ready, port: 9000 }
+            periodSeconds: 5
+            failureThreshold: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-service
+  namespace: iff
+spec:
+  selector: { app: keycloak }
+  ports: [{ port: 8080 }]

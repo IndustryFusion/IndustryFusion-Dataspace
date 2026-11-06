@@ -115,6 +115,36 @@ gh pr create -R IndustryFusion/IndustryFusion-Dataspace --head <your-account>:gh
 
 Issues do not need a fork; open them directly in this repository.
 
+## Working on a service
+
+Each service has its own directory, `pyproject.toml`, tests and `Dockerfile`. For a Python service (`gateway`, `registry`, `adapter`, `dsp-gateway`, `management/api`):
+
+```bash
+cd <service>
+python3.12 -m venv .venv && . .venv/bin/activate
+pip install ".[dev]"
+ruff check .     # lint
+pytest           # test
+docker build .   # image
+```
+
+The connector is built with `docker build connector`, which runs Gradle on Java 21 inside the build.
+
+## Local environment
+
+`scripts/local-env.sh` brings up a local Kubernetes cluster with PostgreSQL, S3-compatible storage and Keycloak, and sets up the realm as [keycloak.md](keycloak.md) describes. It needs a container runtime, `kind`, `kubectl`, `openssl`, `curl` and `python3`.
+
+```bash
+scripts/local-env.sh up       # create everything
+scripts/local-env.sh status   # show pods
+scripts/local-env.sh check    # mint a token and check its issuer
+scripts/local-env.sh down     # remove the cluster and generated files
+```
+
+It uses only its own kubeconfig, `.local/kubeconfig`, so your other clusters aren't touched. Generated credentials are in `.local/`, which git ignores.
+
+`scripts/setup-local-hosts.sh add` adds host entries for reaching the environment by name, and `remove` takes them out.
+
 ## Working locally (optional)
 
 You only need OpenSpec locally if you are driving an agent:
@@ -143,6 +173,5 @@ and commit the generated files. `openspec init --help` lists all tool IDs.
 - Proposal creation, implementation and archiving are started manually; nothing runs automatically from issues.
 - Who may add `spec-approved` is not enforced yet. `CODEOWNERS` and branch protection are recommended, and need repository admin settings.
 - The fork rule is checked in review, not technically blocked. Someone with write access can still open a Pull Request from a branch in this repository.
-- CI checks artifact structure only. Functional correctness and security require human review.
-- There is no application code yet, so there are no test or lint conventions yet.
+- CI validates specifications, and lints, tests and builds the services. It does not run the end-to-end scripts, so functional correctness and security still require human review.
 - The project documents differ on several points that maintainers have not decided. They are listed in `openspec/config.yaml`.
