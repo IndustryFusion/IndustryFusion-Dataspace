@@ -175,6 +175,7 @@ class LostStore(MemoryStore):
         asyncpg.exceptions.ConnectionDoesNotExistError("gone"),
         asyncpg.exceptions.CannotConnectNowError("starting"),
         asyncpg.InterfaceError("pool is closed"),
+        asyncpg.InternalClientError("another operation is in progress"),
         ConnectionRefusedError("refused"),
     ],
     ids=lambda error: type(error).__name__,
