@@ -10,9 +10,9 @@
 - [ ] 1.6 Add the internal routes; verify tests for each credential and each scenario in "Internal routes"
 - [ ] 1.7 Show concurrent requests store one row, and concurrent decisions have one winner; verify tests on PostgreSQL that fail with a read-then-write version
 
-## 2. Gateway
+## 2. Addressing
 
-- [ ] 2.1 Add the two peer routes; verify tests for each scenario, including that `X-Internal-Key` isn't passed on
+- [ ] 2.1 Call the provider at its `adapter_url`, and give `503` when it has none; verify tests, including a provider that also has a `peer_notify_url`
 
 ## 3. Advisory
 

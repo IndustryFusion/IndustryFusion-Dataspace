@@ -37,7 +37,7 @@ Each adapter SHALL offer the capabilities in `protocol.md` for its own role, wit
 - **THEN** the answer is not found, or forbidden
 
 #### Scenario: Provider unreachable
-- **WHEN** the provider's adapter can't be reached
+- **WHEN** the provider's adapter can't be reached, or it has no `adapter_url`
 - **THEN** the answer is service unavailable
 
 ### Requirement: Asking for access

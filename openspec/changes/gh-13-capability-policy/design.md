@@ -43,11 +43,11 @@
 
 **`consumer=` makes no registry call.** It reads only this adapter's own data, and the issue uses it for a participant's own defaults too, so it works for any id. `provider=` checks registration and role, as it reaches another participant.
 
-**Add two narrow peer routes to the gateway.** A participant's `peer_notify_url` is the gateway's peer route, so a capability call to that address must land on the provider's adapter. `GET /peer/{receiver}/internal/capabilities` and `POST /peer/{receiver}/internal/capabilities/approvals` forward there, need a valid token, and never pass `X-Internal-Key`. The catch-all stays closed to `internal/*`. Alternative: always using `adapter_url`, which doesn't reach across a cluster boundary, and which #18 would have to change.
+**Hosted adapters call each other directly in this milestone.** A capability call goes to the provider's `adapter_url`, even if the provider also has a `peer_notify_url`, because the gateway's peer route carries only `transfer-request`. A provider with no `adapter_url` gives `503`. Carrying capability calls through the peer route for external participants belongs to #18. Alternative: two more peer routes in the gateway now, which was considered and dropped, as `architecture.md` keeps the peer route as its single deliberate exception to blocking `internal/*` until #18 decides otherwise.
 
 ## Architectural implications
 
-`architecture.md` describes the gateway as having two forwarding routes, and the peer route as "the one deliberate exception" to blocking `internal/*`. This adds two more paths to that one exception, for the same reason. The document is updated. The alternative above avoids this but needs revisiting in #18, so it is presented for review here.
+The gateway doesn't change, and `architecture.md` keeps its single deliberate exception to blocking `internal/*`.
 
 `architecture.md` calls the dataspace "governed", and `manifest.md` already qualifies this. The change states plainly in both that the check is the sending application's.
 
