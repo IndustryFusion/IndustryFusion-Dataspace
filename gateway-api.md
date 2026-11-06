@@ -137,7 +137,7 @@ Newest first. To see only messages ready to read, use `status=received`. Without
 | `transferring`, `negotiating`, `negotiated` | On their way |
 | `received` | Ready to read |
 | `acked` | Acknowledged |
-| `error` | Could not be received. See `error_message` |
+| `error` | Could not be received, or refused by the conversation rules. See `error_message`. A refused message has `applied: false` |
 
 ### `GET /inbox/messages/{id}`
 
@@ -191,14 +191,15 @@ The same object, plus:
       "message_id": "...", "direction": "sent", "performative": "request",
       "capability": null, "in_reply_to": null, "outcome": null,
       "sender_participant": "...", "receiver_participant": "...",
-      "created_at": "...", "applied": true, "replied_at": null, "payload": {}
+      "created_at": "...", "applied": true, "status": "notified", "has_files": false,
+      "replied_at": null, "payload": {}
     }
   ],
   "outstanding_requests": []
 }
 ```
 
-`outstanding_requests` holds requests that have no reply yet, in the same form as `messages`.
+`outstanding_requests` holds requests that have no reply yet, in the same form as `messages`. A reply is an accepted message that names the request in `in_reply_to`. Messages refused for audit are listed too, with `applied: false`, and with `status` `rejected` if sent or `error` if received. They answer nothing.
 
 ## Capabilities
 
@@ -286,9 +287,11 @@ A state violation (`409`) and an invalid message (`422`) have these bodies. A `4
 ```json
 {
   "error": "conversation_state_violation", "reason": "...", "detail": "...",
-  "conversation_id": "...", "conversation_state": "CLOSED_RESOLVED", "closed_at": "..."
+  "conversation_id": "...", "conversation_state": "CLOSED_RESOLVED", "closed_at": "...", "message_id": "..."
 }
 ```
+
+`message_id` is the refused message, kept for audit and readable with `GET /outbox/messages/{id}`. `conversation_state` is `null` if this participant has no such conversation, as in `GET /outbox/messages/{id}/status` for that message. protocol.md lists the values of `reason`.
 
 ```json
 { "error": "invalid_message", "reason": "...", "detail": "...", "performative": "grant" }
