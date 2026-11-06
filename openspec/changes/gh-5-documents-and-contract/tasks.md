@@ -19,9 +19,9 @@
 ## 3. Integration check
 
 - [x] 3.1 Check `gateway-api.md` against IndustryFusion/XANA-AI-PDT#26, and list any gaps in the Pull Request; verify the list is present, even if empty
-- [ ] 3.2 Run `openspec validate --all --strict`; verify it passes locally and in CI
+- [x] 3.2 Run `openspec validate --all --strict`; verify it passes locally and in CI
 - [x] 3.3 Confirm no service code was added; verify with `git diff --stat` against `main`
-- [ ] 3.4 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 3.4 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
 
 ## Workflow follow-up
 
