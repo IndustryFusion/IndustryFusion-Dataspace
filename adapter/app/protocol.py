@@ -39,6 +39,8 @@ OUTCOMES = {"resolved", "withdrawn", "rejected", "failed", "timed_out", "superse
 NOT_REOPENABLE = {"escalated", "superseded"}
 # These act on an existing conversation. Anything else can start one.
 NEEDS_CONVERSATION = {"close", "reopen", "deescalate"}
+# These can change a conversation's state, so they name the step they were based on.
+STEPS = {"close", "escalate", "deescalate", "reopen"}
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,7 @@ def check_validity(
     """Why a message breaks the validity rules, or None if it doesn't."""
     rules = VALIDITY.get(performative)
     if rules is None:
-        return Invalid("unknown_performative", f"There is no performative {performative!r}")
+        return Invalid("unknown_performative", f"There is no performative {performative[:100]!r}")
     values = (capability, in_reply_to, authorization, outcome)
     for name, rule, value in zip(FIELDS, rules, values, strict=True):
         present = value not in (None, "")
@@ -78,7 +80,7 @@ def check_validity(
         if rule == FORBIDDEN and present:
             return Invalid(f"{name}_forbidden", f"{performative} does not allow {name}")
     if outcome not in (None, "") and outcome not in OUTCOMES:
-        return Invalid("unknown_outcome", f"There is no outcome {outcome!r}")
+        return Invalid("unknown_outcome", f"There is no outcome {str(outcome)[:100]!r}")
     if authorization not in (None, ""):
         problem = _authorization_problem(authorization)
         if problem:

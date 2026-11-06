@@ -19,6 +19,7 @@
 import asyncio
 import tempfile
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -28,12 +29,13 @@ from sqlalchemy import update
 from app.auth import bearer_token, holds_role
 from app.conversations import (
     apply,
+    copy_for_the_sender,
+    decide_incoming,
+    decide_unapplied,
     invalid_answer,
-    locked_decision,
-    locked_for_unapplied,
+    is_refused,
     refusal_text,
     refused_answer,
-    settle_simultaneous,
 )
 from app.db import InboxMessage, OutboxMessage, add_inbox_row, now
 from app.delivery import fetch, note_transfer, set_inbox_in_transfer
@@ -42,18 +44,20 @@ from app.protocol import check_validity
 
 router = APIRouter(prefix="/internal")
 
+Identifier = Annotated[str, Field(max_length=512)]
+
 
 class TransferRequest(BaseModel):
     # A peer chooses this id, and it becomes part of addresses and storage keys here.
     message_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
-    conversation_id: str
-    performative: str = "inform"
-    capability: str | None = None
-    in_reply_to: str | None = None
+    conversation_id: Identifier
+    performative: Identifier = "inform"
+    capability: Identifier | None = None
+    in_reply_to: Identifier | None = None
     authorization: dict | None = None
-    outcome: str | None = None
-    sender_participant: str
-    receiver_participant: str
+    outcome: Identifier | None = None
+    sender_participant: Identifier
+    receiver_participant: Identifier
     reply_expected: bool = False
     expires_at: datetime | None = None
     response_due_at: datetime | None = None
@@ -61,6 +65,7 @@ class TransferRequest(BaseModel):
     provider_dsp_url: str
     has_files: bool = False
     sender_applied: bool = True
+    based_on: str | None = None
 
 
 @router.post("/transfer-request", status_code=202)
@@ -71,6 +76,12 @@ async def transfer_request(body: TransferRequest, request: Request):
         raise HTTPException(status_code=403, detail="The token does not belong to the stated sender")
     if body.receiver_participant != services.settings.participant_id:
         raise HTTPException(status_code=403, detail="This message is for a different receiver")
+    try:
+        await services.registry.receiver(services.settings.participant_id, body.sender_participant)
+    except HTTPException as error:
+        if error.status_code == 404:
+            raise HTTPException(status_code=403, detail="The sender is not registered") from error
+        raise
 
     row = {
         "message_id": body.message_id,
@@ -90,6 +101,7 @@ async def transfer_request(body: TransferRequest, request: Request):
         "asset_id": body.asset_id,
         "provider_dsp_url": body.provider_dsp_url,
         "has_files": body.has_files,
+        "based_on": body.based_on,
     }
     duplicate = {"message_id": body.message_id, "status": "duplicate"}
 
@@ -103,20 +115,24 @@ async def transfer_request(body: TransferRequest, request: Request):
 
     async with services.db.session() as session:
         if body.sender_applied:
-            conversation, decision = await locked_decision(
+            conversation, decision = await decide_incoming(
+                session,
+                body.conversation_id,
+                body.sender_participant,
+                body.message_id,
+                body.performative,
+                body.outcome,
+                body.based_on,
+                "based_on" in body.model_fields_set,
+            )
+        else:
+            conversation, decision = await decide_unapplied(
                 session,
                 body.conversation_id,
                 body.sender_participant,
                 body.performative,
                 body.sender_participant,
                 body.outcome,
-            )
-            if conversation is not None and decision.reason != "counterpart_mismatch":
-                settled = await settle_simultaneous(session, conversation, body.message_id, body.performative)
-                decision = settled or decision
-        else:
-            conversation, decision = await locked_for_unapplied(
-                session, body.conversation_id, body.sender_participant
             )
 
         if decision.refused:
@@ -132,10 +148,11 @@ async def transfer_request(body: TransferRequest, request: Request):
             return duplicate
         if conversation is not None:
             apply(conversation, decision, body.message_id, body.sender_participant, body.outcome)
+        copy = copy_for_the_sender(conversation, decision.applied)
         await session.commit()
 
     services.spawn(fetch(services, body.message_id, body.sender_participant, body.asset_id, body.provider_dsp_url))
-    return {"message_id": body.message_id, "status": "transferring"}
+    return {"message_id": body.message_id, "status": "transferring", **copy}
 
 
 @router.get("/payload/{message_id}")
@@ -174,6 +191,8 @@ async def inbox_receive(message_id: str, request: Request):
     async with services.db.session() as session:
         row = await session.get(InboxMessage, message_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="Unknown message")
+    if is_refused(row):
         raise HTTPException(status_code=404, detail="Unknown message")
     if row.status == "acked":
         # The agent has finished with it, and its content may already have been purged.

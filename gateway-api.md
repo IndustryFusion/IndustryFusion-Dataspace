@@ -78,6 +78,8 @@ Returns `202`:
 { "message_id": "...", "status": "pending", "applied": true, "conversation_state": "OPEN" }
 ```
 
+Repeating a `close`, `escalate`, `deescalate` or `reopen` whose status is `error` or `rejected` sends it again, with `applied: true`. Otherwise a repeat has `applied: false`. See "When a notification fails" in [protocol.md](protocol.md).
+
 ### `POST /outbox/files`
 
 Multipart form. Returns `202` with the same body as `POST /outbox/messages`. The files are delivered as one ZIP.

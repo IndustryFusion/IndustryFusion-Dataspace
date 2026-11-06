@@ -82,7 +82,7 @@ The table above leaves these situations open. They are refused too, with these r
 | `deescalate` while `OPEN` | `not_escalated` |
 | `reopen` while `ESCALATING` | `not_closed` |
 | `escalate` while `ESCALATING`, by the other side, having seen the escalation | `already_escalated` |
-| A message on a conversation that is with a different participant | `counterpart_mismatch` |
+| A message on a conversation that is with a different participant. `conversation_state` and `closed_at` are `null` | `counterpart_mismatch` |
 
 ## Both sides keep state
 
@@ -91,17 +91,56 @@ Each participant holds its own copy of the conversation's state. The sender appl
 - `receiver_participant` is itself.
 - The sender is the conversation's counterpart, on later messages in a conversation.
 
-A message its sender did not apply (`applied: false`) is still delivered, and it does not move the receiver's state.
+The receiver also applies the role rules. A sender whose role isn't compatible, or that isn't registered, is refused with `403`, and nothing is kept.
 
-### Simultaneous steps
+A message its sender did not apply (`applied: false`) is still delivered. It does not move the receiver's state, but the receiver's rules still apply to it, so it can be refused.
 
-Both sides can send `close`, or both `escalate`, before either has seen the other's. Each side then knows both message ids, so each reaches the same answer with no further message: **the lower `message_id` wins**. The side whose message lost takes the winner's state or `escalated_by`, and marks its own message `applied: false`. If a side's own message was refused by the other side, the other side's message wins whatever the ids.
+### Crossing steps
 
-### When the two copies differ
+A **step** is a `close`, `escalate`, `deescalate` or `reopen`. Each names the step it was based on, the one that had last set the sender's copy. So a receiver can tell whether the sender had seen its own latest step.
 
-If the receiver refuses a message, the sender sees status `rejected`, or `error` if the receiver could not answer. The receiver keeps the message for audit, with status `error`, `applied: false` and the reason in `error_message`, and starts no transfer. The sender's state has already moved at that point, and is not moved back, so the two copies can differ until a further message settles them. Use `GET /conversations/{id}` on each side to compare.
+If it hadn't, the two sides have crossed. This holds for any steps, not only two of the same. Each side compares the same two ids, so each reaches the same answer with no further message: **the lower `message_id` of the two first steps after the fork wins.**
 
-For example, if one side sends `close` while the other sends `escalate`, each refuses the other's message. One side stays closed, and the other stays `ESCALATING`. Each sees its own message as `rejected`. The escalator's own `close` then settles them, on the state and outcome. `escalated_by` can still differ afterwards, as one side never recorded the escalation.
+- The state becomes the winner's.
+- Every step on the other branch, and any later step based on one of them, reads `applied: false` on both sides. It is still delivered.
+- Both senders see `notified`, as neither message was refused.
+
+For example, if one side sends `close` and then `reopen` while the other sends `close`, both end `OPEN` if the first `close` has the lower id, and both end in the other side's closed state if it doesn't.
+
+A step can only be crossed while it is on its way. Once the other side has answered its notification, a later step that names an older base changes nothing, and reads `applied: false`. So a settled state can't be rewritten by a later message, whatever `message_id` or base it states.
+
+### When a notification fails
+
+A step's sender moves its own copy when it accepts the message, and doesn't move it back. If the notification then fails, with status `error`, or is refused, with status `rejected`, the two copies differ. There is no automatic retry. Either of these settles them:
+
+- **The sender repeats the step,** sending the same performative again, with the same or another outcome. It isn't a duplicate: it answers `applied: true`, replaces the earlier step, which reads `applied: false`, and goes to the receiver as a new step. This also holds if the repeat was accepted before the earlier step failed, in which case it first answers `applied: false`, and reads `applied: true` once its turn to be delivered has come. If the earlier step did arrive and only its answer was lost, the receiver keeps it. The sender then takes it back, with status `notified`, and the repeat reads `applied: false`.
+- **The other side sends a step.** It wins over a failed or refused step, whatever the ids.
+
+Otherwise the copies stay different. An ordinary message doesn't settle them: on the side that believes the conversation is closed, it is refused. Use `GET /conversations/{id}` on each side to compare, and read `error_message`: a repeat that reads `notified` while the receiver's copy holds another state says so there.
+
+### What else can leave them different
+
+If the receiver refuses a step, the sender sees status `rejected`, with the reason, and its own state has already moved. The receiver keeps the message for audit, with status `error`, `applied: false` and the reason in `error_message`, and starts no transfer. This happens when the receiver's rules don't allow the step on a state both sides share, or when the receiver has no such conversation because the first message's notification failed. In the latter case the receiver has nothing to compare, and the sender's copy stays as it is until the sender sends a message that opens the conversation there.
+
+### Between adapters
+
+A notification, `POST /internal/transfer-request`, carries these fields beyond the message's own. All are optional, so a peer that leaves them out gets the ordinary rules and no settlement:
+
+| Field | Meaning |
+|---|---|
+| `has_files` | The content is a ZIP |
+| `sender_applied` | Whether the sender applied the message. Default `true`. `false` never moves the receiver's state |
+| `based_on` | For a step: the step that had last set the sender's copy, or `null` if none has |
+
+Its `202` answer adds the receiver's copy, so the sender can compare at once. A sender whose step lost takes this copy, even if the winner's own notification then fails:
+
+| Field | Meaning |
+|---|---|
+| `applied` | Whether this copy applied the message |
+| `conversation_state`, `outcome`, `escalated_by` | This copy's state |
+| `state_message_id` | The step that set it |
+
+A refusal uses the same bodies as the agent routes, in [gateway-api.md](gateway-api.md).
 
 ## Delivery
 
@@ -148,7 +187,9 @@ These behaviours are deliberately not provided at this stage:
 - **No delivery guarantee to the sender.** `notified` means the receiver accepted the notification, not that it has the data.
 - **No idempotency key.** Retrying a send can create a second message.
 - **A restart strands messages in progress.** Sending and fetching run inside the adapter process. A message in progress when it stops stays in its current status, with no retry, and retention does not remove it.
-- **No ordering of content.** Each message runs its own transfer, so a later message's content can arrive first. Notifications within one conversation are sent in the order the sender accepted the messages, one at a time, and state changes when a notification arrives, so both copies apply them in the same order. That order is kept in the adapter's process, so a restart loses it.
+- **No ordering of content.** Each message runs its own transfer, so a later message's content can arrive first. Notifications within one conversation are sent in the order the sender accepted the messages, one at a time, and state changes when a notification arrives, so a side's own steps reach the other in the order it took them. That order is kept in the adapter's process, so a restart loses it. Steps crossing from the two sides settle as [Crossing steps](#crossing-steps) describes.
+- **No reply to a lost state after a restart.** A step left in progress by a restart has neither status `error` nor `notified`, so a repeat stays a duplicate until the status changes. The other side's step still wins while it is in progress, by the ids.
+- **A closed conversation can come back after retention.** Once a conversation's row has been removed, 30 days by default, a later message with the same id opens a new one in state `OPEN`.
 - **A reply removed by retention stops counting.** `outstanding_requests` and `replied_at` come from the messages kept, so a request shows as outstanding again once its reply's row has been removed.
 - **Content without files is limited to `MAX_JSON_BYTES` on arrival,** including a `content_ref` asset, as it is read into memory when an agent reads the message. A larger asset gives the message status `error`.
 - **Every message runs a full connector cycle,** including messages with an empty payload.

@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import tempfile
 import uuid
 from datetime import datetime
@@ -34,7 +35,7 @@ from starlette.formparsers import MultiPartParser
 
 from app.auth import require_participant
 from app.bundle import write_bundle
-from app.conversations import apply, invalid_answer, locked_decision, refusal_text, refused_answer
+from app.conversations import apply, decide_to_send, invalid_answer, refusal_text, refused_answer
 from app.db import Conversation, OutboxMessage, iso
 from app.delivery import deliver
 from app.protocol import check_validity
@@ -185,7 +186,7 @@ async def _accept(
     gate = None
     try:
         async with services.db.session() as session:
-            conversation, decision = await locked_decision(
+            conversation, decision, based_on = await decide_to_send(
                 session, conversation_id, body.receiver_participant, body.performative, own_id, body.outcome
             )
             if decision.refused:
@@ -214,6 +215,7 @@ async def _accept(
                     response_due_at=body.response_due_at,
                     status="pending",
                     applied=decision.applied,
+                    based_on=based_on,
                 )
             )
             state = conversation.state
@@ -224,16 +226,18 @@ async def _accept(
                 "content_ref": content_ref,
                 "has_files": has_files,
                 "sender_applied": decision.applied,
+                "based_on": based_on,
             }
             gate = services.deliver_in_order(conversation_id, deliver(services, notification, peer))
             await session.commit()
     except Exception:
-        if gate is not None:
-            gate.set_result(False)
         # Without a row, retention could never remove what was just uploaded.
         await _remove_content(services, payload_ref, message_id)
         raise
-    gate.set_result(True)
+    finally:
+        # Also when accepting is cancelled, or the queue would wait for this gate for ever.
+        if gate is not None and not gate.done():
+            gate.set_result(sys.exc_info()[0] is None)
     return {"message_id": message_id, "status": "pending", "applied": decision.applied, "conversation_state": state}
 
 

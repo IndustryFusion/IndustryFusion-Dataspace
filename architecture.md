@@ -488,7 +488,7 @@ Agent MB         Adapter MB       EDC MB           gateway          EDC FO      
 4. `gateway` validates the JWT, resolves FO's real (otherwise internal-
    only) adapter address, and proxies the notification through.
 5. FO's adapter verifies the token really is MB (`verify_peer_token`),
-   applies enforcement, stores the inbox row, and tells its own EDC
+   applies the conversation rules, stores the inbox row, and tells its own EDC
    connector to pull the asset.
 6. FO's EDC connector negotiates and transfers **directly** against MB's
    own EDC connector's real DSP address — MB is self-hosted, so its DSP

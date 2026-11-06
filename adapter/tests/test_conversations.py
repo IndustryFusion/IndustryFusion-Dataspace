@@ -211,8 +211,16 @@ def test_no_conversation_id_with_a_close_is_refused(harness):
     assert harness.send(performative="close", outcome="resolved", payload={}).status_code == 409
 
 
+def allow_a_third_participant(harness) -> str:
+    third = "urn:test:third"
+    harness.world.registered[third] = {"participant_id": third, "adapter_url": "http://third.test"}
+    harness.world.compatible = [PEER, third]
+    return third
+
+
 def test_another_counterpart_at_the_sender(harness):
-    assert harness.notify("m1", conversation_id="c1", sender="urn:test:third").status_code == 202
+    third = allow_a_third_participant(harness)
+    assert harness.notify("m1", conversation_id="c1", sender=third).status_code == 202
     response = harness.send(payload={}, conversation_id="c1")
     assert response.status_code == 409
     assert response.json()["reason"] == "counterpart_mismatch"
@@ -291,14 +299,15 @@ def test_receiver_starts_no_transfer_for_a_refusal(harness):
 
 
 def test_different_counterpart_at_the_receiver(harness):
+    third = allow_a_third_participant(harness)
     assert harness.notify("m1", conversation_id="c1").status_code == 202
-    response = harness.notify("m2", conversation_id="c1", sender="urn:test:third")
+    response = harness.notify("m2", conversation_id="c1", sender=third)
     assert response.status_code == 409
     assert response.json()["reason"] == "counterpart_mismatch"
-    fields = {"conversation_id": "c1", "sender": "urn:test:third"}
+    fields = {"conversation_id": "c1", "sender": third}
     closing = harness.notify("m3", performative="close", outcome="failed", **fields)
     assert closing.status_code == 409
-    not_applied = harness.notify("m4", conversation_id="c1", sender="urn:test:third", sender_applied=False)
+    not_applied = harness.notify("m4", sender_applied=False, **fields)
     assert not_applied.status_code == 409
     conversation = read(harness)
     assert (conversation["state"], conversation["counterpart_participant"]) == ("OPEN", PEER)
@@ -530,16 +539,20 @@ def test_commit_failure_runs_no_delivery_and_removes_content(harness, monkeypatc
     real_session = harness.services.db.session
 
     class FailingCommit:
+        """Only the first session's commit fails, so that a delivery that wrongly goes ahead can work."""
+
         def __init__(self) -> None:
             self.inner = real_session()
 
         async def __aenter__(self):
             session = await self.inner.__aenter__()
+            if harness.services.db.session is FailingCommit:
+                harness.services.db.session = real_session
 
-            async def fail() -> None:
-                raise OSError("database went away")
+                async def fail() -> None:
+                    raise OSError("database went away")
 
-            session.commit = fail
+                session.commit = fail
             return session
 
         async def __aexit__(self, *details):
@@ -551,7 +564,6 @@ def test_commit_failure_runs_no_delivery_and_removes_content(harness, monkeypatc
         json={"receiver_participant": PEER, "conversation_id": "c1", "payload": {}},
         headers=auth(),
     )
-    monkeypatch.setattr(harness.services.db, "session", real_session)
     assert response.status_code == 503
     harness.settle()
     assert len(harness.world.notifications) == delivered

@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 
 from app.auth import require_participant
+from app.conversations import is_refused
 from app.db import Conversation, InboxMessage, OutboxMessage, as_utc, iso
 
 log = logging.getLogger("adapter")
@@ -62,9 +63,7 @@ async def _payload(services, ref: str | None) -> dict | None:
 
 
 def _refused(direction: str, row) -> bool:
-    if direction == "sent":
-        return row.status == "rejected"
-    return row.status == "error" and not row.applied
+    return row.status == "rejected" if direction == "sent" else is_refused(row)
 
 
 async def _messages(services, conversation_id: str) -> list[tuple[str, OutboxMessage | InboxMessage]]:
