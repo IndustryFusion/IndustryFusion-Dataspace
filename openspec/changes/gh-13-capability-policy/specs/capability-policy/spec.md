@@ -17,6 +17,10 @@ Each adapter SHALL offer the capabilities in `protocol.md` for its own role, wit
 - **WHEN** a machine builder's capabilities are listed
 - **THEN** there is `mb:confidential` with default `auto`, and its description says it is available by default
 
+#### Scenario: Changed default
+- **WHEN** a capability's default is changed
+- **THEN** its description says what the new default means, in every view
+
 ### Requirement: Access check
 `GET /capabilities/access` SHALL return, for each capability, `capability`, `label`, `description`, `data_classification`, `status` and `source`.
 
@@ -37,7 +41,7 @@ Each adapter SHALL offer the capabilities in `protocol.md` for its own role, wit
 - **THEN** the answer is not found, or forbidden
 
 #### Scenario: Provider unreachable
-- **WHEN** the provider's adapter can't be reached, or it has no `adapter_url`
+- **WHEN** the provider's adapter can't be reached, it has no `adapter_url`, or its answer can't be used
 - **THEN** the answer is service unavailable
 
 ### Requirement: Asking for access
@@ -62,6 +66,10 @@ Each adapter SHALL offer the capabilities in `protocol.md` for its own role, wit
 #### Scenario: Concurrent requests
 - **WHEN** a consumer sends many requests for one capability at once
 - **THEN** one request is stored
+
+#### Scenario: A request racing a reset
+- **WHEN** a request and a reset of the same capability run at once
+- **THEN** each gets a normal answer, and the capability ends pending or at its default
 
 #### Scenario: Already allowed
 - **WHEN** a participant asks for a capability whose default is `auto`, with no request stored
@@ -141,6 +149,10 @@ The internal capability routes SHALL accept `X-Internal-Key`, and, where stated,
 
 #### Scenario: Peer goes further
 - **WHEN** a peer's token asks to decide, names another consumer, or calls a `PATCH` route
+- **THEN** the answer is forbidden
+
+#### Scenario: Token that doesn't hold its own role
+- **WHEN** a token's `participant_id` claim names a participant whose role it doesn't hold
 - **THEN** the answer is forbidden
 
 #### Scenario: Incompatible peer
