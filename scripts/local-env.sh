@@ -18,7 +18,7 @@
 # Brings up a local Kubernetes cluster with the infrastructure the dataspace needs.
 # It uses only its own kubeconfig under .local/, so it cannot act on another cluster.
 #
-# Usage: scripts/local-env.sh up | down | status | check
+# Usage: scripts/local-env.sh up | down | status | check | services
 
 set -euo pipefail
 
@@ -27,6 +27,7 @@ LOCAL="$ROOT/.local"
 CLUSTER="dataspace-local"
 export KUBECONFIG="$LOCAL/kubeconfig"
 KEYCLOAK_ISSUER_BASE="http://keycloak-service.iff:8080/auth"
+SERVICES="registry"
 
 need() {
   for tool in "$@"; do
@@ -114,6 +115,26 @@ up() {
   echo "Local environment is ready. Use: KUBECONFIG=$KUBECONFIG kubectl get pods -A"
 }
 
+# Builds the service images, loads them into the cluster and deploys them.
+services() {
+  need docker kind kubectl
+  # shellcheck disable=SC1091
+  . "$LOCAL/credentials.env"
+  kubectl -n dataspace create secret generic service-credentials \
+    --from-literal=postgres-user="$POSTGRES_USER" \
+    --from-literal=postgres-password="$POSTGRES_PASSWORD" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  for service in $SERVICES; do
+    docker build -q -t "dataspace/$service:dev" "$ROOT/$service" >/dev/null
+    kind load docker-image --name "$CLUSTER" "dataspace/$service:dev" >/dev/null
+  done
+  kubectl apply -f "$ROOT/deploy/local/services.yaml" >/dev/null
+  for service in $SERVICES; do
+    kubectl -n dataspace rollout restart "deploy/$service" >/dev/null
+    kubectl -n dataspace rollout status "deploy/$service" --timeout=180s
+  done
+}
+
 down() {
   need kind
   kind delete cluster --name "$CLUSTER" --kubeconfig "$KUBECONFIG" || true
@@ -132,5 +153,6 @@ case "${1:-}" in
   down) down ;;
   status) status ;;
   check) need kubectl curl python3; with_keycloak check_token ;;
-  *) echo "Usage: $0 up | down | status | check" >&2; exit 2 ;;
+  services) services ;;
+  *) echo "Usage: $0 up | down | status | check | services" >&2; exit 2 ;;
 esac
