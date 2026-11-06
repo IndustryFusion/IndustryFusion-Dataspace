@@ -1,0 +1,77 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+schema: spec-driven
+
+context: |
+  The IndustryFusion Dataspace is a governed communication fabric between
+  participants (factory owners and machine builders). Agents never talk to each
+  other directly; messages pass through an inbox/outbox pattern over Eclipse
+  Dataspace Components (EDC) connectors, governed by contracts and policies. The
+  project does not implement the agents themselves.
+  Purpose and MVP scope are in manifest.md; the target system is in
+  architecture.md. Read them before proposing a change and cite the sections a
+  change affects.
+  Target stack per architecture.md "Technology Stack": Python 3.12 / FastAPI for
+  the API Gateway, Participant Registry and Dataspace Adapter; Eclipse EDC 0.9.0
+  (Java 21); PostgreSQL; MinIO; Keycloak; React 18 + Vite for the management UI.
+  architecture.md describes a target system. The components and files it mentions,
+  such as management/api/ and keycloak.md, are not in this repository yet. Check
+  before assuming that something exists, and do not invent test, lint or
+  dependency conventions for code that does not exist.
+  The project documents differ on these points, and maintainers have not decided
+  them (see Open Questions in the gh-2-bootstrap-openspec design.md):
+    1. Deployment: manifest.md has a local docker-compose deployment;
+       architecture.md is designed for Kubernetes.
+    2. EDC connector: manifest.md has separate control and data planes per
+       participant; architecture.md has one combined plane per participant.
+    3. Components: the API Gateway, Participant Registry and Keycloak are in
+       architecture.md but not in manifest.md, and neither document is named as
+       leading.
+    4. manifest.md contains its full content twice.
+  If a change depends on one of these, state the difference in design.md and
+  present the alternatives. Do not choose one silently.
+  Governance: specs in openspec/specs/ are authoritative once approved.
+  Implementation starts only after a maintainer adds the `spec-approved` label to
+  the change's Pull Request. Pull Requests come from the contributor's own fork.
+  Specification and implementation Pull Requests use `Refs #N`; the archive Pull
+  Request closes the issue with `Closes #N`. See AGENTS.md and CONTRIBUTING.md.
+  Change IDs use the form gh-<issue>-<kebab-summary>.
+
+rules:
+  proposal:
+    - "Start with a line `Issue: #<number>` naming the originating GitHub Issue"
+    - Include an "Out of Scope" section
+    - Name affected sections of manifest.md and architecture.md under Impact, or state that none are affected
+  specs:
+    - Every requirement must have at least one testable WHEN/THEN scenario that serves as an acceptance criterion
+    - Describe observable behavior only; no library, class or function names
+  design:
+    - Describe architectural implications and any conflict with manifest.md, architecture.md or existing specs
+    - List alternatives considered for each decision
+  tasks:
+    - Every task states how its completion is verified
+    - Include creating or updating the tests that cover the delta spec scenarios
+
+operations:
+  apply:
+    guidance:
+      - Confirm the Pull Request carries the `spec-approved` label before changing source code
+      - Never edit approved requirements to fit the implementation; stop and report the conflict instead
+  archive:
+    guidance:
+      - Archive only after the change's Pull Request is merged
+      - Open the archive Pull Request from a fork with `Closes #<issue>`, unless another change for the same issue is not archived yet; then use `Refs #<issue>`
