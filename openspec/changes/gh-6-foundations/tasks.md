@@ -9,7 +9,7 @@
 
 ## 2. CI
 
-- [ ] 2.1 Add `.github/workflows/services.yml`, with the licence header, running lint and tests for each Python service and building each image; verify in CI on this Pull Request, or by running the same steps locally if GitHub does not trigger it from a fork
+- [x] 2.1 Add `.github/workflows/services.yml`, with the licence header, running lint and tests for each Python service and building each image; verify in CI on this Pull Request, or by running the same steps locally if GitHub does not trigger it from a fork
 
 ## 3. Local environment
 
@@ -21,7 +21,7 @@
 ## 4. Integration check
 
 - [x] 4.1 Search the repository for credentials; verify none are committed, and that `.local/` is ignored
-- [ ] 4.2 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 4.2 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
 
 ## Workflow follow-up
 
