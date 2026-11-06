@@ -179,8 +179,9 @@ def test_the_other_sides_step_wins_over_a_refused_one_whatever_the_ids(harness):
     assert (messages[LOW], messages[HIGH]) == (False, True)
 
 
-def test_a_step_still_on_its_way_keeps_the_lower_id(harness):
-    """The own step here has status notified or in progress, not failed, so the ids decide."""
+@contextlib.contextmanager
+def own_close_in_progress(harness, message_id: str):
+    """This side's close is accepted, and its delivery is held at the connector for as long as this lasts."""
     release = []
 
     async def hold(_asset: str) -> None:
@@ -189,70 +190,49 @@ def test_a_step_still_on_its_way_keeps_the_lower_id(harness):
     async def make() -> None:
         release.append(asyncio.Event())
 
-    harness.run(make)
-    harness.send(conversation_id="c1", payload={})
-    harness.connector.on_offer = hold
-    with message_ids(MIDDLE):
-        harness.client.post(
-            "/outbox/messages",
-            json={
-                "receiver_participant": PEER,
-                "conversation_id": "c1",
-                "performative": "close",
-                "outcome": "resolved",
-            },
-            headers=auth(),
-        )
-    higher = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed", based_on=None)
-    assert (higher.status_code, higher.json()["applied"]) == (202, False)
-    assert higher.json()["state_message_id"] == MIDDLE
-    assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_RESOLVED"
-
-    lower = harness.notify(LOW, conversation_id="c1", performative="close", outcome="withdrawn", based_on=None)
-    assert (lower.status_code, lower.json()["applied"]) == (202, True)
-    assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_WITHDRAWN"
-
     async def go() -> None:
         release[0].set()
 
-    harness.run(go)
-    harness.settle()
+    harness.run(make)
+    harness.send(conversation_id="c1", payload={})
+    harness.connector.on_offer = hold
+    try:
+        with message_ids(message_id):
+            harness.client.post(
+                "/outbox/messages",
+                json={
+                    "receiver_participant": PEER,
+                    "conversation_id": "c1",
+                    "performative": "close",
+                    "outcome": "resolved",
+                },
+                headers=auth(),
+            )
+        yield
+    finally:
+        harness.run(go)
+        harness.settle()
+
+
+def test_a_step_still_on_its_way_keeps_the_lower_id(harness):
+    with own_close_in_progress(harness, MIDDLE):
+        higher = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed", based_on=None)
+        assert (higher.status_code, higher.json()["applied"]) == (202, False)
+        assert higher.json()["state_message_id"] == MIDDLE
+        assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_RESOLVED"
+
+        lower = harness.notify(LOW, conversation_id="c1", performative="close", outcome="withdrawn", based_on=None)
+        assert (lower.status_code, lower.json()["applied"]) == (202, True)
+        assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_WITHDRAWN"
 
 
 def test_a_step_based_on_one_that_lost_changes_nothing(harness):
-    release = []
-
-    async def hold(_asset: str) -> None:
-        await release[0].wait()
-
-    async def make() -> None:
-        release.append(asyncio.Event())
-
-    harness.run(make)
-    harness.send(conversation_id="c1", payload={})
-    harness.connector.on_offer = hold
-    with message_ids(LOW):
-        harness.client.post(
-            "/outbox/messages",
-            json={
-                "receiver_participant": PEER,
-                "conversation_id": "c1",
-                "performative": "close",
-                "outcome": "resolved",
-            },
-            headers=auth(),
-        )
-    lost = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed", based_on=None)
-    assert lost.json()["applied"] is False
-    follow = harness.notify(HIGHEST, conversation_id="c1", performative="reopen", based_on=HIGH)
-    assert (follow.status_code, follow.json()["applied"]) == (202, False)
-    assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_RESOLVED"
-
-    async def go() -> None:
-        release[0].set()
-
-    harness.run(go)
-    harness.settle()
+    with own_close_in_progress(harness, LOW):
+        lost = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed", based_on=None)
+        assert lost.json()["applied"] is False
+        follow = harness.notify(HIGHEST, conversation_id="c1", performative="reopen", based_on=HIGH)
+        assert (follow.status_code, follow.json()["applied"]) == (202, False)
+        assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_RESOLVED"
 
 
 @pytest.mark.parametrize("fo_first", [True, False], ids=["fo-lower", "mb-lower"])
