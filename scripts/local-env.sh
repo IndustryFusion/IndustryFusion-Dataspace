@@ -24,7 +24,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL="$ROOT/.local"
-CLUSTER="dataspace-local"
+CLUSTER="${DATASPACE_CLUSTER:-dataspace-local}"
 export KUBECONFIG="$LOCAL/kubeconfig"
 KEYCLOAK_ISSUER_BASE="http://keycloak-service.iff:8080/auth"
 SERVICES="registry gateway"

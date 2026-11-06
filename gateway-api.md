@@ -91,7 +91,9 @@ Multipart form. Returns `202` with the same body as `POST /outbox/messages`. The
 | `conversation_id` | no | |
 | `in_reply_to` | no | Marks the file as a reply |
 
-The largest accepted upload is set by the deployment and documented with it.
+The whole request, including its multipart framing, can be up to `MAX_UPLOAD_BYTES`, which each deployment sets on the gateway and adapters. The default is 1 GiB. Over that, the answer is `413`. An Ingress in front of the gateway must allow at least the same body size.
+
+A file's name in the ZIP keeps only its last path part. A repeated name gets a number, as in `data-2.csv`, and an empty one becomes `file-<n>`. Files are stored in the ZIP uncompressed.
 
 ### `GET /outbox/messages/{id}`
 
@@ -160,7 +162,7 @@ Returns `204`, and is safe to repeat. Content of a message that is not acknowled
 
 ### `GET /inbox/messages/{id}/download`
 
-Returns the message's files as a ZIP. Gives `400` if it has none.
+Returns the message's files as a ZIP, with the same bytes that were sent. Gives `400` if it has none, and `404` if they have not arrived yet, or have been removed by retention.
 
 ## Conversations
 
@@ -270,6 +272,7 @@ Sets access for one consumer, without a request.
 | `404` | Unknown message, conversation or request, or an unregistered receiver. `internal/*` paths also give `404` | Standard |
 | `409` | Message not allowed in this conversation state | See below |
 | `409` | Capability request already resolved | Standard |
+| `413` | The request is larger than `MAX_UPLOAD_BYTES` | Standard |
 | `422` | Message breaks a validity rule | See below |
 | `422` | Request does not match the schema | Standard validation body |
 | `502` | Keycloak's signing keys are unreachable | Standard |

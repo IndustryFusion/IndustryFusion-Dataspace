@@ -16,22 +16,30 @@
 
 """Sending messages."""
 
+import asyncio
 import json
 import logging
+import os
+import tempfile
 import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import require_participant
+from app.bundle import write_bundle
 from app.db import Conversation, OutboxMessage, iso, touch_conversation
 from app.delivery import deliver
 
 log = logging.getLogger("adapter")
 
 router = APIRouter(dependencies=[Depends(require_participant)])
+
+MOST_FILES = 1000
 
 
 class ContentRef(BaseModel):
@@ -78,14 +86,62 @@ async def send_message(body: OutgoingMessage, request: Request):
     peer = await services.registry.receiver(own_id, body.receiver_participant)
 
     message_id = str(uuid.uuid4())
-    conversation_id = body.conversation_id or str(uuid.uuid4())
     payload_ref = None
     if body.content_ref is None:
         try:
             payload_ref = await services.storage.put(f"messages/{message_id}.json", json.dumps(body.payload).encode())
         except Exception as error:
             raise HTTPException(status_code=503, detail="Object storage is unavailable") from error
+    return await _accept(services, body, message_id, payload_ref, peer, has_files=False)
 
+
+def _read_form_fields(form) -> tuple[OutgoingMessage, list[UploadFile]]:
+    """The fields of a file upload. They aren't declared on the route, so that the token is checked first."""
+    uploads = form.getlist("files")
+    if not uploads or not all(isinstance(upload, UploadFile) for upload in uploads):
+        raise HTTPException(status_code=422, detail="At least one file is required, as the form field files")
+    fields = {}
+    for name in ("receiver_participant", "performative", "capability", "in_reply_to", "conversation_id"):
+        value = form.get(name)
+        if isinstance(value, str) and value:
+            fields[name] = value
+    try:
+        return OutgoingMessage(**fields), uploads
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail="receiver_participant is required") from error
+
+
+@router.post("/outbox/files", status_code=202)
+async def send_files(request: Request):
+    services = request.app.state.services
+    own_id = services.settings.participant_id
+    try:
+        form = await request.form(max_files=MOST_FILES)
+    except StarletteHTTPException as error:
+        raise HTTPException(status_code=422, detail=f"The form can't be read: {error.detail}") from error
+    try:
+        body, uploads = _read_form_fields(form)
+        peer = await services.registry.receiver(own_id, body.receiver_participant)
+        message_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory(prefix="bundle-") as folder:
+            path = os.path.join(folder, "bundle.zip")
+            parts = [(upload.filename or "", upload.file) for upload in uploads]
+            await asyncio.to_thread(write_bundle, parts, path)
+            try:
+                payload_ref = await services.storage.put_file(f"files/{message_id}.zip", path)
+            except Exception as error:
+                raise HTTPException(status_code=503, detail="Object storage is unavailable") from error
+    finally:
+        await form.close()
+    return await _accept(services, body, message_id, payload_ref, peer, has_files=True)
+
+
+async def _accept(
+    services, body: OutgoingMessage, message_id: str, payload_ref: str | None, peer: dict, has_files: bool
+):
+    """Record a message whose content is stored, and start delivering it."""
+    own_id = services.settings.participant_id
+    conversation_id = body.conversation_id or str(uuid.uuid4())
     row = OutboxMessage(
         message_id=message_id,
         conversation_id=conversation_id,
@@ -134,6 +190,7 @@ async def send_message(body: OutgoingMessage, request: Request):
         "expires_at": iso(body.expires_at),
         "response_due_at": iso(body.response_due_at),
         "content_ref": row.content_ref,
+        "has_files": has_files,
     }
     services.spawn(deliver(services, notification, peer))
     return {"message_id": message_id, "status": "pending", "applied": True, "conversation_state": state}

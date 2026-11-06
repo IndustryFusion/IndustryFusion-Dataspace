@@ -17,8 +17,10 @@
 """Concurrent requests on a real PostgreSQL, named by TEST_POSTGRES_HOST. SQLite can't show these races."""
 
 import asyncio
+import io
 import os
 import uuid
+import zipfile
 
 import asyncpg
 import httpx
@@ -163,5 +165,36 @@ def test_concurrent_sends_on_a_new_conversation_all_succeed():
         assert await count(services, OutboxMessage) == 30
         assert await count(services, Conversation) == 1
         assert len(services.storage.objects) == 30
+
+    with_adapter(scenario)
+
+
+def test_concurrent_uploads_keep_their_own_bytes():
+    async def scenario(client: httpx.AsyncClient, services: Services) -> None:
+        together = asyncio.Barrier(12)
+        real_put_file = services.storage.put_file
+
+        async def put_file(key: str, path: str) -> str:
+            ref = await real_put_file(key, path)
+            await together.wait()
+            return ref
+
+        services.storage.put_file = put_file
+        contents = [os.urandom(50_000) for _ in range(12)]
+        form = {"receiver_participant": PEER, "conversation_id": "shared"}
+        answers = await asyncio.gather(
+            *[
+                client.post("/outbox/files", data=form, files={"files": ("data.bin", content)}, headers=auth())
+                for content in contents
+            ]
+        )
+        assert [answer.status_code for answer in answers] == [202] * 12
+        await services.settle()
+        for answer, content in zip(answers, contents, strict=True):
+            stored = services.storage.objects[f"s3://test/files/{answer.json()['message_id']}.zip"]
+            with zipfile.ZipFile(io.BytesIO(stored)) as archive:
+                assert archive.read("data.bin") == content
+        assert await count(services, OutboxMessage) == 12
+        assert await count(services, Conversation) == 1
 
     with_adapter(scenario)

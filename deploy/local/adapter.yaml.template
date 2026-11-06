@@ -54,6 +54,7 @@ spec:
             - { name: EDC_MANAGEMENT_URL, value: "http://connector-${SLUG}.dataspace-participants:8081/management" }
             - { name: EDC_DSP_URL, value: "http://connector-${SLUG}.dataspace-participants:8082/api/v1/dsp" }
             - { name: REGISTRY_URL, value: "http://registry.dataspace:19000" }
+            - { name: MAX_UPLOAD_BYTES, value: "1073741824" }
             - { name: KEYCLOAK_URL, value: "http://keycloak-service.iff:8080/auth" }
             - { name: KEYCLOAK_REALM, value: dataspace }
             - { name: SEAWEEDFS_ENDPOINT, value: "http://seaweedfs.iff:80" }

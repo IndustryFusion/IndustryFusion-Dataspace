@@ -17,6 +17,8 @@
 """Message content, kept in S3-compatible object storage."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Protocol
 
 import boto3
@@ -25,13 +27,25 @@ from botocore.exceptions import ClientError
 
 from app.config import Settings
 
+STREAM_CHUNK_BYTES = 1024**2
+
+
+@dataclass
+class StoredContent:
+    size: int
+    chunks: AsyncIterator[bytes]
+
 
 class Storage(Protocol):
     async def ensure_ready(self) -> None: ...
 
     async def put(self, key: str, content: bytes) -> str: ...
 
+    async def put_file(self, key: str, path: str) -> str: ...
+
     async def get(self, ref: str) -> bytes | None: ...
+
+    async def read_stream(self, ref: str) -> StoredContent | None: ...
 
     async def delete(self, ref: str) -> None: ...
 
@@ -64,6 +78,34 @@ class S3Storage:
         await asyncio.to_thread(self.client.put_object, Bucket=self.bucket, Key=key, Body=content)
         return f"s3://{self.bucket}/{key}"
 
+    async def put_file(self, key: str, path: str) -> str:
+        await asyncio.to_thread(self.client.upload_file, path, self.bucket, key)
+        return f"s3://{self.bucket}/{key}"
+
+    async def read_stream(self, ref: str) -> StoredContent | None:
+        def start() -> dict | None:
+            try:
+                return self.client.get_object(Bucket=self.bucket, Key=self._key(ref))
+            except ClientError as error:
+                if error.response["Error"]["Code"] in {"NoSuchKey", "404"}:
+                    return None
+                raise
+
+        answer = await asyncio.to_thread(start)
+        if answer is None:
+            return None
+        body = answer["Body"]
+
+        async def chunks() -> AsyncIterator[bytes]:
+            pieces = body.iter_chunks(STREAM_CHUNK_BYTES)
+            try:
+                while piece := await asyncio.to_thread(next, pieces, b""):
+                    yield piece
+            finally:
+                body.close()
+
+        return StoredContent(size=answer["ContentLength"], chunks=chunks())
+
     async def get(self, ref: str) -> bytes | None:
         def read() -> bytes | None:
             try:
@@ -93,8 +135,23 @@ class MemoryStorage:
         self.objects[ref] = content
         return ref
 
+    async def put_file(self, key: str, path: str) -> str:
+        with open(path, "rb") as source:
+            return await self.put(key, source.read())
+
     async def get(self, ref: str) -> bytes | None:
         return self.objects.get(ref)
+
+    async def read_stream(self, ref: str) -> StoredContent | None:
+        content = self.objects.get(ref)
+        if content is None:
+            return None
+
+        async def chunks() -> AsyncIterator[bytes]:
+            for start in range(0, len(content), STREAM_CHUNK_BYTES):
+                yield content[start : start + STREAM_CHUNK_BYTES]
+
+        return StoredContent(size=len(content), chunks=chunks())
 
     async def delete(self, ref: str) -> None:
         self.objects.pop(ref, None)
