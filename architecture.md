@@ -618,6 +618,20 @@ Defense-in-depth: even if the gateway misroutes a request, the adapter rejects i
 
 ---
 
+## Capability Access Is Advisory
+
+Each adapter records which capabilities its participant shares with whom, in `capability_policies` and `capability_approvals`. This record is **advisory**. It is reported to applications, and nothing enforces it:
+
+- No adapter or gateway reads capability policy when a message is sent or received, so a message naming a denied capability is still delivered.
+- The sending application is responsible for checking access with `GET /capabilities/access`, and for filtering what it shares.
+- `grant` and `deny` messages don't change approval records. Only the capability routes do.
+
+"Governed" in this document means the role rules and the conversation rules, which the dataspace does enforce, plus a shared record of who has agreed to what. It does not mean the dataspace stops data it was told not to share.
+
+The provider's adapter holds the record, and hosted adapters call each other's internal capability routes directly at `adapter_url`. External participants aren't covered yet: carrying these calls through the gateway's peer route belongs to #18.
+
+---
+
 ## Participant Types and Communication Rules
 
 Two participant types exist:
