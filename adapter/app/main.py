@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, OperationalError
 
@@ -79,6 +80,15 @@ def create_app(services: Services | None = None) -> FastAPI:
     @application.exception_handler(ClientError)
     async def unavailable(_: Request, __: Exception) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": "A dependency is unavailable"})
+
+    @application.exception_handler(RequestValidationError)
+    async def invalid_request(_: Request, error: RequestValidationError) -> JSONResponse:
+        # The usual answer repeats what was sent, which can be far larger than the error.
+        fields = ("loc", "msg", "type")
+        return JSONResponse(
+            status_code=422,
+            content={"detail": [{name: item[name] for name in fields if name in item} for item in error.errors()]},
+        )
 
     @application.get("/health")
     def health() -> dict[str, str]:

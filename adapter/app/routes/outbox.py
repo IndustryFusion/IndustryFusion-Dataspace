@@ -20,19 +20,22 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import tempfile
 import uuid
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartParser
 
 from app.auth import require_participant
 from app.bundle import write_bundle
-from app.conversations import apply, invalid_answer, locked_decision, refusal_text, refused_answer
+from app.conversations import apply, decide_to_send, invalid_answer, refusal_text, refused_answer
 from app.db import Conversation, OutboxMessage, iso
 from app.delivery import deliver
 from app.protocol import check_validity
@@ -41,7 +44,13 @@ log = logging.getLogger("adapter")
 
 router = APIRouter(dependencies=[Depends(require_participant)])
 
-MOST_FILES = 1000
+MOST_FILES = 256
+MOST_FIELDS = 16
+LONGEST_FIELD_BYTES = 64 * 1024
+# A file part leaves memory for disk after this. There is no setting for it on the form reader.
+MultiPartParser.spool_max_size = 64 * 1024
+
+Identifier = Annotated[str, Field(max_length=512)]
 
 
 class ContentRef(BaseModel):
@@ -50,13 +59,13 @@ class ContentRef(BaseModel):
 
 
 class OutgoingMessage(BaseModel):
-    receiver_participant: str
-    performative: str = "inform"
-    capability: str | None = None
-    in_reply_to: str | None = None
+    receiver_participant: Identifier
+    performative: Identifier = "inform"
+    capability: Identifier | None = None
+    in_reply_to: Identifier | None = None
     authorization: dict | None = None
-    outcome: str | None = None
-    conversation_id: str | None = None
+    outcome: Identifier | None = None
+    conversation_id: Identifier | None = None
     payload: dict | None = None
     content_ref: ContentRef | None = None
     reply_expected: bool = False
@@ -72,6 +81,11 @@ async def conversation_state(session, conversation_id: str) -> str | None:
 def _invalid(body: "OutgoingMessage") -> JSONResponse | None:
     invalid = check_validity(body.performative, body.capability, body.in_reply_to, body.authorization, body.outcome)
     return invalid_answer(invalid, body.performative) if invalid else None
+
+
+def _stored_json(payload: dict | None) -> bytes:
+    """Never larger than the body that carried it. A lone surrogate is written back as the escape it came as."""
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8", "backslashreplace")
 
 
 @router.post("/outbox/messages", status_code=202)
@@ -100,7 +114,7 @@ async def send_message(body: OutgoingMessage, request: Request):
     payload_ref = None
     if body.content_ref is None:
         try:
-            payload_ref = await services.storage.put(f"messages/{message_id}.json", json.dumps(body.payload).encode())
+            payload_ref = await services.storage.put(f"messages/{message_id}.json", _stored_json(body.payload))
         except Exception as error:
             raise HTTPException(status_code=503, detail="Object storage is unavailable") from error
     return await _accept(services, body, message_id, payload_ref, peer, has_files=False)
@@ -127,7 +141,7 @@ async def send_files(request: Request):
     services = request.app.state.services
     own_id = services.settings.participant_id
     try:
-        form = await request.form(max_files=MOST_FILES)
+        form = await request.form(max_files=MOST_FILES, max_fields=MOST_FIELDS, max_part_size=LONGEST_FIELD_BYTES)
     except StarletteHTTPException as error:
         raise HTTPException(status_code=422, detail=f"The form can't be read: {error.detail}") from error
     try:
@@ -172,7 +186,7 @@ async def _accept(
     gate = None
     try:
         async with services.db.session() as session:
-            conversation, decision = await locked_decision(
+            conversation, decision, based_on = await decide_to_send(
                 session, conversation_id, body.receiver_participant, body.performative, own_id, body.outcome
             )
             if decision.refused:
@@ -201,6 +215,7 @@ async def _accept(
                     response_due_at=body.response_due_at,
                     status="pending",
                     applied=decision.applied,
+                    based_on=based_on,
                 )
             )
             state = conversation.state
@@ -211,16 +226,18 @@ async def _accept(
                 "content_ref": content_ref,
                 "has_files": has_files,
                 "sender_applied": decision.applied,
+                "based_on": based_on,
             }
             gate = services.deliver_in_order(conversation_id, deliver(services, notification, peer))
             await session.commit()
     except Exception:
-        if gate is not None:
-            gate.set_result(False)
         # Without a row, retention could never remove what was just uploaded.
         await _remove_content(services, payload_ref, message_id)
         raise
-    gate.set_result(True)
+    finally:
+        # Also when accepting is cancelled, or the queue would wait for this gate for ever.
+        if gate is not None and not gate.done():
+            gate.set_result(sys.exc_info()[0] is None)
     return {"message_id": message_id, "status": "pending", "applied": decision.applied, "conversation_state": state}
 
 

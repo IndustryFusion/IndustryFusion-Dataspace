@@ -47,6 +47,7 @@ class Settings:
     keycloak_realm: str = field(default_factory=lambda: environ.get("KEYCLOAK_REALM", "dataspace"))
     registry_url: str = field(default_factory=lambda: environ.get("REGISTRY_URL", "").rstrip("/"))
     max_upload_bytes: int = field(default_factory=lambda: int(environ.get("MAX_UPLOAD_BYTES", str(1024**3))))
+    max_json_bytes: int = field(default_factory=lambda: int(environ.get("MAX_JSON_BYTES", str(4 * 1024**2))))
 
     @property
     def issuer(self) -> str:
@@ -301,7 +302,7 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="Receiver is not registered")
         target = f"{adapter_address(record)}/internal/transfer-request"
-        return await forward(http, request, target, settings.max_upload_bytes)
+        return await forward(http, request, target, settings.max_json_bytes)
 
     @application.api_route("/{path:path}", methods=METHODS)
     async def catch_all(path: str, request: Request) -> Response:
@@ -309,7 +310,8 @@ def create_app(
         cleaned = clean_path(request.scope.get("raw_path", path.encode()).decode().lstrip("/"))
         _, record = await caller(request)
         target = f"{adapter_address(record)}/{quote(cleaned, safe='/:')}"
-        return await forward(http, request, target, settings.max_upload_bytes)
+        limit = settings.max_upload_bytes if cleaned == "outbox/files" else settings.max_json_bytes
+        return await forward(http, request, target, limit)
 
     return application
 

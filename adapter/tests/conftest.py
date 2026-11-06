@@ -113,6 +113,7 @@ class World:
         self.notifications: list[dict] = []
         self.calls_to_peer: list[httpx.Request] = []
         self.peer_body: dict | None = None
+        self.peer_answer: dict | None = None
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -140,6 +141,8 @@ class World:
             self.notifications.append(
                 {"url": url, "body": json.loads(request.content), "auth": request.headers.get("Authorization")}
             )
+            if self.peer_answer is not None:
+                return httpx.Response(self.peer_status, json=self.peer_answer)
             return httpx.Response(self.peer_status, text="peer answer")
         raise AssertionError(f"Unexpected call: {url}")
 

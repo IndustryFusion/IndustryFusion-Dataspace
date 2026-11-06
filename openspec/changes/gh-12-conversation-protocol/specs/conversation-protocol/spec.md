@@ -61,7 +61,7 @@ The adapter SHALL apply the state rules in `protocol.md` in one transaction with
 - **THEN** the answer is `409`
 
 #### Scenario: Repeats that change nothing
-- **WHEN** `close` is sent on a closed conversation, `escalate` by the escalator while `ESCALATING`, or `reopen` while `OPEN`
+- **WHEN** `close` is sent on a closed conversation, `escalate` by the escalator while `ESCALATING`, or `reopen` while `OPEN`, and the sender's latest step reached the other side or is still on its way
 - **THEN** the answer is `202` with `applied: false`, and the state does not change
 
 #### Scenario: Other messages on a closed conversation
@@ -110,6 +110,26 @@ The receiver SHALL validate each notification, apply the same state rules to its
 - **WHEN** a notification says the sender did not apply the message
 - **THEN** the receiver's state does not change, and the message is delivered with `applied` false
 
+#### Scenario: Stated as not applied, to get past the rules
+- **WHEN** a notification says the sender did not apply it, and the rules would refuse it, or the conversation doesn't exist
+- **THEN** it is refused
+
+#### Scenario: Role rules
+- **WHEN** the sender's role isn't compatible, or it isn't registered
+- **THEN** the answer is forbidden, nothing is stored, no transfer starts, and the sender's message has status `rejected`
+
+#### Scenario: Another counterpart's refusal
+- **WHEN** a refusal goes to a participant that isn't the conversation's counterpart
+- **THEN** its `conversation_state` and `closed_at` are null
+
+#### Scenario: Content for a refused message
+- **WHEN** content is pushed to a refused message
+- **THEN** the answer is not found, and the row stays as it was
+
+#### Scenario: A settled state
+- **WHEN** a counterpart sends a step naming an older base, with any message id, after the receiver's own step has been answered
+- **THEN** the state does not change, and the message reads `applied` false
+
 #### Scenario: Repeated notification
 - **WHEN** the same notification arrives twice
 - **THEN** the state changes once, and there is one entry
@@ -145,9 +165,36 @@ Two participants SHALL hold the same `state` and `outcome` after each flow, with
 - **WHEN** both sides send `escalate` before seeing the other's
 - **THEN** both are `ESCALATING` with the same `escalated_by`, the sender of the lower message id
 
+#### Scenario: Other crossing steps
+- **WHEN** one side's `close`, or `close` and `reopen`, crosses the other side's `close` or `escalate`
+- **THEN** both end in the state of the branch whose first step has the lower message id, and the other branch reads `applied: false`
+
 #### Scenario: Ordered on one conversation
 - **WHEN** a side sends several state-changing messages on a conversation, without waiting
 - **THEN** the receiver applies them in the order the sender accepted them, and both end in the same state
+
+### Requirement: After a failed notification
+The sender's state SHALL stay moved when a notification fails, and the two sides SHALL have a way to agree again.
+
+#### Scenario: The sender repeats the step
+- **WHEN** a step's notification failed or was refused, and the sender sends the same performative again
+- **THEN** the repeat reads `applied: true` and replaces it, and both sides end in the state of the repeat
+
+#### Scenario: A repeat accepted before the failure
+- **WHEN** a repeat was accepted while the earlier step was still in progress, and that step then fails
+- **THEN** the repeat replaces it when its turn comes, and both sides end in its state
+
+#### Scenario: The answer was lost
+- **WHEN** a step arrived but its answer was lost, and the sender repeats it with another outcome
+- **THEN** both sides end in the state of the first, which reads `applied: true` and `notified`
+
+#### Scenario: The other side's step
+- **WHEN** a step's notification failed or was refused, and the other side's step arrives
+- **THEN** the other side's step wins whatever the ids, and both sides end in its state
+
+#### Scenario: Status of a repeat
+- **WHEN** a repeat reads `notified`
+- **THEN** the other side has the state, or the status has an `error_message` naming the state it holds
 
 ### Requirement: Concurrent messages
 Concurrent messages on one conversation SHALL all be kept, and SHALL change its state as if they ran one at a time.

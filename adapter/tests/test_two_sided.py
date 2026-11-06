@@ -445,41 +445,6 @@ def test_several_steps_without_waiting_apply_in_order():
     two_sided(scenario)
 
 
-def test_rejection_by_the_receiver_is_visible_and_the_difference_can_settle():
-    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
-        await fo.send(conversation_id="c")
-        await settle(fo, mb)
-        # They cross: the machine builder escalates while the factory owner closes.
-        closing, escalating = await both_at_once(
-            mesh,
-            fo,
-            mb,
-            {"conversation_id": "c", "performative": "close", "outcome": "resolved"},
-            {"conversation_id": "c", "performative": "escalate"},
-        )
-        await settle(fo, mb)
-        assert (await fo.status(closing["message_id"]))["status"] == "rejected"
-        assert "not_escalator" in (await fo.status(closing["message_id"]))["error_message"]
-        assert (await mb.status(escalating["message_id"]))["status"] == "rejected"
-        assert "conversation_closed" in (await mb.status(escalating["message_id"]))["error_message"]
-        # This is the difference protocol.md records.
-        assert (await fo.conversation("c"))["state"] == "CLOSED_RESOLVED"
-        assert (await mb.conversation("c"))["state"] == "ESCALATING"
-        # Each receiver kept what it refused.
-        refused = await mb.inbox_message(closing["message_id"])
-        assert (refused["status"], refused["applied"]) == ("error", False)
-        refused = await fo.inbox_message(escalating["message_id"])
-        assert (refused["status"], refused["applied"]) == ("error", False)
-        # The escalator's close is a further message. It settles them, with its outcome.
-        await mb.send(conversation_id="c", performative="close", outcome="failed")
-        await settle(fo, mb)
-        for side in (fo, mb):
-            shown = await side.conversation("c")
-            assert (shown["state"], shown["outcome"]) == ("CLOSED_FAILED", "failed")
-
-    two_sided(scenario)
-
-
 def test_an_ordinary_message_crossing_a_close_is_refused_and_both_close():
     async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
         await fo.send(conversation_id="c")

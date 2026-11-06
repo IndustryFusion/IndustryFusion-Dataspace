@@ -13,13 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-"""The upload limit, for routes that read a body."""
+"""Limits on request bodies. A declared JSON body is read whole and parsed before a route checks its token."""
 
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # Content pushed by a connector is checked by its own route, as it also has to mark the message.
 OWN_CHECK = "/internal/inbox-receive/"
+FILES_ROUTE = "/outbox/files"
+MESSAGES_ROUTE = "/outbox/messages"
+# Enough for any request that isn't carrying a message's content.
+CONTROL_BODY_BYTES = 256 * 1024
 # A ZIP is a little larger than what was sent in it, so its arrival is allowed this much more.
 ARRIVAL_MARGIN_BYTES = 1024**2
 
@@ -28,12 +32,25 @@ class BodyTooLarge(Exception):
     pass
 
 
+def limit_for(path: str, settings) -> int:
+    if path == FILES_ROUTE:
+        return settings.max_upload_bytes
+    if path == MESSAGES_ROUTE:
+        return settings.max_json_bytes
+    return CONTROL_BODY_BYTES
+
+
+def arrival_limit(has_files: bool, settings) -> int:
+    """What may be pushed to a message. Content without files is read into memory when an agent reads it."""
+    return settings.max_upload_bytes + ARRIVAL_MARGIN_BYTES if has_files else settings.max_json_bytes
+
+
 def over_limit(stated: str | None, limit: int) -> bool:
     return stated is not None and stated.isdigit() and int(stated) > limit
 
 
 class BodyLimit:
-    """Refuse a body over the limit, whether or not it states its length, and however a route reads it."""
+    """Refuse a body over its route's limit, whether or not it states its length, and however a route reads it."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -42,7 +59,7 @@ class BodyLimit:
         if scope["type"] != "http" or scope["path"].startswith(OWN_CHECK):
             await self.app(scope, receive, send)
             return
-        limit = scope["app"].state.services.settings.max_upload_bytes
+        limit = limit_for(scope["path"], scope["app"].state.services.settings)
         if over_limit(Headers(scope=scope).get("content-length"), limit):
             await self._refuse(send)
             return

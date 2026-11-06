@@ -60,6 +60,8 @@ class MessageColumns:
     response_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String, index=True)
     applied: Mapped[bool] = mapped_column(Boolean, default=True)
+    # For a state-changing step, the step that set the sender's copy when it was accepted.
+    based_on: Mapped[str | None] = mapped_column(String)
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

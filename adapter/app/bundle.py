@@ -16,6 +16,7 @@
 """Bundling uploaded files into one ZIP."""
 
 import os
+import re
 import shutil
 import time
 import zipfile
@@ -23,14 +24,20 @@ from typing import BinaryIO
 
 COPY_CHUNK_BYTES = 1024**2
 LONGEST_NAME = 200
+# Reserved on Windows, with or without an ending.
+RESERVED = re.compile(r"(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?", re.IGNORECASE)
 
 
 def safe_name(raw: str, position: int, taken: set[str]) -> str:
     """A name that stays inside the folder it is unpacked to, and replaces no other file there."""
-    base = raw.replace("\\", "/").rsplit("/", 1)[-1]
-    base = "".join(character for character in base if character.isprintable()).strip()
-    if base in {"", ".", ".."}:
+    # A colon starts a drive or an alternate data stream on Windows, so it separates parts as well.
+    base = re.split(r"[/\\:]", raw)[-1]
+    # Windows drops trailing dots and spaces, which would turn "CON." into "CON" and ".." into nothing.
+    base = "".join(character for character in base if character.isprintable()).strip().rstrip(". ")
+    if not base:
         base = f"file-{position}"
+    if RESERVED.fullmatch(base):
+        base = f"_{base}"
     stem, suffix = os.path.splitext(base)
     stem, suffix = stem[: LONGEST_NAME - len(suffix[:20])], suffix[:20]
     candidate = stem + suffix
