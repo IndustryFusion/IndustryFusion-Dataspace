@@ -483,6 +483,26 @@ def conversation_burst(owner: Agent, builder: Agent, count: int = BURST) -> None
     assert len(winners) == 1, winners
     expect_same(owner, builder, closes, f"CLOSED_{winners[0].upper()}", winners[0])
     print(f"Closes racing on one side: {len(outcomes)} accepted, one applied, the same state on both sides")
+def size_limits(owner: Agent) -> None:
+    """Routes other than the file route refuse a large body, with or without a stated length."""
+    large = {"receiver_participant": MACHINE_BUILDER, "payload": {"x": "a" * (5 * 1024**2)}}
+    status, _ = lc.http("POST", f"{owner.base}/outbox/messages", large, owner.headers())
+    assert status == 413, status
+    route = f"{owner.base}/peer/{MACHINE_BUILDER}/internal/transfer-request"
+    status, _ = lc.http("POST", route, large, owner.headers())
+    assert status == 413, status
+    print("JSON over 4 MiB: 413, on the agent route and the peer route")
+
+    with tempfile.NamedTemporaryFile(suffix=".json") as body:
+        body.write(json.dumps(large).encode())
+        body.flush()
+        code = curl(
+            "-o", "/dev/null", "-w", "%{http_code}", "-H", f"Authorization: {owner.headers()['Authorization']}",
+            "-H", "Content-Type: application/json", "-H", "Transfer-Encoding: chunked",
+            "--data-binary", f"@{body.name}", f"{owner.base}/outbox/messages",
+        )  # fmt: skip
+    assert code == "413", code
+    print("JSON over 4 MiB with no stated length: 413")
 
 
 def isolation(owner: Agent, builder: Agent, delivered_to_builder: str) -> None:
@@ -545,6 +565,7 @@ def main() -> int:
                 conversations(owner, builder)
                 simultaneous_close(owner, builder)
                 conversation_burst(owner, builder)
+                size_limits(owner)
             print("PASS")
             return 0
         finally:
