@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Streaming and upload limit
-The gateway SHALL forward request and answer bodies as they arrive, and SHALL refuse a request body over the configured limit, `MAX_UPLOAD_BYTES`, with payload too large.
+The gateway SHALL forward request and answer bodies as they arrive, and SHALL refuse a request body over the configured limit with payload too large. The limit is `MAX_UPLOAD_BYTES` for `POST /outbox/files`, and `MAX_JSON_BYTES` for anything else.
 
 #### Scenario: Large body
 - **WHEN** a body is forwarded in either direction

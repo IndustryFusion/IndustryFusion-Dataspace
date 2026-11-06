@@ -40,6 +40,10 @@ The ZIP SHALL contain every file sent, under a name that can't unpack outside it
 - **WHEN** two files have the same name
 - **THEN** both are in the ZIP, under different names
 
+#### Scenario: Name that means something to a file system
+- **WHEN** a file's name has a drive letter or a stream such as `C:evil.exe`, is reserved such as `CON`, or ends in dots
+- **THEN** its entry has no colon, isn't a reserved name and doesn't end in a dot
+
 #### Scenario: Empty name
 - **WHEN** a file's name is empty or has nothing usable
 - **THEN** it is in the ZIP under a generated name
@@ -87,6 +91,36 @@ The services SHALL refuse a body over the configured limit, `MAX_UPLOAD_BYTES`, 
 #### Scenario: Over the limit on arrival
 - **WHEN** content pushed to a message exceeds the limit
 - **THEN** the answer is payload too large, nothing is stored, and the message shows an error
+
+### Requirement: Small limit for other bodies
+Every adapter route other than the file routes SHALL refuse a body over its small limit while reading, before parsing it and before checking a token: `MAX_JSON_BYTES` for `POST /outbox/messages`, and 256 KiB otherwise. Only the file routes SHALL have the large limit.
+
+#### Scenario: Stated length
+- **WHEN** a request to such a route states a length over its limit
+- **THEN** the answer is payload too large, and none of the body is read
+
+#### Scenario: Unstated length
+- **WHEN** a request to such a route has no stated length, and its body passes the limit
+- **THEN** the answer is payload too large, and reading stops there
+
+#### Scenario: Validation error
+- **WHEN** a request fails validation
+- **THEN** the answer doesn't repeat the values sent
+
+#### Scenario: Stored size
+- **WHEN** a message under `MAX_JSON_BYTES` holds non-ASCII text
+- **THEN** it arrives at the receiver within the same limit
+
+### Requirement: Memory for a form
+Reading a multipart form SHALL NOT hold its parts in memory beyond a small size each, and a form SHALL have a limited number of parts.
+
+#### Scenario: Many small files
+- **WHEN** an upload has many files each under 1 MiB
+- **THEN** the adapter's memory stays far below their total size
+
+#### Scenario: Too many parts
+- **WHEN** a form has more files or fields than allowed
+- **THEN** it is refused as invalid
 
 ### Requirement: Retention of files
 File content SHALL follow the same retention rules as message content.
