@@ -16,8 +16,10 @@
 """File transfer: uploading, bundling, arrival, download and the upload limit."""
 
 import io
+import json
 import os
 import tempfile
+import tracemalloc
 import zipfile
 from dataclasses import replace
 from datetime import timedelta
@@ -29,6 +31,7 @@ from sqlalchemy import func, select
 
 from app.bundle import safe_name
 from app.db import InboxMessage, OutboxMessage, now
+from app.limits import limit_for
 from app.retention import purge_expired
 
 
@@ -352,13 +355,13 @@ def test_upload_at_the_limit_is_accepted(harness):
 
 
 def test_a_json_message_over_the_limit_is_refused(harness):
-    limit_to(harness, 100)
+    harness.services.settings = replace(harness.services.settings, max_json_bytes=100)
     response = harness.send(payload={"a": "x" * 500})
     assert response.status_code == 413
 
 
 def test_a_json_message_with_no_stated_length_over_the_limit_is_refused(harness):
-    limit_to(harness, 100)
+    harness.services.settings = replace(harness.services.settings, max_json_bytes=100)
 
     def parts():
         yield b'{"receiver_participant": "x", "payload": {"a": "'
@@ -441,3 +444,211 @@ def test_sender_retention_removes_the_zip(harness):
     harness.run(purge_expired, harness.services)
     assert harness.storage.objects == {}
     assert harness.client.get(f"/internal/payload/{message_id}").status_code == 404
+
+
+def call_with_a_counted_body(harness, path: str, body: bytes, headers: list[tuple[bytes, bytes]]) -> tuple[int, int]:
+    """Call the app as a server would, in pieces, and return its status and how much of the body it read."""
+    pieces = [body[start : start + 65536] for start in range(0, len(body), 65536)]
+    position = {"next": 0, "read": 0}
+    sent = []
+
+    async def receive() -> dict:
+        index = position["next"]
+        if index < len(pieces):
+            position["next"] += 1
+            position["read"] += len(pieces[index])
+            return {"type": "http.request", "body": pieces[index], "more_body": index + 1 < len(pieces)}
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "scheme": "http",
+        "server": ("adapter", 8000),
+        "client": ("test", 1),
+        "headers": headers,
+    }
+
+    async def call() -> None:
+        await harness.client.app(scope, receive, send)
+
+    harness.run(call)
+    return sent[0]["status"], position["read"]
+
+
+JSON_ROUTES = ["/outbox/messages", "/internal/transfer-request"]
+
+
+@pytest.mark.parametrize("path", JSON_ROUTES)
+def test_other_routes_stop_reading_at_their_limit_without_a_stated_length(harness, path):
+    body = b'{"x":"' + b"a" * (8 * 1024**2) + b'"}'
+    headers = [(b"content-type", b"application/json"), (b"authorization", b"Bearer not-a-token")]
+    status, read = call_with_a_counted_body(harness, path, body, headers)
+    assert status == 413
+    assert read <= limit_for(path, harness.services.settings) + 65536
+
+
+@pytest.mark.parametrize("path", JSON_ROUTES)
+def test_other_routes_read_nothing_with_a_stated_length_over_their_limit(harness, path):
+    body = b"x" * (8 * 1024**2)
+    headers = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]
+    assert call_with_a_counted_body(harness, path, body, headers) == (413, 0)
+
+
+def test_only_the_file_route_has_the_large_limit(harness):
+    settings = harness.services.settings
+    assert limit_for("/outbox/files", settings) == settings.max_upload_bytes == 1024**3
+    assert limit_for("/outbox/messages", settings) == settings.max_json_bytes == 4 * 1024**2
+    assert limit_for("/internal/transfer-request", settings) == 256 * 1024
+    assert limit_for("/outbox/files/", settings) == 256 * 1024
+
+
+def test_validation_errors_do_not_repeat_the_input(harness):
+    marker = "m" * 5000
+    bodies = [
+        {"receiver_participant": 1, "payload": {"a": marker}, "expires_at": marker},
+        {"receiver_participant": marker * 2, "payload": {}},
+    ]
+    for body in bodies:
+        response = harness.client.post("/outbox/messages", json=body, headers=auth())
+        assert response.status_code == 422
+        assert marker not in response.text
+        assert all(set(item) <= {"loc", "msg", "type"} for item in response.json()["detail"])
+    notification = {"message_id": "m1", "conversation_id": marker, "sender_participant": PEER}
+    response = harness.client.post("/internal/transfer-request", json=notification)
+    assert response.status_code == 422
+    assert marker not in response.text
+
+
+def test_stored_json_is_no_larger_than_its_body(harness):
+    text = "é" * 1000 + "\u4e16" * 1000
+    body = json.dumps({"receiver_participant": PEER, "payload": {"t": text}}, ensure_ascii=False).encode()
+    headers = {**auth(), "Content-Type": "application/json"}
+    response = harness.client.post("/outbox/messages", content=body, headers=headers)
+    harness.settle()
+    assert response.status_code == 202
+    stored = harness.storage.objects[f"s3://test/messages/{response.json()['message_id']}.json"]
+    assert len(stored) <= len(body)
+    assert json.loads(stored) == {"t": text}
+
+
+def test_a_lone_surrogate_is_stored_as_the_escape_it_came_as(harness):
+    body = b'{"receiver_participant": "' + PEER.encode() + b'", "payload": {"t": "\\ud800"}}'
+    headers = {**auth(), "Content-Type": "application/json"}
+    response = harness.client.post("/outbox/messages", content=body, headers=headers)
+    harness.settle()
+    assert response.status_code == 202
+    assert harness.storage.objects[f"s3://test/messages/{response.json()['message_id']}.json"] == b'{"t": "\\ud800"}'
+
+
+def test_arrival_without_files_has_the_json_limit(harness):
+    assert harness.notify("plain").status_code == 202
+    harness.settle()
+    harness.services.settings = replace(harness.services.settings, max_json_bytes=10)
+    assert harness.client.post("/internal/inbox-receive/plain", content=b"x" * 11).status_code == 413
+    harness.services.settings = replace(harness.services.settings, max_json_bytes=4 * 1024**2)
+    assert harness.client.get("/inbox/messages/plain", headers=auth()).json()["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("C:evil.exe", "evil.exe"),
+        ("C:..", "file-3"),
+        ("c:/../x", "x"),
+        ("foo\\bar:baz.txt", "baz.txt"),
+        ("CON", "_CON"),
+        ("con.txt", "_con.txt"),
+        ("Lpt1", "_Lpt1"),
+        ("CON.", "_CON"),
+        ("evil.exe. . ", "evil.exe"),
+        ("\u202eevil", "evil"),
+        ("console.txt", "console.txt"),
+    ],
+)
+def test_names_with_a_meaning_to_a_file_system(raw, expected):
+    assert safe_name(raw, 3, set()) == expected
+
+
+def test_too_many_files_or_fields_are_invalid(harness):
+    many = [("files", (f"f{number}", b"x")) for number in range(257)]
+    form = {"receiver_participant": PEER}
+    assert harness.client.post("/outbox/files", data=form, files=many, headers=auth()).status_code == 422
+    fields = {f"field{number}": "x" for number in range(20)}
+    answer = harness.client.post(
+        "/outbox/files", data={**form, **fields}, files=[("files", ("a", b"x"))], headers=auth()
+    )
+    assert answer.status_code == 422
+    answer = harness.client.post(
+        "/outbox/files", data={**form, "capability": "x" * 70000}, files=[("files", ("a", b"x"))], headers=auth()
+    )
+    assert answer.status_code == 422
+    assert harness.storage.objects == {}
+
+
+def test_many_small_parts_stay_out_of_memory(harness, monkeypatch):
+    """100 parts of 512 KiB each. The body is generated as it is read, and storage discards it."""
+    part = b"z" * (512 * 1024)
+    boundary = "x"
+    chunks = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="receiver_participant"\r\n\r\n{PEER}\r\n'.encode()
+    ]
+    for number in range(100):
+        start = f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="f{number}"\r\n\r\n'
+        chunks += [start.encode(), part, b"\r\n"]
+    chunks.append(f"--{boundary}--\r\n".encode())
+    sent = []
+
+    position = {"next": 0}
+
+    async def next_chunk() -> dict:
+        index = position["next"]
+        position["next"] += 1
+        return {"type": "http.request", "body": chunks[index], "more_body": index + 1 < len(chunks)}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    async def discard(key: str, _path: str) -> str:
+        return f"s3://test/{key}"
+
+    monkeypatch.setattr(harness.storage, "put_file", discard)
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/outbox/files",
+        "raw_path": b"/outbox/files",
+        "query_string": b"",
+        "root_path": "",
+        "scheme": "http",
+        "server": ("adapter", 8000),
+        "client": ("test", 1),
+        "headers": [
+            (b"content-type", f"multipart/form-data; boundary={boundary}".encode()),
+            (b"authorization", auth()["Authorization"].encode()),
+        ],
+    }
+
+    async def call() -> int:
+        tracemalloc.start()
+        try:
+            await harness.client.app(scope, next_chunk, send)
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    peak = harness.run(call)
+    harness.settle()
+    assert sent[0]["status"] == 202
+    assert peak < 20 * 1024**2, f"{peak / 1024**2:.0f} MiB of 50 MiB stayed in memory"

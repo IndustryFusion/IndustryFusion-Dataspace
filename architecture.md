@@ -247,7 +247,7 @@ Adapter: validates the same JWT again (defense-in-depth: checks participant role
 
 The gateway does not know about participant types, contract negotiation, or EDC. It only routes.
 
-Bodies are streamed in both directions, not held in memory. `MAX_UPLOAD_BYTES` (default 1 GiB) limits a request's size, and the gateway and adapters enforce it with `413`. An Ingress in front of the gateway must allow the same body size.
+Bodies are streamed in both directions, not held in memory. `MAX_UPLOAD_BYTES` (default 1 GiB) limits `POST /outbox/files`, and `MAX_JSON_BYTES` (default 4 MiB) limits every other request. The gateway and adapters enforce them with `413`, and an adapter gives routes that carry no message content 256 KiB. An Ingress in front of the gateway must allow the larger body size.
 
 ### Participant Registry
 

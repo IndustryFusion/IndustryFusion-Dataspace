@@ -129,6 +129,7 @@ These behaviours are deliberately not provided at this stage:
 - **No idempotency key.** Retrying a send can create a second message.
 - **A restart strands messages in progress.** Sending and fetching run inside the adapter process. A message in progress when it stops stays in its current status, with no retry, and retention does not remove it.
 - **No ordering across messages.** Each message runs its own transfer, so a later message can arrive first.
+- **Content without files is limited to `MAX_JSON_BYTES` on arrival,** including a `content_ref` asset, as it is read into memory when an agent reads the message. A larger asset gives the message status `error`.
 - **Every message runs a full connector cycle,** including messages with an empty payload.
 - **Connector policies permit everything,** and DSP identity is mocked. Tracked in #20.
 - **The connector's calls to internal adapter routes are unauthenticated.** Tracked in #20.
