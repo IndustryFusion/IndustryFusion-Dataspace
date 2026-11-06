@@ -14,16 +14,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-"""Shows two participants exchanging messages in both directions through their connectors.
+"""Shows the definition of done in manifest.md: two agents exchanging messages in both directions.
 
-Needs scripts/local-env.sh up and scripts/local-env.sh services. It creates two
-participants, runs the exchange, and removes them again. Set --keep to leave them running.
+The agents use only the gateway and Keycloak. Messages travel through the adapters and connectors.
+Needs scripts/local-env.sh up and scripts/local-env.sh services. It creates two participants,
+runs the exchange, and removes them again. Set --keep to leave them running.
 """
 
 import argparse
 import secrets
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import local_cluster as lc
 
@@ -31,6 +33,8 @@ FACTORY_OWNER = "urn:check:factory-owner"
 MACHINE_BUILDER = "urn:check:machine-builder"
 KEYCLOAK_NS, KEYCLOAK_SERVICE, KEYCLOAK_PORT = "iff", "keycloak-service", 8080
 REGISTRY_NS, REGISTRY_SERVICE, REGISTRY_PORT = "dataspace", "registry", 19000
+GATEWAY_NS, GATEWAY_SERVICE, GATEWAY_PORT = "dataspace", "gateway", 8080
+BURST = 12
 
 
 def setup(keycloak: str, registry: str, key: str) -> dict[str, str]:
@@ -110,7 +114,7 @@ class Agent:
         return message
 
 
-def exchange(owner: Agent, builder: Agent) -> None:
+def exchange(owner: Agent, builder: Agent) -> str:
     question = {"summary": f"Spindle temperature alarm {uuid.uuid4().hex}"}
     sent = owner.send(MACHINE_BUILDER, performative="request", reply_expected=True, payload=question)
     received = builder.receive(sent)
@@ -137,10 +141,86 @@ def exchange(owner: Agent, builder: Agent) -> None:
     assert received["error_message"] is None
     print("Empty payload: delivered, not an error")
 
-    nobody = {"receiver_participant": "urn:check:nobody", "payload": {}}
-    status, _ = lc.http("POST", f"{builder.base}/outbox/messages", nobody, builder.headers())
+    status, _ = lc.http(
+        "POST",
+        f"{builder.base}/outbox/messages",
+        {"receiver_participant": "urn:check:nobody", "payload": {}},
+        builder.headers(),
+    )
     assert status == 404, status
     print("Unregistered receiver: 404")
+
+    return sent
+
+
+def burst(owner: Agent, builder: Agent, count: int = BURST) -> None:
+    """Many messages opening one new conversation at once must all arrive, with none taken for a duplicate."""
+    conversation = str(uuid.uuid4())
+    headers = owner.headers()
+    bodies = [
+        {"receiver_participant": MACHINE_BUILDER, "conversation_id": conversation, "payload": {"item": item}}
+        for item in range(count)
+    ]
+
+    def post(body: dict) -> str:
+        status, answer = lc.http("POST", f"{owner.base}/outbox/messages", body, headers)
+        assert status == 202, (status, answer)
+        return answer["message_id"]
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        sent = list(pool.map(post, bodies))
+    assert len(set(sent)) == count
+    print(f"Burst: {count} concurrent sends accepted")
+
+    for item, message_id in enumerate(sent):
+        received = builder.receive(message_id)
+        assert received["payload"] == {"item": item}, received
+        assert received["conversation_id"] == conversation, received
+    print(f"Burst: all {count} delivered to the receiver, in one conversation")
+
+    def transfer_id(message_id: str) -> str | None:
+        _, state = lc.http("GET", f"{owner.base}/outbox/messages/{message_id}/status", headers=owner.headers())
+        assert state["status"] == "notified", state
+        return state["edc_transfer_id"]
+
+    for message_id in sent:
+        lc.poll(lambda chosen=message_id: transfer_id(chosen), timeout=30, what=f"the transfer id of {message_id}")
+    print("Burst: every sender status has a transfer id")
+
+
+def isolation(owner: Agent, builder: Agent, delivered_to_builder: str) -> None:
+    base = owner.base
+    status, _ = lc.http("GET", f"{base}/inbox/messages")
+    assert status == 401, status
+    print("No token: 401")
+
+    status, peers = lc.http("GET", f"{base}/participants/compatible", headers=owner.headers())
+    assert status == 200 and [peer["participant_id"] for peer in peers] == [MACHINE_BUILDER], peers
+    print("Compatible participants: the machine builder")
+
+    status, _ = lc.http("GET", f"{builder.base}/inbox/messages/{delivered_to_builder}", headers=builder.headers())
+    assert status == 200, status
+    status, _ = lc.http("GET", f"{base}/inbox/messages/{delivered_to_builder}", headers=owner.headers())
+    assert status == 404, status
+    print("The other participant's message: 404 with this token, 200 with its own")
+
+    for path in ("/internal/payload/x", "/INTERNAL/payload/x", "/%69nternal/payload/x", "/inbox/../internal/payload/x"):
+        status, _ = lc.http("GET", f"{base}{path}", headers=owner.headers())
+        assert status == 404, (path, status)
+    print("internal paths through the gateway: 404")
+
+    notification = {
+        "message_id": "forged",
+        "conversation_id": "forged",
+        "sender_participant": MACHINE_BUILDER,
+        "receiver_participant": MACHINE_BUILDER,
+        "asset_id": "forged",
+        "provider_dsp_url": "http://nowhere",
+    }
+    route = f"{base}/peer/{MACHINE_BUILDER}/internal/transfer-request"
+    status, _ = lc.http("POST", route, notification, owner.headers())
+    assert status == 403, status
+    print("Peer route: reaches the receiver, which refuses a stated sender the token doesn't match")
 
 
 def main() -> int:
@@ -156,14 +236,12 @@ def main() -> int:
         keycloak = f"{keycloak_root}/auth"
         try:
             client_secrets = setup(keycloak, registry, key)
-            with (
-                lc.port_forward(lc.PARTICIPANTS, f"adapter-{lc.slug(FACTORY_OWNER)}", 8000) as owner_url,
-                lc.port_forward(lc.PARTICIPANTS, f"adapter-{lc.slug(MACHINE_BUILDER)}", 8000) as builder_url,
-            ):
-                owner = Agent("factory owner", FACTORY_OWNER, client_secrets[FACTORY_OWNER], keycloak, owner_url)
-                builder_secret = client_secrets[MACHINE_BUILDER]
-                builder = Agent("machine builder", MACHINE_BUILDER, builder_secret, keycloak, builder_url)
-                exchange(owner, builder)
+            with lc.port_forward(GATEWAY_NS, GATEWAY_SERVICE, GATEWAY_PORT) as gateway:
+                owner = Agent("factory owner", FACTORY_OWNER, client_secrets[FACTORY_OWNER], keycloak, gateway)
+                builder = Agent("machine builder", MACHINE_BUILDER, client_secrets[MACHINE_BUILDER], keycloak, gateway)
+                delivered = exchange(owner, builder)
+                isolation(owner, builder, delivered)
+                burst(owner, builder)
             print("PASS")
             return 0
         finally:
