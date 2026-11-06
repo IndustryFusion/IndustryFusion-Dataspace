@@ -111,6 +111,8 @@ class World:
         self.peer_status = 202
         self.peer_error: Exception | None = None
         self.notifications: list[dict] = []
+        self.calls_to_peer: list[httpx.Request] = []
+        self.peer_body: dict | None = None
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -130,6 +132,11 @@ class World:
         if url.startswith("http://peer.test"):
             if self.peer_error:
                 raise self.peer_error
+            self.calls_to_peer.append(request)
+            if self.peer_body is not None:
+                return httpx.Response(self.peer_status, json=self.peer_body)
+            if "/internal/capabilities" in url:
+                return httpx.Response(self.peer_status, text="peer answer")
             self.notifications.append(
                 {"url": url, "body": json.loads(request.content), "auth": request.headers.get("Authorization")}
             )
@@ -173,6 +180,8 @@ class Harness:
 def harness(tmp_path):
     settings = Settings(
         participant_id=ME,
+        participant_type="factory_owner",
+        adapter_internal_key="test-internal-key",
         adapter_url="http://me.test",
         edc_dsp_url="http://me-connector.test/dsp",
         keycloak_url="http://keycloak.test",

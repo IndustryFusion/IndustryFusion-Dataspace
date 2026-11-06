@@ -18,7 +18,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, String, Text, inspect, text
+from sqlalchemy import JSON, Boolean, DateTime, String, Text, UniqueConstraint, inspect, text
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -94,6 +94,34 @@ class Conversation(Base):
     escalated_by: Mapped[str | None] = mapped_column(String)
     # The message that made the state what it is. Used to settle simultaneous steps.
     state_message_id: Mapped[str | None] = mapped_column(String)
+
+
+class CapabilityPolicy(Base):
+    """A default a participant has changed. Capabilities without a row keep the catalogue's default."""
+
+    __tablename__ = "capability_policies"
+
+    capability: Mapped[str] = mapped_column(String, primary_key=True)
+    default_policy: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class CapabilityApproval(Base):
+    """One consumer's request or decision for one capability."""
+
+    __tablename__ = "capability_approvals"
+    __table_args__ = (UniqueConstraint("consumer_id", "capability", name="one_approval_per_consumer"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    consumer_id: Mapped[str] = mapped_column(String, index=True)
+    capability: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String)
+    purpose: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 def insert_for(session: AsyncSession):
