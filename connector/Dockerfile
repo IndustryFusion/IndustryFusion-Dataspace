@@ -23,5 +23,7 @@ RUN gradle --no-daemon shadowJar
 FROM eclipse-temurin:21-jre
 WORKDIR /srv
 COPY --from=build /src/build/libs/connector.jar ./connector.jar
+ENV EDC_FS_CONFIG=/config/connector.properties
 USER 65534
+EXPOSE 8080 8081 8082 8083 8084
 ENTRYPOINT ["java", "-jar", "connector.jar"]

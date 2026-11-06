@@ -1,0 +1,43 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+#
+# Template for /config/connector.properties. Whatever provisions a connector
+# replaces ${PARTICIPANT_ID} and ${CONNECTOR_URL}. The API key and database
+# connection come from EDC_API_AUTH_KEY and EDC_DATASOURCE_DEFAULT_*.
+
+edc.participant.id=${PARTICIPANT_ID}
+edc.hostname=${CONNECTOR_URL}
+
+web.http.port=8080
+web.http.path=/api
+web.http.management.port=8081
+web.http.management.path=/management
+web.http.protocol.port=8082
+web.http.protocol.path=/api/v1/dsp
+web.http.control.port=8083
+web.http.control.path=/control
+web.http.public.port=8084
+web.http.public.path=/api/v1/public
+
+# What other participants and this connector's own data plane use to reach it
+edc.dsp.callback.address=${CONNECTOR_URL}:8082/api/v1/dsp
+edc.control.endpoint=${CONNECTOR_URL}:8083/control
+edc.dataplane.api.public.baseurl=${CONNECTOR_URL}:8084/api/v1/public/v2
+
+edc.transfer.proxy.token.signer.privatekey.alias=data-plane-signing-key
+edc.transfer.proxy.token.verifier.publickey.alias=data-plane-verification-key
+
+edc.sql.schema.autocreate=true

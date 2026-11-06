@@ -18,7 +18,7 @@
 
 **A single shadow JAR built with Gradle inside the image build.** Contributors need only a container runtime. Alternative: building the JAR on the host, which adds a Java 21 and Gradle requirement.
 
-**Modules picked individually.** The image includes only what `#8` names, plus what those modules require at startup. Alternative: EDC's larger bill-of-materials bundles, which bring in identity and other features we don't use.
+**Modules picked individually.** The image includes only what #8 names, plus what those modules require at startup. Alternative: EDC's larger bill-of-materials bundles, which bring in identity and other features we don't use.
 
 **The schema is created by EDC's `sql-bootstrapper`, with `edc.sql.schema.autocreate=true`.** It needs no tool beyond the connector. The project never touches that schema directly, as `architecture.md` says. Alternative: separate migrations for EDC's tables, which would have to track every EDC release.
 

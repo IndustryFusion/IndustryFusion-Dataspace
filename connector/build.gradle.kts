@@ -30,8 +30,46 @@ java {
 }
 
 dependencies {
-    runtimeOnly("org.eclipse.edc:boot:$edcVersion")
-    runtimeOnly("org.eclipse.edc:connector-core:$edcVersion")
+    fun edc(module: String) = "org.eclipse.edc:$module:$edcVersion"
+
+    implementation(edc("core-spi"))
+    implementation(edc("boot-spi"))
+
+    // Runtime and configuration
+    runtimeOnly(edc("boot"))
+    runtimeOnly(edc("connector-core"))
+    runtimeOnly(edc("http"))
+    runtimeOnly(edc("configuration-filesystem"))
+    runtimeOnly(edc("api-observability"))
+
+    // Control plane, with token-protected management API and mock DSP identity
+    runtimeOnly(edc("control-plane-core"))
+    runtimeOnly(edc("control-plane-api"))
+    runtimeOnly(edc("control-plane-api-client"))
+    runtimeOnly(edc("management-api"))
+    runtimeOnly(edc("auth-tokenbased"))
+    runtimeOnly(edc("dsp"))
+    runtimeOnly(edc("iam-mock"))
+
+    // Data plane in the same process
+    runtimeOnly(edc("control-api-configuration"))
+    runtimeOnly(edc("data-plane-core"))
+    runtimeOnly(edc("data-plane-http"))
+    runtimeOnly(edc("data-plane-signaling-api"))
+    runtimeOnly(edc("data-plane-signaling-client"))
+    runtimeOnly(edc("data-plane-self-registration"))
+    runtimeOnly(edc("data-plane-selector-core"))
+    runtimeOnly(edc("transfer-data-plane-signaling"))
+
+    // SQL stores
+    runtimeOnly(edc("transaction-local"))
+    runtimeOnly(edc("sql-pool-apache-commons"))
+    runtimeOnly(edc("sql-bootstrapper"))
+    runtimeOnly(edc("control-plane-sql"))
+    runtimeOnly(edc("data-plane-store-sql"))
+    runtimeOnly(edc("data-plane-instance-store-sql"))
+    runtimeOnly(edc("accesstokendata-store-sql"))
+    runtimeOnly("org.postgresql:postgresql:42.7.4")
 }
 
 tasks.shadowJar {

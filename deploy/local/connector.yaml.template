@@ -1,0 +1,91 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+#
+# One participant's connector, for the local environment. Placeholders are filled in by
+# scripts/local_cluster.py. #14 creates the same objects at runtime.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: connector-${SLUG}
+  namespace: dataspace-participants
+data:
+  connector.properties: |
+${CONNECTOR_PROPERTIES}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: connector-${SLUG}
+  namespace: dataspace-participants
+stringData:
+  api-key: "${EDC_API_KEY}"
+  db-user: "${POSTGRES_USER}"
+  db-password: "${POSTGRES_PASSWORD}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connector-${SLUG}
+  namespace: dataspace-participants
+spec:
+  selector:
+    matchLabels: { app: connector-${SLUG} }
+  template:
+    metadata:
+      labels: { app: connector-${SLUG} }
+    spec:
+      containers:
+        - name: connector
+          image: dataspace/connector:dev
+          imagePullPolicy: Never
+          ports:
+            - { containerPort: 8080 }
+            - { containerPort: 8081 }
+            - { containerPort: 8082 }
+            - { containerPort: 8083 }
+            - { containerPort: 8084 }
+          env:
+            - name: EDC_API_AUTH_KEY
+              valueFrom: { secretKeyRef: { name: connector-${SLUG}, key: api-key } }
+            - { name: EDC_DATASOURCE_DEFAULT_URL, value: "jdbc:postgresql://acid-cluster.iff:5432/edc_${SLUG}" }
+            - name: EDC_DATASOURCE_DEFAULT_USER
+              valueFrom: { secretKeyRef: { name: connector-${SLUG}, key: db-user } }
+            - name: EDC_DATASOURCE_DEFAULT_PASSWORD
+              valueFrom: { secretKeyRef: { name: connector-${SLUG}, key: db-password } }
+          volumeMounts:
+            - { name: config, mountPath: /config }
+          readinessProbe:
+            httpGet: { path: /api/check/readiness, port: 8080 }
+            periodSeconds: 3
+            failureThreshold: 60
+      volumes:
+        - name: config
+          configMap: { name: connector-${SLUG} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: connector-${SLUG}
+  namespace: dataspace-participants
+spec:
+  selector: { app: connector-${SLUG} }
+  ports:
+    - { name: default, port: 8080 }
+    - { name: management, port: 8081 }
+    - { name: dsp, port: 8082 }
+    - { name: control, port: 8083 }
+    - { name: public, port: 8084 }
