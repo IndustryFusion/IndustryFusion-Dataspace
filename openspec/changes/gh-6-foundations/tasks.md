@@ -23,6 +23,11 @@
 - [x] 4.1 Search the repository for credentials; verify none are committed, and that `.local/` is ignored
 - [x] 4.2 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
 
+## 5. Review follow-up
+
+- [x] 5.1 Run the service workflow for changes under `scripts/` and `deploy/`, and lint `scripts/`; verify the workflow's paths and a `ruff` run over `scripts/`
+- [x] 5.2 Replace the outdated CI limitation in `CONTRIBUTING.md`; verify it describes what the workflows run
+
 ## Workflow follow-up
 
 - After merge, archive with the other milestone changes in a follow-up Pull Request with `Closes #6`.

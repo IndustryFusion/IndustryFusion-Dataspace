@@ -174,5 +174,5 @@ and commit the generated files. `openspec init --help` lists all tool IDs.
 - Proposal creation, implementation and archiving are started manually; nothing runs automatically from issues.
 - Who may add `spec-approved` is not enforced yet. `CODEOWNERS` and branch protection are recommended, and need repository admin settings.
 - The fork rule is checked in review, not technically blocked. Someone with write access can still open a Pull Request from a branch in this repository.
-- CI checks artifact structure only. Functional correctness and security require human review.
+- CI validates specifications, and lints, tests and builds the services. It does not run the end-to-end scripts, so functional correctness and security still require human review.
 - The project documents differ on several points that maintainers have not decided. They are listed in `openspec/config.yaml`.

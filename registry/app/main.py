@@ -21,7 +21,9 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
+import asyncpg
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from app import roles
@@ -90,6 +92,14 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Participant Registry", lifespan=lifespan)
+
+
+@app.exception_handler(asyncpg.PostgresError)
+@app.exception_handler(asyncpg.InterfaceError)
+@app.exception_handler(OSError)
+async def database_unavailable(_: Request, __: Exception) -> JSONResponse:
+    """The database can go away after startup too. It answers the same as while waiting for it."""
+    return JSONResponse(status_code=503, content={"detail": "The database is not available"})
 
 
 def store_of(request: Request) -> Store:
