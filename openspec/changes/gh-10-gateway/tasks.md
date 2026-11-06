@@ -14,7 +14,7 @@
 
 - [x] 2.1 Change `scripts/message-exchange-check.py` to use only the gateway; verify two agents exchange messages both ways on the local cluster
 - [x] 2.2 Verify on the local cluster that one participant's token can't read the other's inbox, and that `internal/*` gives `404`
-- [ ] 2.3 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 2.3 Check each scenario in the delta spec and report the result per scenario in the Pull Request; verify the report covers every scenario
 
 ## Workflow follow-up
 
