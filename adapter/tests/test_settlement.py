@@ -219,6 +219,42 @@ def test_a_step_still_on_its_way_keeps_the_lower_id(harness):
     harness.settle()
 
 
+def test_a_step_based_on_one_that_lost_changes_nothing(harness):
+    release = []
+
+    async def hold(_asset: str) -> None:
+        await release[0].wait()
+
+    async def make() -> None:
+        release.append(asyncio.Event())
+
+    harness.run(make)
+    harness.send(conversation_id="c1", payload={})
+    harness.connector.on_offer = hold
+    with message_ids(LOW):
+        harness.client.post(
+            "/outbox/messages",
+            json={
+                "receiver_participant": PEER,
+                "conversation_id": "c1",
+                "performative": "close",
+                "outcome": "resolved",
+            },
+            headers=auth(),
+        )
+    lost = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed", based_on=None)
+    assert lost.json()["applied"] is False
+    follow = harness.notify(HIGHEST, conversation_id="c1", performative="reopen", based_on=HIGH)
+    assert (follow.status_code, follow.json()["applied"]) == (202, False)
+    assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_RESOLVED"
+
+    async def go() -> None:
+        release[0].set()
+
+    harness.run(go)
+    harness.settle()
+
+
 @pytest.mark.parametrize("fo_first", [True, False], ids=["fo-lower", "mb-lower"])
 def test_close_and_reopen_crossing_a_close(fo_first):
     async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
