@@ -27,7 +27,7 @@ from urllib.parse import quote, unquote
 import httpx
 import jwt
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 REGISTRY_CACHE_SECONDS = 30
 KEY_REFETCH_LIMIT_SECONDS = 10
@@ -46,6 +46,7 @@ class Settings:
     keycloak_url: str = field(default_factory=lambda: environ.get("KEYCLOAK_URL", "").rstrip("/"))
     keycloak_realm: str = field(default_factory=lambda: environ.get("KEYCLOAK_REALM", "dataspace"))
     registry_url: str = field(default_factory=lambda: environ.get("REGISTRY_URL", "").rstrip("/"))
+    max_upload_bytes: int = field(default_factory=lambda: int(environ.get("MAX_UPLOAD_BYTES", str(1024**3))))
 
     @property
     def issuer(self) -> str:
@@ -182,25 +183,68 @@ def clean_path(raw: str) -> str:
     return "" if resolved == "." else resolved + keep_slash
 
 
-async def forward(http: httpx.AsyncClient, request: Request, target: str) -> Response:
+class BodyTooLarge(Exception):
+    pass
+
+
+TOO_LARGE = HTTPException(status_code=413, detail="The request is larger than this service accepts")
+
+
+def body_to_forward(request: Request, limit: int) -> AsyncIterator[bytes] | None:
+    """The request's body as it arrives, counted against the limit. None if there isn't one."""
+    stated = request.headers.get("content-length")
+    if stated is not None and stated.isdigit() and int(stated) > limit:
+        raise TOO_LARGE
+    if stated in {None, "0"} and "transfer-encoding" not in request.headers:
+        return None
+
+    async def counted() -> AsyncIterator[bytes]:
+        seen = 0
+        async for chunk in request.stream():
+            seen += len(chunk)
+            if seen > limit:
+                raise BodyTooLarge
+            yield chunk
+
+    return counted()
+
+
+async def forward(http: httpx.AsyncClient, request: Request, target: str, limit: int) -> Response:
     headers = {key: value for key, value in request.headers.items() if key.lower() not in NOT_FORWARDED}
     # With repeated headers, send on the one that was validated, which is the first.
     headers["authorization"] = request.headers["authorization"]
+    body = body_to_forward(request, limit)
+    if body is not None and "content-length" in request.headers:
+        headers["content-length"] = request.headers["content-length"]
+    outgoing = http.build_request(
+        request.method,
+        target,
+        params=request.url.query or None,
+        headers=headers,
+        content=body,
+        timeout=ADAPTER_TIMEOUT_SECONDS,
+    )
     try:
-        answer = await http.request(
-            request.method,
-            target,
-            params=request.url.query or None,
-            headers=headers,
-            content=await request.body(),
-            timeout=ADAPTER_TIMEOUT_SECONDS,
-        )
+        answer = await http.send(outgoing, stream=True)
+    except BodyTooLarge as error:
+        raise TOO_LARGE from error
     except httpx.TimeoutException as error:
         raise HTTPException(status_code=504, detail="The adapter did not answer in time") from error
     except httpx.HTTPError as error:
         raise HTTPException(status_code=503, detail="The adapter is unavailable") from error
     returned = {key: value for key, value in answer.headers.items() if key.lower() not in NOT_RETURNED}
-    return Response(content=answer.content, status_code=answer.status_code, headers=returned)
+    # Decoding changes the length, so it is only true of an answer that isn't encoded.
+    if "content-encoding" not in answer.headers and "content-length" in answer.headers:
+        returned["content-length"] = answer.headers["content-length"]
+
+    async def relay() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in answer.aiter_bytes():
+                yield chunk
+        finally:
+            await answer.aclose()
+
+    return StreamingResponse(relay(), status_code=answer.status_code, headers=returned)
 
 
 def adapter_address(record: dict) -> str:
@@ -256,14 +300,16 @@ def create_app(
         record = await directory.lookup(receiver)
         if record is None:
             raise HTTPException(status_code=404, detail="Receiver is not registered")
-        return await forward(http, request, f"{adapter_address(record)}/internal/transfer-request")
+        target = f"{adapter_address(record)}/internal/transfer-request"
+        return await forward(http, request, target, settings.max_upload_bytes)
 
     @application.api_route("/{path:path}", methods=METHODS)
     async def catch_all(path: str, request: Request) -> Response:
         # Refuse internal paths before anything else, so they look the same with or without a token.
         cleaned = clean_path(request.scope.get("raw_path", path.encode()).decode().lstrip("/"))
         _, record = await caller(request)
-        return await forward(http, request, f"{adapter_address(record)}/{quote(cleaned, safe='/:')}")
+        target = f"{adapter_address(record)}/{quote(cleaned, safe='/:')}"
+        return await forward(http, request, target, settings.max_upload_bytes)
 
     return application
 

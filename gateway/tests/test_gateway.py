@@ -14,6 +14,7 @@
 # limitations under the License.
 #
 
+import gzip
 import json
 import time
 
@@ -61,6 +62,7 @@ class World:
         self.jwks_answer: httpx.Response | None = None
         self.registry_list_for: set[str] = set()
         self.forwarded: list[httpx.Request] = []
+        self.answer: httpx.Response | None = None
         self.time = 1000.0
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -87,6 +89,8 @@ class World:
         if self.adapter_error:
             raise self.adapter_error
         self.forwarded.append(request)
+        if self.answer is not None:
+            return self.answer
         return httpx.Response(201, json={"from": request.url.host}, headers={"X-From-Adapter": "yes"})
 
 
@@ -431,3 +435,96 @@ def test_adapter_timeout_is_120_seconds(client, world):
     assert client.get("/inbox/messages", headers=auth()).status_code == 201
     assert world.forwarded[0].extensions["timeout"]["read"] == 120
 
+
+def small_limit_client(world, size: int) -> TestClient:
+    settings = Settings(
+        keycloak_url="http://keycloak.test",
+        keycloak_realm="dataspace",
+        registry_url="http://registry.test",
+        max_upload_bytes=size,
+    )
+    http = httpx.AsyncClient(transport=httpx.MockTransport(world.handle))
+    return TestClient(create_app(settings, http, clock=lambda: world.time))
+
+
+def in_parts(*parts: bytes):
+    yield from parts
+
+
+def test_body_arriving_in_parts_reaches_the_adapter_unchanged(client, world):
+    content = [bytes(range(256)) * 4, b"", b"\x00\xff" * 300]
+    response = client.post("/outbox/files", content=in_parts(*content), headers=auth())
+    assert response.status_code == 201
+    assert world.forwarded[0].content == b"".join(content)
+    assert world.forwarded[0].headers.get("transfer-encoding") == "chunked"
+
+
+def test_a_stated_length_stays_stated(client, world):
+    client.post("/outbox/files", content=b"12345", headers=auth())
+    assert world.forwarded[0].headers["content-length"] == "5"
+    assert world.forwarded[0].content == b"12345"
+    assert "transfer-encoding" not in world.forwarded[0].headers
+
+
+def test_no_body_sends_none(client, world):
+    client.get("/inbox/messages", headers=auth())
+    assert world.forwarded[0].content == b""
+    assert "transfer-encoding" not in world.forwarded[0].headers
+
+
+def test_stated_length_over_the_limit_never_reaches_the_adapter(world):
+    with small_limit_client(world, 10) as limited:
+        response = limited.post("/outbox/files", content=b"x" * 11, headers=auth())
+    assert response.status_code == 413
+    assert world.forwarded == []
+
+
+def test_body_at_the_limit_is_forwarded(world):
+    with small_limit_client(world, 10) as limited:
+        response = limited.post("/outbox/files", content=b"x" * 10, headers=auth())
+    assert response.status_code == 201
+    assert world.forwarded[0].content == b"x" * 10
+
+
+def test_unstated_length_over_the_limit_is_refused(world):
+    with small_limit_client(world, 10) as limited:
+        response = limited.post("/outbox/files", content=in_parts(b"x" * 6, b"x" * 6), headers=auth())
+    assert response.status_code == 413
+    assert world.forwarded == []
+
+
+def test_peer_route_also_has_the_limit(world):
+    with small_limit_client(world, 10) as limited:
+        response = limited.post(f"/peer/{BUILDER}/internal/transfer-request", content=b"x" * 11, headers=auth())
+    assert response.status_code == 413
+
+
+def test_limit_defaults_to_one_gibibyte_and_can_be_set(monkeypatch):
+    assert Settings().max_upload_bytes == 1024**3
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "77")
+    assert Settings().max_upload_bytes == 77
+
+
+def test_answer_comes_back_unchanged_with_its_length(client, world):
+    content = bytes(range(256)) * 1000
+    world.answer = httpx.Response(200, content=content, headers={"Content-Type": "application/zip"})
+    response = client.get("/inbox/messages/m/download", headers=auth())
+    assert response.content == content
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["content-length"] == str(len(content))
+
+
+def test_an_encoded_answer_is_decoded_and_loses_its_length(client, world):
+    plain = b"hello" * 100
+    world.answer = httpx.Response(200, content=gzip.compress(plain), headers={"Content-Encoding": "gzip"})
+    response = client.get("/inbox/messages/m", headers=auth())
+    assert response.content == plain
+    assert "content-encoding" not in response.headers
+    assert response.headers.get("content-length") in {None, str(len(plain))}
+
+
+def test_empty_answer(client, world):
+    world.answer = httpx.Response(204)
+    response = client.post("/inbox/messages/m/ack", headers=auth())
+    assert response.status_code == 204
+    assert response.content == b""
