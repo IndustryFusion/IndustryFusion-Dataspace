@@ -1,0 +1,160 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+asyncapi: 2.6.0
+info:
+  title: IndustryFusion Dataspace messages
+  version: 0.1.0
+  description: |
+    Machine-readable description of the messages exchanged between participants.
+    protocol.md is the source of truth for what they mean, and gateway-api.md for
+    how agents send and receive them. Where this file differs, those documents win.
+    Agents do not subscribe to a channel. They receive messages by polling their
+    inbox, as gateway-api.md describes.
+  license:
+    name: Apache-2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0
+
+channels:
+  outbox/messages:
+    description: A participant's agent sends a message.
+    publish:
+      operationId: sendMessage
+      message:
+        $ref: '#/components/messages/OutboundMessage'
+  inbox/messages:
+    description: A participant's agent reads messages it received, by polling.
+    subscribe:
+      operationId: readInbox
+      message:
+        $ref: '#/components/messages/InboxMessage'
+
+components:
+  messages:
+    OutboundMessage:
+      name: OutboundMessage
+      payload:
+        $ref: '#/components/schemas/OutboundMessage'
+    InboxMessage:
+      name: InboxMessage
+      payload:
+        $ref: '#/components/schemas/InboxMessage'
+  schemas:
+    Performative:
+      type: string
+      enum: [request, inform, grant, deny, cancel, close, reopen, escalate, deescalate]
+    Outcome:
+      type: string
+      enum: [resolved, withdrawn, rejected, failed, timed_out, superseded, escalated]
+    Authorization:
+      type: object
+      required: [scope]
+      properties:
+        scope:
+          type: string
+          enum: [conversation]
+        expires_at:
+          type: string
+          format: date-time
+        constraints:
+          type: object
+    ContentRef:
+      type: object
+      required: [asset_id, dsp_url]
+      properties:
+        asset_id:
+          type: string
+        dsp_url:
+          type: string
+    OutboundMessage:
+      type: object
+      required: [receiver_participant]
+      properties:
+        receiver_participant:
+          type: string
+        performative:
+          allOf:
+            - $ref: '#/components/schemas/Performative'
+          default: inform
+        capability:
+          type: string
+        in_reply_to:
+          type: string
+        authorization:
+          $ref: '#/components/schemas/Authorization'
+        outcome:
+          $ref: '#/components/schemas/Outcome'
+        conversation_id:
+          type: string
+        payload:
+          type: object
+        content_ref:
+          $ref: '#/components/schemas/ContentRef'
+        reply_expected:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+        response_due_at:
+          type: string
+          format: date-time
+    InboxMessage:
+      type: object
+      required: [message_id, received_at, status, applied]
+      properties:
+        message_id:
+          type: string
+        conversation_id:
+          type: string
+        performative:
+          $ref: '#/components/schemas/Performative'
+        capability:
+          type: string
+        in_reply_to:
+          type: string
+        outcome:
+          $ref: '#/components/schemas/Outcome'
+        authorization:
+          $ref: '#/components/schemas/Authorization'
+        expires_at:
+          type: string
+          format: date-time
+        response_due_at:
+          type: string
+          format: date-time
+        sender_participant:
+          type: string
+        receiver_participant:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          nullable: true
+        status:
+          type: string
+          enum: [transferring, negotiating, negotiated, received, acked, error]
+        applied:
+          type: boolean
+        error_message:
+          type: string
+          nullable: true
+        has_files:
+          type: boolean
