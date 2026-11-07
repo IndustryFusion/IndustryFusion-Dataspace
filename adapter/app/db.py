@@ -94,6 +94,8 @@ class Conversation(Base):
     escalated_by: Mapped[str | None] = mapped_column(String)
     # The message that made the state what it is. Used to settle simultaneous steps.
     state_message_id: Mapped[str | None] = mapped_column(String)
+    # The one lower id that the other side said it kept, in answer to this side's step. It can take that step, once.
+    awaited_step: Mapped[str | None] = mapped_column(String)
 
 
 class CapabilityPolicy(Base):

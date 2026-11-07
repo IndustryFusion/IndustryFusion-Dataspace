@@ -17,6 +17,7 @@
 """The Kubernetes objects of a hosted participant, and the addresses derived from its id."""
 
 import hashlib
+import json
 import pathlib
 from dataclasses import dataclass
 from urllib.parse import quote
@@ -29,6 +30,7 @@ ID_ANNOTATION = "dataspace.industryfusion.org/participant-id"
 # What the NetworkPolicies in the participants' namespace select on.
 COMPONENT_LABEL = "dataspace.industryfusion.org/component"
 ANNOUNCED_ANNOTATION = "dataspace.industryfusion.org/announced-dsp-address"
+SECRET_ANNOTATION = "dataspace.industryfusion.org/secret-checksum"
 CONNECTOR_PORTS = {"default": 8080, "management": 8081, "dsp": 8082, "control": 8083, "public": 8084}
 CONNECTOR_TEMPLATE = pathlib.Path(__file__).parent / "connector.properties.template"
 
@@ -206,7 +208,7 @@ def config_map(participant_id: str, settings: Settings, reachable: bool) -> dict
     }
 
 
-def connector_deployment(participant_id: str, settings: Settings, reachable: bool) -> dict:
+def connector_deployment(participant_id: str, settings: Settings, reachable: bool, secret_checksum: str = "") -> dict:
     name = connector_name(participant_id)
     database = database_names(participant_id)[1]
     jdbc = f"jdbc:postgresql://{settings.postgres_host}:{settings.postgres_port}/{database}"
@@ -230,12 +232,17 @@ def connector_deployment(participant_id: str, settings: Settings, reachable: boo
         },
         "resources": _resources(settings),
     }
-    # A connector reads its addresses at start, so a change of address has to restart it.
-    announced = {ANNOUNCED_ANNOTATION: announced_dsp(participant_id, settings, reachable)}
-    return _deployment(participant_id, name, container, [{"name": "config", "configMap": {"name": name}}], announced)
+    # Pods read their Secret when they start, and a connector its addresses, so a change of either restarts them.
+    annotations = {
+        SECRET_ANNOTATION: secret_checksum,
+        ANNOUNCED_ANNOTATION: announced_dsp(participant_id, settings, reachable),
+    }
+    return _deployment(participant_id, name, container, [{"name": "config", "configMap": {"name": name}}], annotations)
 
 
-def adapter_deployment(participant_id: str, participant_type: str, settings: Settings, reachable: bool) -> dict:
+def adapter_deployment(
+    participant_id: str, participant_type: str, settings: Settings, reachable: bool, secret_checksum: str = ""
+) -> dict:
     namespace = settings.participants_namespace
     adapter_url, _ = hosted_addresses(participant_id, namespace)
     plain = {
@@ -270,7 +277,8 @@ def adapter_deployment(participant_id: str, participant_type: str, settings: Set
         "readinessProbe": {"httpGet": {"path": "/health", "port": 8000}, "periodSeconds": 3},
         "resources": _resources(settings),
     }
-    return _deployment(participant_id, adapter_name(participant_id), container)
+    annotations = {SECRET_ANNOTATION: secret_checksum}
+    return _deployment(participant_id, adapter_name(participant_id), container, pod_annotations=annotations)
 
 
 def connector_service(participant_id: str) -> dict:
@@ -290,12 +298,14 @@ def all_objects(
     reachable: bool,
 ) -> list:
     """Dependencies first: a pod that starts needs its Secret and ConfigMap to be there."""
+    held = secret(participant_id, settings, client_secret, credentials)
+    checksum = hashlib.sha256(json.dumps(held["stringData"], sort_keys=True).encode()).hexdigest()
     return [
-        secret(participant_id, settings, client_secret, credentials),
+        held,
         config_map(participant_id, settings, reachable),
-        connector_deployment(participant_id, settings, reachable),
+        connector_deployment(participant_id, settings, reachable, checksum),
         connector_service(participant_id),
-        adapter_deployment(participant_id, participant_type, settings, reachable),
+        adapter_deployment(participant_id, participant_type, settings, reachable, checksum),
         adapter_service(participant_id),
     ]
 

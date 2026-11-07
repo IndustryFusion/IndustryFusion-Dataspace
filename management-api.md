@@ -16,7 +16,7 @@ Admin routes need a token with the realm role `dataspace-admin`. Get one with th
 
 Returns the token response from Keycloak. Send it as `Authorization: Bearer <token>`.
 
-The API uses the caller's token for the Keycloak Admin API. It stores no data of its own.
+The API uses the caller's token for the Keycloak Admin API. It stores no data of its own. It holds one credential, `MANAGEMENT_CLIENT_SECRET` for `dataspace-admin-cli`, for finishing what a caller started: undoing a failed registration, and removing a participant's client and role after waiting for its pods, as a caller's token can expire during those waits. Without it, what can't be undone is named in the answer, and `DELETE` finishes it.
 
 ## Routes
 
@@ -74,9 +74,9 @@ Returns the participant record with `client_id` and `client_secret`.
 
 **An external participant** gets steps 2 and 5 only, as it runs its own adapter and connector.
 
-The registry entry is written once the participant's pods are available, so a registration can take minutes. Allow for that in any proxy in front of this service. A participant that peers can find is one that can receive.
+The registry entry is written once the participant's pods are available, so a registration can take minutes: at most `PROVISION_READY_SECONDS` in all, with up to 50 seconds more to undo it if that runs out. Allow for that in any proxy in front of this service. A participant that peers can find is one that can receive.
 
-Completed steps are undone if a later one fails. A failed re-registration does not drop an existing participant's databases, and a half-finished Keycloak client from an earlier failure is completed. Existing participants need no reconfiguration.
+Completed steps are undone if a later one fails. Anything that couldn't be, or that there was no time for, is named in the answer. A failed re-registration does not drop an existing participant's databases, and a half-finished Keycloak client from an earlier failure is completed. Existing participants need no reconfiguration.
 
 Registering an existing participant again updates it and keeps its credentials. This is how to change `externally_reachable` or an external participant's addresses. Changing `externally_reachable` restarts the participant's adapter and connector, which interrupts any transfer in progress. A hosted participant's `peer_notify_url` is the gateway's peer route when `externally_reachable` is true, and `null` otherwise. It gives `409`:
 
@@ -84,7 +84,7 @@ Registering an existing participant again updates it and keeps its credentials. 
 - if the id equals a client in the realm that this service did not create.
 - if the id's slug is held by another participant.
 
-`participant_id` has up to 200 characters, with no whitespace or control characters. Requests for one participant are handled one at a time, so run one replica of this service.
+`participant_id` has up to 200 ASCII letters, digits, `.`, `_`, `:` and `-`, and starts with a letter or digit. It can't be `compatible`. Requests for one participant are handled one at a time, so run one replica of this service.
 
 ### `POST /api/demo`
 
@@ -243,9 +243,9 @@ If configured, the API reads `GET /company/get-all-companies` from the [IFRIC re
 
 ## Configuration
 
-`POSTGRES_*`, `SEAWEEDFS_*`, `KEYCLOAK_URL`, `KEYCLOAK_HEALTH_URL`, `KEYCLOAK_REALM`, `REGISTRY_URL`, `GATEWAY_URL`, `GATEWAY_PEER_URL`, `DSP_GATEWAY_URL`, `DSP_GATEWAY_PEER_URL`, `PARTICIPANTS_NAMESPACE`, `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION`, `RESOURCES_PARTICIPANT_*`, `DEMO_PARTICIPANTS`, `IFRIC_BACKEND_URL`, `IFRIC_READER_CLIENT_ID`, `IFRIC_READER_CLIENT_SECRET`, `IFRIC_LOOKUP_CACHE_SECONDS`.
+`POSTGRES_*`, `SEAWEEDFS_*`, `KEYCLOAK_URL`, `KEYCLOAK_HEALTH_URL`, `KEYCLOAK_REALM`, `MANAGEMENT_CLIENT_ID` (default `dataspace-admin-cli`), `MANAGEMENT_CLIENT_SECRET`, `REGISTRY_URL`, `GATEWAY_URL`, `GATEWAY_PEER_URL`, `DSP_GATEWAY_URL`, `DSP_GATEWAY_PEER_URL`, `PARTICIPANTS_NAMESPACE`, `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION`, `RESOURCES_PARTICIPANT_*`, `DEMO_PARTICIPANTS`, `IFRIC_BACKEND_URL`, `IFRIC_READER_CLIENT_ID`, `IFRIC_READER_CLIENT_SECRET`, `IFRIC_LOOKUP_CACHE_SECONDS`.
 
-Also `MAX_UPLOAD_BYTES` and `MAX_JSON_BYTES`, passed on to adapters, which must match the gateway's, and `PROVISION_READY_SECONDS` (default 300), how long a registration waits for pods.
+Also `MAX_UPLOAD_BYTES` and `MAX_JSON_BYTES`, passed on to adapters, which must match the gateway's, and `PROVISION_READY_SECONDS` (default 300), how long a whole registration may take.
 
 | Setting | Holds |
 |---|---|

@@ -53,6 +53,8 @@ class Settings:
     keycloak_url: str = field(default_factory=lambda: _url("KEYCLOAK_URL"))
     keycloak_health_url: str = field(default_factory=lambda: _env("KEYCLOAK_HEALTH_URL"))
     keycloak_realm: str = field(default_factory=lambda: _env("KEYCLOAK_REALM", "dataspace"))
+    management_client_id: str = field(default_factory=lambda: _env("MANAGEMENT_CLIENT_ID", "dataspace-admin-cli"))
+    management_client_secret: str = field(default_factory=lambda: _env("MANAGEMENT_CLIENT_SECRET"))
     registry_url: str = field(default_factory=lambda: _url("REGISTRY_URL"))
     gateway_url: str = field(default_factory=lambda: _url("GATEWAY_URL"))
     gateway_peer_url: str = field(default_factory=lambda: _url("GATEWAY_PEER_URL"))

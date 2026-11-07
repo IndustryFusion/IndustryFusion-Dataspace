@@ -62,6 +62,10 @@ A NetworkPolicy allows egress only to its own namespace, DNS, the gateway, the D
 
 `keycloak.md` records that a peer can replay the bearer token it receives. External participants make this sharper in a specific way, and the documents now say so: a hosted adapter sends its token to an external adapter on every notification and capability call, and **the gateway is public**, so that peer can call the gateway with the token, from anywhere, as the hosted participant. That is the whole agent API: reading its inbox, sending in its name and changing its capability policy, until the token expires. The same holds between two external participants, at each other's adapters. Registering an external participant is therefore a decision to trust it with this, and the onboarding text says so.
 
+### Idle connections
+
+A connector's HTTP client reuses a connection for up to 5 minutes. A push on one the other end has dropped fails, as its body can't be sent again, and the transfer ends with status `error`. Adapters already keep idle connections for longer. A connector now pushes through the gateway, so it and the DSP gateway keep them too. Live runs failed now and then until this was changed. An Ingress in front of them has to as well, and `deploy/README.md` says so. Alternative: a retry of the transfer, which the adapter doesn't have and #18 doesn't ask for.
+
 ## Conflicts
 
 `architecture.md` says of the peer route that it is "the one deliberate exception" to blocking `internal/*`, and that "the only door" is route 1. #13 recorded that #18 would decide otherwise. This change updates the text.

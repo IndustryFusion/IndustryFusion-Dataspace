@@ -189,6 +189,8 @@ spec:
               valueFrom: { secretKeyRef: { name: service-credentials, key: s3-secret-key } }
             - { name: KEYCLOAK_URL, value: "http://keycloak-service.iff:8080/auth" }
             - { name: KEYCLOAK_REALM, value: dataspace }
+            - name: MANAGEMENT_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: service-credentials, key: admin-client-secret } }
             - { name: REGISTRY_URL, value: "http://registry.dataspace:19000" }
             - { name: GATEWAY_URL, value: "http://gateway.dataspace:8080" }
             - { name: GATEWAY_PEER_URL, value: "http://gateway.dataspace:8080" }

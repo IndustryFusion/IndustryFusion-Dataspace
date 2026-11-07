@@ -29,9 +29,10 @@ PASSED_ON = {400, 403, 404, 409, 422}
 
 
 class Adapters:
-    def __init__(self, http: httpx.AsyncClient, kubernetes: Kubernetes) -> None:
+    def __init__(self, http: httpx.AsyncClient, kubernetes: Kubernetes, namespace: str) -> None:
         self.http = http
         self.kubernetes = kubernetes
+        self.namespace = namespace
 
     async def _key_of(self, participant_id: str) -> str:
         secret = await self.kubernetes.get("Secret", manifests.secret_name(participant_id))
@@ -41,12 +42,14 @@ class Adapters:
         return base64.b64decode(encoded).decode()
 
     async def call(self, record: dict, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
-        """Call the adapter of a registry record. A key is only ever sent to its own participant's hosted adapter."""
+        """Call the adapter of a registry record, with the key that participant alone has.
+
+        The registry takes writes from any pod, so none of its addresses gets a key. It only goes to the address
+        derived from the id, where only this service can have put anything.
+        """
         if not record.get("hosted", False):
             raise HTTPException(status_code=409, detail="An external participant runs its own adapter")
-        address = (record.get("adapter_url") or "").rstrip("/")
-        if not address:
-            raise HTTPException(status_code=503, detail="This participant has no adapter address")
+        address, _ = manifests.hosted_addresses(record["participant_id"], self.namespace)
         key = await self._key_of(record["participant_id"])
         try:
             answer = await self.http.request(

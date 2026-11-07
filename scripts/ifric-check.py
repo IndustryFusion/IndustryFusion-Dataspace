@@ -34,6 +34,9 @@ STAND_IN = "ifric-standin"
 CACHE_SECONDS = 3
 DETAILS = {"company_name": "Check Machines", "company_category": "machine_builder", "city": "Pune", "country": "India"}
 
+IFRIC_SETTINGS = {
+    "IFRIC_BACKEND_URL", "IFRIC_READER_CLIENT_ID", "IFRIC_READER_CLIENT_SECRET", "IFRIC_LOOKUP_CACHE_SECONDS",
+}  # fmt: skip
 SERVER = """
 import base64, http.server, json
 COMPANIES = [{"company_ifric_id": "@KNOWN@", "company_name": "Check Machines", "company_category": "machine_builder",
@@ -99,6 +102,25 @@ def scale_stand_in(replicas: int) -> None:
         lc.poll(lambda: not lc.kubectl(*pods).strip(), 60, what="the stand-in to stop")
 
 
+def management_env() -> list[str]:
+    """How these settings are now, as they may come from a Helm install, to put back afterwards."""
+    found = json.loads(lc.kubectl("-n", NAMESPACE, "get", "deploy/management", "-o", "json"))
+    env = found["spec"]["template"]["spec"]["containers"][0]["env"]
+    return [entry for entry in env if entry["name"] in IFRIC_SETTINGS]
+
+
+def restore_management(saved: list[dict]) -> None:
+    """Back to what it was, with each setting as it was, including those read from a Secret."""
+    patch = {"spec": {"template": {"spec": {"containers": [{
+        "name": "management", "env": [
+            *saved,
+            *({"name": name, "$patch": "delete"} for name in IFRIC_SETTINGS if name not in {e["name"] for e in saved}),
+        ],
+    }]}}}}  # fmt: skip
+    lc.kubectl("-n", NAMESPACE, "patch", "deploy/management", "--type=strategic", "-p", json.dumps(patch))
+    lc.wait_ready(NAMESPACE, "management")
+
+
 def set_management(*assignments: str) -> None:
     lc.kubectl("-n", NAMESPACE, "set", "env", "deploy/management", *assignments)
     lc.wait_ready(NAMESPACE, "management")
@@ -129,6 +151,7 @@ def main() -> int:
         keycloak = f"{forwarded}/auth"
         reader = reader_secret(keycloak)
     deploy_stand_in()
+    saved = management_env()
     try:
         with lc.port_forward(NAMESPACE, "management", 3000) as base:
             status, token = lc.http(
@@ -161,7 +184,8 @@ def main() -> int:
             known = next(entry for entry in listed if entry["participant_id"] == KNOWN)
             assert known["company_name"] == DETAILS["company_name"], known
             status, compatible = lc.http("GET", f"{base}/api/participants/compatible/{OTHER}")
-            assert compatible[0]["city"] == DETAILS["city"], compatible
+            known = next(entry for entry in compatible if entry["participant_id"] == KNOWN)
+            assert known["city"] == DETAILS["city"], compatible
             print("PASS the list and the compatible read have them too")
 
             scale_stand_in(0)
@@ -180,12 +204,7 @@ def main() -> int:
             assert "wrong" not in logs.replace("wrong token", ""), "A secret reached the log"
             print("PASS the secret isn't in the log")
     finally:
-        set_management(
-            "IFRIC_BACKEND_URL-",
-            "IFRIC_READER_CLIENT_ID-",
-            "IFRIC_READER_CLIENT_SECRET-",
-            "IFRIC_LOOKUP_CACHE_SECONDS-",
-        )
+        restore_management(saved)
         with lc.port_forward(NAMESPACE, "management", 3000) as base:
             status, token = lc.http(
                 "POST", f"{base}/api/admin/token", {"client_id": "dataspace-admin-cli", "client_secret": secret}

@@ -99,7 +99,7 @@ A message its sender did not apply (`applied: false`) is still delivered. It doe
 
 Both sides can send `close`, or both `escalate`, before either has seen the other's. Each side then knows both message ids, so each reaches the same answer with no further message: **the lower `message_id` wins**. The side whose message lost takes the winner's state or `escalated_by`, and its own message reads `applied: false`. Both senders see `notified`.
 
-This only holds while a side's own step is on its way. Once the other side has answered that it took that step, a later `close` or `escalate` doesn't change the state, whatever its id. So a state that has settled can't be rewritten by a later message.
+This only holds while a side's own step is on its way. Once its notification has been answered, or has failed, a later `close` or `escalate` doesn't change the state, whatever its id. So a state that has settled can't be rewritten by a later message, with one exception, which is how the two sides stay agreed when one has answered first: if the answer named a lower id as `kept_step`, the step with that one id can still take this side's step, once. A peer chooses its own ids, so a peer that picks one in advance and names it can win a simultaneous step in this way, once for each step of the other side. It gains nothing it couldn't by sending first.
 
 ### When the two copies differ
 
@@ -127,9 +127,19 @@ If MB, the escalator, then sends `close` with outcome `failed`, both are closed,
 
 Every message reads `notified`. If MB's `close` arrives before FO has accepted its `reopen`, the two agree on `OPEN` instead. Either side can then send a further step, under the rules for what its own copy holds.
 
-**A notification that fails, or is refused.** A step's sender moves its own copy when it accepts the message, and doesn't move it back. If the notification then fails, with status `error`, or is refused, with status `rejected`, the receiver's copy hasn't moved. There is no automatic retry. Both statuses are final for that message: its row doesn't change afterwards.
+**A notification that fails, or is refused.** A step's sender moves its own copy when it accepts the message, and doesn't move it back. If the notification then fails, with status `error`, or is refused, with status `rejected`, the receiver's copy hasn't moved. There is no automatic retry. Both statuses are final for that message: its row doesn't change afterwards, and a step in either status can't settle against anything.
 
 The sender can **send the same step again**, with the same performative and outcome. It goes to the receiver as an applied step, reads `applied: true`, and the receiver applies its rules to it as to any step. The earlier row keeps its status. This needs the earlier one to have finished with `error` or `rejected`: a repeat accepted while the earlier one is still on its way is a duplicate, with `applied: false`. If the earlier step did arrive and only its answer was lost, the receiver already holds it, and its copy doesn't change again. A `close` with another outcome isn't a repeat, and has the ordinary result, `applied: false`.
+
+**A failed `close` crossing a `close`.** If FO's `close` with outcome `resolved` fails, and MB then sends `close` with outcome `withdrawn`, the two copies differ, whichever id is lower. FO's step isn't on its way, so FO doesn't claim to have kept it, and MB's stands:
+
+| | FO reads | MB reads |
+|---|---|---|
+| `state` | `CLOSED_RESOLVED` | `CLOSED_WITHDRAWN` |
+| FO's `close` | `status` `error`, `applied: true` | Not there |
+| MB's `close` | `applied: false` | `status` `notified`, `applied: true` |
+
+If FO then repeats its `close`, its new id doesn't matter: it reads `notified` and `applied: true`, and MB, already closed, keeps `CLOSED_WITHDRAWN`, with FO's `close` as `applied: false`. To agree, one side sends `reopen`, which opens both copies, and then `close`. A conversation closed as `superseded` or `escalated` can't be reopened, so a difference involving one of those stays.
 
 An ordinary message doesn't change this. On the side that believes the conversation is closed, it is refused.
 
@@ -144,7 +154,7 @@ A notification, `POST /internal/transfer-request`, carries these fields beyond t
 | `has_files` | The content is a ZIP |
 | `sender_applied` | Whether the sender applied the message. Default `true`. `false` never moves the receiver's state |
 
-Its `202` answer can add `kept_step`: this side kept its own step, with this lower id, against the one just notified. That step is on its way, and the sender's copy takes it when it arrives. It is what lets a sender take it even though its own step has been answered.
+Its `202` answer can add `kept_step`: this side kept its own step, with this lower id, against the one just notified. It is only given while that step is on its way, not once its notification has failed. The sender remembers the id, and when a step of the same performative with that one id arrives, its copy takes it, once, even though its own step has been answered. Until then the sender's own message reads `applied: true`, and if no such step arrives, nothing changes.
 
 A refusal uses the same bodies as the agent routes, in [gateway-api.md](gateway-api.md).
 

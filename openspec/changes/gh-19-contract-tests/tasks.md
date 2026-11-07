@@ -11,6 +11,7 @@
 - [x] 2.2 Check each route, status value and error; verify against the local environment
 - [x] 2.3 Add the flows in `flow.md`, and the worked scenario; verify against the local environment
 - [x] 2.4 Show a wrong shape fails with `--tamper`; verify against the local environment, naming the route and field
+- [ ] 2.5 Show that wrong values fail too, with `--tamper`: an inverted `applied`, swapped sides, a state, outcome or `conversation_state` the contract doesn't name, an `error_message` on success, a bad date-time, and a rule matching nothing; verify against the local environment
 
 ## 3. Deployments
 
