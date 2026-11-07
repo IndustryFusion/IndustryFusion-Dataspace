@@ -39,7 +39,9 @@ def safe_name(raw: str, position: int, taken: set[str]) -> str:
     if RESERVED.fullmatch(base):
         base = f"_{base}"
     stem, suffix = os.path.splitext(base)
-    stem, suffix = stem[: LONGEST_NAME - len(suffix[:20])], suffix[:20]
+    suffix = suffix[:20].rstrip(". ")
+    # Shortening can leave what stripping removed above at the new end.
+    stem = stem[: LONGEST_NAME - len(suffix)].rstrip(". ") or f"file-{position}"
     candidate = stem + suffix
     number = 2
     # Some systems don't tell upper and lower case apart when unpacking.

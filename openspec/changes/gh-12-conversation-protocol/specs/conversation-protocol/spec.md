@@ -127,15 +127,15 @@ The receiver SHALL validate each notification, apply the same state rules to its
 - **THEN** the answer is not found, and the row stays as it was
 
 #### Scenario: A settled state
-- **WHEN** a counterpart sends a step naming an older base, with any message id, after the receiver's own step has been answered
-- **THEN** the state does not change, and the message reads `applied` false
+- **WHEN** a counterpart sends a `close` or `escalate`, with any message id, after the receiver's own step of that kind has been answered as applied
+- **THEN** the state does not change, and a `close` reads `applied` false
 
 #### Scenario: Repeated notification
 - **WHEN** the same notification arrives twice
 - **THEN** the state changes once, and there is one entry
 
 ### Requirement: Both sides end in the same state
-Two participants SHALL hold the same `state` and `outcome` after each flow, without any further message.
+Two participants SHALL hold the same `state` and `outcome` after each of these flows, without any further message, when every notification is answered.
 
 #### Scenario: Request and reply
 - **WHEN** one side sends `request`, and the other answers with `in_reply_to`
@@ -158,43 +158,55 @@ Two participants SHALL hold the same `state` and `outcome` after each flow, with
 - **THEN** both are `OPEN`
 
 #### Scenario: Simultaneous close
-- **WHEN** both sides send `close` before seeing the other's, with the same or different outcomes
+- **WHEN** both sides send `close` before seeing the other's, with the same or different outcomes, and both notifications are answered
 - **THEN** both end in the same closed state, which is that of the lower message id, and only that message reads `applied: true` on both sides
+
+#### Scenario: Simultaneous close, answered before the other arrives
+- **WHEN** the lower id's own step is still in progress when the other's arrives and is answered, and only then does the lower id's notification arrive
+- **THEN** both end in the lower id's closed state
 
 #### Scenario: Simultaneous escalate
 - **WHEN** both sides send `escalate` before seeing the other's
 - **THEN** both are `ESCALATING` with the same `escalated_by`, the sender of the lower message id
 
-#### Scenario: Other crossing steps
-- **WHEN** one side's `close`, or `close` and `reopen`, crosses the other side's `close` or `escalate`
-- **THEN** both end in the state of the branch whose first step has the lower message id, and the other branch reads `applied: false`
-
 #### Scenario: Ordered on one conversation
 - **WHEN** a side sends several state-changing messages on a conversation, without waiting
 - **THEN** the receiver applies them in the order the sender accepted them, and both end in the same state
 
-### Requirement: After a failed notification
-The sender's state SHALL stay moved when a notification fails, and the two sides SHALL have a way to agree again.
+### Requirement: Copies that differ
+When steps cross in other ways, or a notification fails or is refused, the copies SHALL be left different, with each side's reading as `protocol.md` records it, and the sender's status SHALL stay truthful.
+
+#### Scenario: A close crossing an escalate
+- **WHEN** one side's `close` crosses the other side's `escalate`
+- **THEN** each refuses the other's, each reads `rejected` for its own, one stays closed, and the other stays `ESCALATING`
+
+#### Scenario: The escalator closes afterwards
+- **WHEN** the escalator of that crossing then sends `close`
+- **THEN** both are closed, each with its own outcome, and `escalated_by` is set only on the escalator's copy
+
+#### Scenario: A close and reopen crossing a close
+- **WHEN** one side's `close` and `reopen` are both accepted before the other side's `close` arrives, whichever id is lower
+- **THEN** the side that reopened reads the other side's closed state, and the other side reads `OPEN`
+
+#### Scenario: A failed notification
+- **WHEN** a step's notification fails, or is refused
+- **THEN** the sender's state stays moved, its status stays `error` or `rejected`, and the receiver's state does not change
+
+#### Scenario: A later message
+- **WHEN** a later message on that conversation reads `notified`
+- **THEN** the earlier step's row still reads `error` or `rejected`, and the receiver's copy hasn't moved because of it
 
 #### Scenario: The sender repeats the step
-- **WHEN** a step's notification failed or was refused, and the sender sends the same performative again
-- **THEN** the repeat reads `applied: true` and replaces it, and both sides end in the state of the repeat
+- **WHEN** a step's notification failed or was refused, and the sender sends the same performative and outcome again
+- **THEN** the repeat reads `applied` true, the receiver applies it as a step and moves, and the earlier row does not change
 
-#### Scenario: A repeat accepted before the failure
-- **WHEN** a repeat was accepted while the earlier step was still in progress, and that step then fails
-- **THEN** the repeat replaces it when its turn comes, and both sides end in its state
+#### Scenario: A repeat with another outcome
+- **WHEN** a `close` with a different outcome follows a failed `close`
+- **THEN** the ordinary rules apply, so it reads `applied` false, and the receiver doesn't apply it
 
-#### Scenario: The answer was lost
-- **WHEN** a step arrived but its answer was lost, and the sender repeats it with another outcome
-- **THEN** both sides end in the state of the first, which reads `applied: true` and `notified`
-
-#### Scenario: The other side's step
-- **WHEN** a step's notification failed or was refused, and the other side's step arrives
-- **THEN** the other side's step wins whatever the ids, and both sides end in its state
-
-#### Scenario: Status of a repeat
-- **WHEN** a repeat reads `notified`
-- **THEN** the other side has the state, or the status has an `error_message` naming the state it holds
+#### Scenario: A repeat after only the answer was lost
+- **WHEN** the earlier step arrived and only its answer was lost, and the sender repeats it
+- **THEN** both are closed with that outcome, the receiver's state does not change again, and the earlier row stays `error`
 
 ### Requirement: Concurrent messages
 Concurrent messages on one conversation SHALL all be kept, and SHALL change its state as if they ran one at a time.

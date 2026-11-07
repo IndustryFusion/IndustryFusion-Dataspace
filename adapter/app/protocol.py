@@ -39,7 +39,7 @@ OUTCOMES = {"resolved", "withdrawn", "rejected", "failed", "timed_out", "superse
 NOT_REOPENABLE = {"escalated", "superseded"}
 # These act on an existing conversation. Anything else can start one.
 NEEDS_CONVERSATION = {"close", "reopen", "deescalate"}
-# These can change a conversation's state, so they name the step they were based on.
+# These can change a conversation's state.
 STEPS = {"close", "escalate", "deescalate", "reopen"}
 
 

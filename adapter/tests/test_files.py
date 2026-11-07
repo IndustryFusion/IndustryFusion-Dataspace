@@ -110,9 +110,7 @@ def test_end_to_end_between_routes_gives_the_same_bytes(harness):
     ],
 )
 def test_no_files_or_no_receiver_is_invalid_and_stores_nothing(harness, fields, parts):
-    response = harness.client.post(
-        "/outbox/files", data=fields, files=parts or {"other": ("a", b"x")}, headers=auth()
-    )
+    response = harness.client.post("/outbox/files", data=fields, files=parts or {"other": ("a", b"x")}, headers=auth())
     assert response.status_code == 422
     assert harness.storage.objects == {}
     assert outbox_count(harness) == 0
@@ -547,7 +545,7 @@ def test_a_lone_surrogate_is_stored_as_the_escape_it_came_as(harness):
     response = harness.client.post("/outbox/messages", content=body, headers=headers)
     harness.settle()
     assert response.status_code == 202
-    assert harness.storage.objects[f"s3://test/messages/{response.json()['message_id']}.json"] == b'{"t": "\\ud800"}'
+    assert harness.storage.objects[f"s3://test/messages/{response.json()['message_id']}.json"] == b'{"t":"\\ud800"}'
 
 
 def test_arrival_without_files_has_the_json_limit(harness):
@@ -599,9 +597,7 @@ def test_many_small_parts_stay_out_of_memory(harness, monkeypatch):
     """100 parts of 512 KiB each. The body is generated as it is read, and storage discards it."""
     part = b"z" * (512 * 1024)
     boundary = "x"
-    chunks = [
-        f'--{boundary}\r\nContent-Disposition: form-data; name="receiver_participant"\r\n\r\n{PEER}\r\n'.encode()
-    ]
+    chunks = [f'--{boundary}\r\nContent-Disposition: form-data; name="receiver_participant"\r\n\r\n{PEER}\r\n'.encode()]
     for number in range(100):
         start = f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="f{number}"\r\n\r\n'
         chunks += [start.encode(), part, b"\r\n"]
@@ -652,3 +648,104 @@ def test_many_small_parts_stay_out_of_memory(harness, monkeypatch):
     harness.settle()
     assert sent[0]["status"] == 202
     assert peak < 20 * 1024**2, f"{peak / 1024**2:.0f} MiB of 50 MiB stayed in memory"
+
+
+def compact_numbers(total: int) -> bytes:
+    """A compact JSON body of about this size, holding numbers."""
+    count = (total - 200) // 2
+    return b'{"receiver_participant":"' + PEER.encode() + b'","payload":{"n":[' + b"7," * count + b"7]}}"
+
+
+def test_a_compact_numeric_array_under_the_limit_arrives_whole(harness):
+    limit = harness.services.settings.max_json_bytes
+    body = compact_numbers(limit)
+    assert len(body) <= limit
+    response = harness.client.post(
+        "/outbox/messages", content=body, headers={**auth(), "Content-Type": "application/json"}
+    )
+    harness.settle()
+    assert response.status_code == 202
+    message_id = response.json()["message_id"]
+    assert harness.client.get(f"/outbox/messages/{message_id}/status", headers=auth()).json()["status"] == "notified"
+    stored = harness.storage.objects[f"s3://test/messages/{message_id}.json"]
+    assert len(stored) <= limit, "The stored size has to fit the limit on arrival"
+    assert harness.notify("arrived", conversation_id="other").status_code == 202
+    harness.settle()
+    assert harness.client.post("/internal/inbox-receive/arrived", content=stored).status_code == 200
+
+
+def test_a_payload_that_grows_past_the_limit_when_stored_is_refused(harness):
+    limit = harness.services.settings.max_json_bytes
+    count = (limit - 200) // 4
+    body = b'{"receiver_participant":"' + PEER.encode() + b'","payload":{"n":[' + b"1e5," * count + b"1e5]}}"
+    assert len(body) <= limit
+    before = len(harness.storage.objects)
+    response = harness.client.post(
+        "/outbox/messages", content=body, headers={**auth(), "Content-Type": "application/json"}
+    )
+    assert response.status_code == 413
+    assert "payload" in response.json()["detail"]
+    harness.settle()
+    assert len(harness.storage.objects) == before
+    assert harness.world.notifications == []
+
+
+def test_an_authorization_a_notification_cannot_carry_is_refused(harness):
+    big = {"scope": "conversation", "constraints": {"machines": ["m" * 100] * 3000}}
+    response = harness.send(performative="grant", capability="twin:direct", in_reply_to="x", authorization=big)
+    assert response.status_code == 413
+    assert "authorization" in response.json()["detail"]
+    assert harness.world.notifications == []
+
+
+def test_the_largest_authorization_fits_the_notification_route(harness):
+    from app.routes.outbox import LONGEST_AUTHORIZATION_BYTES
+
+    filler = "m" * (LONGEST_AUTHORIZATION_BYTES - 100)
+    response = harness.send(
+        performative="grant",
+        capability="twin:direct",
+        in_reply_to="x",
+        authorization={"scope": "conversation", "note": filler},
+    )
+    assert response.status_code == 202, response.text
+    harness.settle()
+    notification = harness.world.notifications[-1]["body"]
+    assert len(json.dumps(notification).encode()) < 256 * 1024
+
+
+def test_a_too_long_form_field_is_named(harness):
+    response = upload(harness, ("a.txt", b"x"), capability="c" * 513, settle=False)
+    assert response.status_code == 422
+    assert response.json()["detail"] == "capability is too long"
+
+
+def test_a_missing_form_field_is_named(harness):
+    response = harness.client.post("/outbox/files", data={}, files={"files": ("a.txt", b"x")}, headers=auth())
+    assert response.status_code == 422
+    assert response.json()["detail"] == "receiver_participant is required"
+
+
+@pytest.mark.parametrize(
+    "name", ["a" * 199 + " " + "b" * 50, "a" * 199 + "." + "b" * 50, "x" * 180 + " .abcdefghijklmnopqrs tuv"]
+)
+def test_shortening_a_name_leaves_no_trailing_space_or_dot(name):
+    result = safe_name(name, 1, set())
+    assert result == result.rstrip(". ")
+    assert not os.path.splitext(result)[0].endswith((" ", "."))
+    assert len(result) <= 220
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"asset_id": "a" * 513}, {"provider_dsp_url": "http://x/" + "a" * 2048}],
+    ids=["asset_id", "provider_dsp_url"],
+)
+def test_a_notification_with_too_long_an_address_is_refused(harness, fields):
+    assert harness.notify("m", **fields).status_code == 422
+    assert harness.client.get("/inbox/messages/m", headers=auth()).status_code == 404
+
+
+def test_a_content_reference_with_too_long_an_address_is_refused(harness):
+    answer = harness.send(content_ref={"asset_id": "a" * 513, "dsp_url": "http://x"}, payload=None)
+    assert answer.status_code == 422
