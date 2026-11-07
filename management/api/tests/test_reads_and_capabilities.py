@@ -14,6 +14,8 @@
 # limitations under the License.
 #
 
+import dataclasses
+
 import httpx
 import pytest
 from conftest import make_token
@@ -286,6 +288,31 @@ def test_health_for_the_probe(world):
     assert world.client.get("/health").json() == {"status": "ok"}
 
 
+def test_the_ui_page_and_its_files_are_served(world, tmp_path, monkeypatch):
+    (tmp_path / "index.html").write_text("<html>the page</html>")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "app.js").write_text("code")
+    (tmp_path.parent / "outside.txt").write_text("private")
+    monkeypatch.setattr(world.services, "settings", dataclasses.replace(world.settings, ui_dir=str(tmp_path)))
+    assert "the page" in world.client.get("/").text
+    assert world.client.get("/assets/app.js").text == "code"
+    assert "the page" in world.client.get("/policies").text
+    assert "private" not in world.client.get("/%2e%2e/outside.txt").text
+    assert "private" not in world.client.get("/..%2foutside.txt").text
+
+
+def test_unknown_api_paths_are_not_given_the_page(world, tmp_path, monkeypatch):
+    (tmp_path / "index.html").write_text("<html>the page</html>")
+    monkeypatch.setattr(world.services, "settings", dataclasses.replace(world.settings, ui_dir=str(tmp_path)))
+    answer = world.client.get("/api/nothing")
+    assert answer.status_code == 404 and answer.json() == {"detail": "Not found"}
+
+
+def test_without_a_built_ui(world):
+    answer = world.client.get("/")
+    assert answer.status_code == 404
+
+
 def test_the_key_never_goes_to_an_address_the_registry_holds(world):
     world.registry.records["urn:evil"] = {
         "participant_id": "urn:evil", "participant_type": "x", "hosted": True,
@@ -297,3 +324,7 @@ def test_the_key_never_goes_to_an_address_the_registry_holds(world):
     assert not [call for call in world.adapters.calls if "attacker.example" in call[1]]
     derived = f"adapter-{manifests.slug('urn:evil')}.dataspace-participants"
     assert all(derived in call[1] for call in world.adapters.calls)
+
+
+def test_a_nul_in_a_path_is_not_found(world):
+    assert world.client.get("/%00").status_code == 404

@@ -1,0 +1,174 @@
+/*
+ * Copyright (c) 2026 IndustryFusion Foundation
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+:root {
+  font-family: system-ui, sans-serif;
+  color: #1c2733;
+  background: #f6f7f9;
+}
+
+body {
+  margin: 0;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.5rem;
+  background: #fff;
+  border-bottom: 1px solid #d9dee4;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+h3 {
+  margin: 0;
+  font-size: 1rem;
+  flex-basis: 100%;
+}
+
+nav {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem 1.5rem 0;
+}
+
+nav button[aria-selected='true'] {
+  background: #1c2733;
+  color: #fff;
+}
+
+main {
+  padding: 1rem 1.5rem;
+}
+
+.admin-bar,
+.panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.panel {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: #fff;
+  border: 1px solid #d9dee4;
+  border-radius: 4px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+
+label:has(input[type='checkbox']) {
+  display: block;
+}
+
+input:not([type='checkbox']),
+select {
+  padding: 0.3rem 0.4rem;
+  min-width: 14rem;
+}
+
+button {
+  padding: 0.3rem 0.7rem;
+  background: #fff;
+  border: 1px solid #9aa5b1;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+th,
+td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border: 1px solid #d9dee4;
+  overflow-wrap: anywhere;
+}
+
+th {
+  background: #eef0f3;
+  font-size: 0.85rem;
+}
+
+.actions {
+  white-space: nowrap;
+}
+
+.actions button {
+  margin-right: 0.25rem;
+}
+
+.badge {
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+  font-size: 0.85rem;
+}
+
+.badge.ok {
+  background: #d7f2dc;
+  color: #14532d;
+}
+
+.badge.bad {
+  background: #fbdcdc;
+  color: #7f1d1d;
+}
+
+.error {
+  color: #991b1b;
+}
+
+dl {
+  margin: 0;
+  flex-basis: 100%;
+}
+
+dt {
+  font-size: 0.85rem;
+  color: #52606d;
+}
+
+dd {
+  margin: 0 0 0.4rem;
+}

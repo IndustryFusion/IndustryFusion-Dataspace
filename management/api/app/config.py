@@ -76,6 +76,7 @@ class Settings:
     max_json_bytes: str = field(default_factory=lambda: _env("MAX_JSON_BYTES", str(4 * 1024**2)))
     ready_seconds: float = field(default_factory=lambda: float(_env("PROVISION_READY_SECONDS", "300")))
     poll_seconds: float = field(default_factory=lambda: float(_env("PROVISION_POLL_SECONDS", "2")))
+    ui_dir: str = field(default_factory=lambda: _env("MANAGEMENT_UI_DIR", "/srv/ui"))
 
     @property
     def issuer(self) -> str:

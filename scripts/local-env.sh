@@ -126,9 +126,11 @@ up() {
 images() {
   need docker kind
   for service in $SERVICES $PARTICIPANT_IMAGES; do
-    context="$ROOT/$service"
-    [ "$service" = management ] && context="$ROOT/management/api"
-    docker build -q -t "dataspace/$service:dev" "$context" >/dev/null
+    if [ "$service" = management ]; then
+      docker build -q -t "dataspace/$service:dev" -f "$ROOT/management/api/Dockerfile" "$ROOT/management" >/dev/null
+    else
+      docker build -q -t "dataspace/$service:dev" "$ROOT/$service" >/dev/null
+    fi
     kind load docker-image --name "$CLUSTER" "dataspace/$service:dev" >/dev/null
   done
 }

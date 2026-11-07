@@ -61,6 +61,7 @@ class FakeKeycloak:
         self.fail: re.Pattern | None = None
         self.refuse_admin = False
         self.up = True
+        self.token_seconds = 300
         # How far its clock is ahead, so that a test can have a token really expire.
         self.seconds_ahead = 0
 
@@ -86,7 +87,8 @@ class FakeKeycloak:
             form = parse_qs(request.content.decode())
             if form.get("client_secret") == ["right"]:
                 token = make_token(expires_in=300 + self.seconds_ahead)
-                return json_response(200, {"access_token": token, "expires_in": 300, "token_type": "Bearer"})
+                answer = {"access_token": token, "expires_in": self.token_seconds, "token_type": "Bearer"}
+                return json_response(200, answer)
             return json_response(401, {"error": "unauthorized_client"})
         if path == "/auth/realms/dataspace":
             return json_response(200, {"realm": "dataspace"})

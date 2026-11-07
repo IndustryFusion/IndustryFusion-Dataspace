@@ -125,10 +125,10 @@ python3.12 -m venv .venv && . .venv/bin/activate
 pip install ".[dev]"
 ruff check .     # lint
 pytest           # test. Set TEST_POSTGRES_HOST, and _PORT, _USER and _PASSWORD if needed, to include tests needing PostgreSQL
-docker build .   # image
+docker build .   # image, except management/api, as below
 ```
 
-The connector is built with `docker build connector`, which runs Gradle on Java 21 inside the build.
+The connector is built with `docker build connector`, which runs Gradle on Java 21 inside the build. The management image includes the UI, so it is built with `docker build -f management/api/Dockerfile management`. See [management/ui/README.md](management/ui/README.md) for the UI and its browser tests.
 
 ## Local environment
 
