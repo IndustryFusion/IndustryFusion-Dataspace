@@ -75,6 +75,16 @@ An external participant must give `adapter_url` and `dsp_url`, or gets `422`.
 
 `GET /api/participants/{id}/capabilities` gives what the adapter's `GET /internal/capabilities` gives.
 
+**Undo uses the service's own credential.** A registration uses the caller's token, and can wait for as long as that token lives, so its undo could find it expired, and leave a client and role behind. So the service holds `MANAGEMENT_CLIENT_SECRET`, for `dataspace-admin-cli`, and gets a token of its own for an undo, and for the Keycloak steps of a removal, after its wait. Alternatives: doing the Keycloak step after the pods, which can't work, as the pods need the client's secret; waiting no longer than the token's life, which depends on the caller; a refresh token, which client credentials don't have.
+
+**One deadline for a registration.** `PROVISION_READY_SECONDS` bounds all its steps together, and the undo has at most 50 seconds more, of which 30 for pods to go. Before, each Deployment and the undo had that wait of their own, which was three times what anything in front of the service allows. What isn't undone in time is named in the answer. Alternative: telling the Ingress the true worst case, which keeps a client waiting 15 minutes.
+
+**The internal key only goes to the address derived from the id.** The registry takes writes from any pod in the cluster, so what it says is not good enough for a credential: `hosted` and `adapter_url` could come from anyone. So an entry saying `hosted` gets a call to `adapter-<slug>` in the participants' namespace, where only the service itself can have put anything.
+
+**Only ids that work can be registered.** An id goes into URL paths, a shell-free properties file, role names and client ids. `a/credentials`, `compatible/x`, `..` and non-ASCII registered and then couldn't be read, or were read as something else. So the rule is the narrowest that holds the ids in use: a letter or digit, then ASCII letters, digits, `.`, `_`, `:` and `-`. The word `compatible` is a route. Alternatives: encoding every id everywhere, which depends on each proxy in between treating an encoded `/` alike.
+
+**A Secret's content rolls its pods.** Pods read a Secret when they start, so a changed one didn't reach them. Each Deployment's pods carry a checksum of the Secret, so a change restarts them, and a repeat with no change doesn't.
+
 ## Risks
 
 - Participants' databases use one shared PostgreSQL user, as the local environment does. Per-participant users would be stronger, and are for #20.

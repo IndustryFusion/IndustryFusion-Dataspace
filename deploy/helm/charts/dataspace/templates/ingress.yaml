@@ -36,7 +36,7 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: {{ .Values.ingress.gateway.transferTimeoutSeconds | quote }}
     {{- else }}
     nginx.ingress.kubernetes.io/proxy-body-size: {{ int64 .Values.limits.maxJsonBytes | quote }}
-    # A registration waits for its pods.
+    # A registration has one deadline, and an undo after it has up to 50 seconds. See management-api.md.
     nginx.ingress.kubernetes.io/proxy-read-timeout: {{ add 60 .Values.participants.provisionReadySeconds | quote }}
     {{- with .Values.ingress.management.allowFrom }}
     nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}

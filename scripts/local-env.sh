@@ -149,6 +149,7 @@ secrets:
     accessKey: "$S3_ACCESS_KEY"
     secretKey: "$S3_SECRET_KEY"
   adapterInternalKey: "$ADAPTER_INTERNAL_KEY"
+  adminClientSecret: "$(cat "$LOCAL/admin-client-secret")"
 SECRETS
   echo "$LOCAL/helm-secrets.yaml"
 }
@@ -165,6 +166,7 @@ services() {
     --from-literal=s3-access-key="$S3_ACCESS_KEY" \
     --from-literal=s3-secret-key="$S3_SECRET_KEY" \
     --from-literal=adapter-internal-key="$ADAPTER_INTERNAL_KEY" \
+    --from-literal=admin-client-secret="$(cat "$LOCAL/admin-client-secret")" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   images
   kubectl apply -f "$ROOT/deploy/local/services.yaml" >/dev/null

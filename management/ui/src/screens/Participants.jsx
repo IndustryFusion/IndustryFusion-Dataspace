@@ -111,6 +111,9 @@ function Credentials({ credentials, onClose }) {
   );
 }
 
+// These come from another service, and anything but text would stop the page from drawing.
+const asText = (value) => (typeof value === 'string' || typeof value === 'number' ? value : '');
+
 export default function Participants() {
   const admin = useAdmin();
   const [participants, setParticipants] = useState(null);
@@ -123,10 +126,16 @@ export default function Participants() {
       setParticipants(await request('GET', '/api/participants'));
       return true;
     } catch (failure) {
-      setError(failure.message);
+      // What went wrong first is the one to show, if this is after an action.
+      setError((shown) => shown || failure.message);
       return false;
     }
   }, []);
+
+  // A secret on the screen goes with the mode that fetched it.
+  useEffect(() => {
+    if (!admin.active) setCredentials(null);
+  }, [admin.active]);
 
   useEffect(() => {
     load();
@@ -213,10 +222,10 @@ export default function Participants() {
                 <td>{entry.externally_reachable ? 'Yes' : 'No'}</td>
                 {showCompany && (
                   <>
-                    <td>{entry.company_name}</td>
-                    <td>{entry.company_category}</td>
-                    <td>{entry.city}</td>
-                    <td>{entry.country}</td>
+                    <td>{asText(entry.company_name)}</td>
+                    <td>{asText(entry.company_category)}</td>
+                    <td>{asText(entry.city)}</td>
+                    <td>{asText(entry.country)}</td>
                   </>
                 )}
                 {admin.active && (
