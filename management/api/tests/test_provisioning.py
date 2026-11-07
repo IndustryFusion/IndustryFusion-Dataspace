@@ -526,3 +526,152 @@ def test_two_participants_registered_and_deleted_leave_no_orphans(world):
         assert world.client.delete(f"/api/participants/{participant}", headers=world.admin).status_code == 204
     assert not world.kubernetes.objects and not world.databases.names and not world.registry.records
     assert not world.keycloak.clients and not world.keycloak.roles
+
+
+def expiring_during_the_wait(world, seconds: int = 400):
+    """The caller's token runs out while pods are awaited, as it does by default: both are 5 minutes."""
+    real = world.services.provisioner.kubernetes.wait_available
+
+    async def wait(name, limit):
+        try:
+            await real(name, limit)
+        finally:
+            world.keycloak.seconds_ahead = seconds
+
+    world.services.provisioner.kubernetes.wait_available = wait
+
+
+def test_a_token_that_expires_during_the_wait_does_not_stop_the_undo(world):
+    world.kubernetes.never_available.add(f"connector-{NAME}")
+    expiring_during_the_wait(world)
+    answer = world.register()
+    assert answer.status_code == 502
+    assert "could not be undone" not in answer.json()["detail"]
+    world.nothing_of(ID)
+
+
+def test_with_no_credential_of_its_own_it_names_what_is_left(world):
+    world.services.provisioner.settings = dataclasses.replace(world.settings, management_client_secret="")
+    world.kubernetes.never_available.add(f"connector-{NAME}")
+    expiring_during_the_wait(world)
+    detail = world.register().json()["detail"]
+    assert "so DELETE it" in detail and "client" in detail and "realm role" in detail
+
+
+def test_a_removal_with_a_token_that_expires_during_its_wait(world):
+    world.register()
+    real = world.services.provisioner.kubernetes.wait_gone
+
+    async def wait(*args):
+        await real(*args)
+        world.keycloak.seconds_ahead = 400
+
+    world.services.provisioner.kubernetes.wait_gone = wait
+    assert world.client.delete(f"/api/participants/{ID}", headers=world.admin).status_code == 204
+    world.keycloak.seconds_ahead = 0
+    world.nothing_of(ID)
+
+
+def test_undo_runs_latest_first_and_waits_for_pods_before_what_they_use(world):
+    order = []
+    provisioner = world.services.provisioner
+    real_gone, real_drop = provisioner.kubernetes.wait_gone, world.databases.drop
+    real_bucket = world.buckets.remove
+
+    async def gone(*args):
+        order.append("pods")
+        await real_gone(*args)
+
+    async def drop(name):
+        order.append("database")
+        return await real_drop(name)
+
+    async def bucket(name):
+        order.append("bucket")
+        return await real_bucket(name)
+
+    provisioner.kubernetes.wait_gone, world.databases.drop, world.buckets.remove = gone, drop, bucket
+    world.registry.fail_save = True
+    assert world.register().status_code == 503
+    assert order[0] == "pods", order
+    assert order.index("pods") < order.index("bucket") < order.index("database"), order
+
+
+def test_a_registration_has_one_deadline(world):
+    world.services.provisioner.settings = dataclasses.replace(world.settings, ready_seconds=0.5)
+    world.kubernetes.never_available.update({f"connector-{NAME}", f"adapter-{NAME}"})
+    began = asyncio.run(_timed(world))
+    assert began < 1.0, f"It took {began}s, with a deadline of 0.5s"
+
+
+async def _timed(world) -> float:
+    import time
+
+    start = time.monotonic()
+    await asyncio.to_thread(world.register)
+    return time.monotonic() - start
+
+
+def test_an_undo_with_no_time_left_names_what_it_did_not_do(world, monkeypatch):
+    from app import provisioning
+
+    monkeypatch.setattr(provisioning, "UNDO_SECONDS", 0.01)
+    real = world.services.provisioner.kubernetes.wait_gone
+
+    async def slow(*args):
+        await asyncio.sleep(0.05)
+        await real(*args)
+
+    world.services.provisioner.kubernetes.wait_gone = slow
+    world.registry.fail_save = True
+    assert "so DELETE it" in world.register().json()["detail"]
+
+
+def test_a_changed_secret_restarts_pods_and_an_unchanged_one_does_not(world):
+    def templates():
+        return {name: world.kubernetes.objects[("Deployment", name)]["spec"]["template"]
+                for name in (f"adapter-{NAME}", f"connector-{NAME}")}  # fmt: skip
+
+    world.register()
+    first = templates()
+    world.register()
+    assert templates() == first
+    world.services.provisioner.settings = dataclasses.replace(world.settings, adapter_internal_key="a new key")
+    world.register()
+    second = templates()
+    for name, template in second.items():
+        assert template["metadata"]["annotations"] != first[name]["metadata"]["annotations"], name
+
+
+def test_reachable_without_a_peer_address_is_refused(world):
+    world.services.provisioner.settings = dataclasses.replace(world.settings, gateway_peer_url="")
+    assert world.register(externally_reachable=True).status_code == 422
+    world.nothing_of(ID)
+
+
+@pytest.mark.parametrize(
+    "participant_id",
+    ["a/credentials", "compatible/x", "compatible", "..", ".", "$(id)", "café", "-a", "a b", "a%2Fb", "a?b", "a#b"],
+)
+def test_ids_that_would_not_work_are_refused(world, participant_id):
+    assert world.register(participant_id, hosted=False, adapter_url="http://x", dsp_url="http://y").status_code == 422
+    assert participant_id not in world.registry.records
+
+
+@pytest.mark.parametrize("participant_id", ["urn:ifric:ifx-eur-com-own-1", "urn:example:a.b_c", "A1"])
+def test_ids_in_use_are_taken_and_can_be_read(world, participant_id):
+    assert world.register(participant_id, hosted=False, adapter_url="http://x", dsp_url="http://y").status_code == 200
+    assert world.client.get(f"/api/participants/{participant_id}").json()["participant_id"] == participant_id
+
+
+def test_a_removal_the_registry_refuses_is_not_called_removed(world):
+    world.register()
+    world.registry.delete_status = 405
+    answer = world.client.delete(f"/api/participants/{ID}", headers=world.admin)
+    assert answer.status_code == 502
+    assert ID in world.registry.records
+
+
+@pytest.mark.parametrize("path", ["..", ".", "a%2Fb", "compatible"])
+def test_removing_what_can_not_be_an_id_is_not_found(world, path):
+    assert world.client.delete(f"/api/participants/{path}", headers=world.admin).status_code in (404, 405)

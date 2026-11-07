@@ -134,6 +134,7 @@ services() {
     --from-literal=s3-access-key="$S3_ACCESS_KEY" \
     --from-literal=s3-secret-key="$S3_SECRET_KEY" \
     --from-literal=adapter-internal-key="$ADAPTER_INTERNAL_KEY" \
+    --from-literal=admin-client-secret="$(cat "$LOCAL/admin-client-secret")" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   for service in $SERVICES $PARTICIPANT_IMAGES; do
     context="$ROOT/$service"
