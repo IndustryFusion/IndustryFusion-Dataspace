@@ -76,7 +76,7 @@ Changing a value in the secrets file updates the Secret, but pods read it when t
 To remove participants' databases, buckets and Keycloak clients too, delete each with `DELETE /api/participants/{id}` first, as these are outside the two namespaces.
 
 ```bash
-./bootstrap.sh down
+DATASPACE_ENVIRONMENT=<name> ./bootstrap.sh down
 ```
 
 This removes the releases, every participant object, and the two namespaces. The dependencies and the realm stay.
