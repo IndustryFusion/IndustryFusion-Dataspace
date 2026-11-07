@@ -1,0 +1,64 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# The dataspace on Kubernetes. See deploy/README.md for the procedure.
+#
+# Values are layered: values/common.yaml, then values/environments/<environment>.yaml, then the
+# secrets file, which is not committed. Set DATASPACE_SECRETS_FILE to keep it somewhere else.
+
+environments:
+  default: {}
+  local: {}
+
+helmDefaults:
+  wait: true
+  timeout: 420
+  createNamespace: false
+
+commonLabels:
+  app.kubernetes.io/part-of: dataspace
+
+templates:
+  service:
+    namespace: dataspace
+    chart: ./charts/dataspace
+    values:
+      - values/common.yaml
+      - values/environments/{{ .Environment.Name }}.yaml
+      - {{ env "DATASPACE_SECRETS_FILE" | default "values/secrets.yaml" }}
+
+# Each release can only rely on the ones it needs. The first holds what every later one reads, so no
+# pod waits on something a later release creates.
+releases:
+  - name: dataspace-common
+    inherit: [{ template: service }]
+    set: [{ name: component, value: common }]
+  - name: dataspace-registry
+    inherit: [{ template: service }]
+    set: [{ name: component, value: registry }]
+    needs: [dataspace-common]
+  - name: dataspace-gateway
+    inherit: [{ template: service }]
+    set: [{ name: component, value: gateway }]
+    needs: [dataspace-registry]
+  - name: dataspace-dsp-gateway
+    inherit: [{ template: service }]
+    set: [{ name: component, value: dsp-gateway }]
+    needs: [dataspace-common]
+  - name: dataspace-management
+    inherit: [{ template: service }]
+    set: [{ name: component, value: management }]
+    needs: [dataspace-registry, dataspace-gateway, dataspace-dsp-gateway]

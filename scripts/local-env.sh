@@ -18,7 +18,7 @@
 # Brings up a local Kubernetes cluster with the infrastructure the dataspace needs.
 # It uses only its own kubeconfig under .local/, so it cannot act on another cluster.
 #
-# Usage: scripts/local-env.sh up | down | status | check | services
+# Usage: scripts/local-env.sh up | down | status | check | images | services | helm-secrets
 
 set -euo pipefail
 
@@ -122,6 +122,35 @@ up() {
   echo "Local environment is ready. Use: KUBECONFIG=$KUBECONFIG kubectl get pods -A"
 }
 
+# Builds the images and loads them into the cluster.
+images() {
+  need docker kind
+  for service in $SERVICES $PARTICIPANT_IMAGES; do
+    context="$ROOT/$service"
+    [ "$service" = management ] && context="$ROOT/management/api"
+    docker build -q -t "dataspace/$service:dev" "$context" >/dev/null
+    kind load docker-image --name "$CLUSTER" "dataspace/$service:dev" >/dev/null
+  done
+}
+
+# Writes a secrets file for deploy/helm from this environment's credentials, and prints its path.
+helm_secrets() {
+  generate_credentials
+  # shellcheck disable=SC1091
+  . "$LOCAL/credentials.env"
+  (umask 077; cat > "$LOCAL/helm-secrets.yaml") <<SECRETS
+secrets:
+  postgres:
+    user: "$POSTGRES_USER"
+    password: "$POSTGRES_PASSWORD"
+  s3:
+    accessKey: "$S3_ACCESS_KEY"
+    secretKey: "$S3_SECRET_KEY"
+  adapterInternalKey: "$ADAPTER_INTERNAL_KEY"
+SECRETS
+  echo "$LOCAL/helm-secrets.yaml"
+}
+
 # Builds the service images, loads them into the cluster and deploys them.
 services() {
   need docker kind kubectl openssl
@@ -135,12 +164,7 @@ services() {
     --from-literal=s3-secret-key="$S3_SECRET_KEY" \
     --from-literal=adapter-internal-key="$ADAPTER_INTERNAL_KEY" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  for service in $SERVICES $PARTICIPANT_IMAGES; do
-    context="$ROOT/$service"
-    [ "$service" = management ] && context="$ROOT/management/api"
-    docker build -q -t "dataspace/$service:dev" "$context" >/dev/null
-    kind load docker-image --name "$CLUSTER" "dataspace/$service:dev" >/dev/null
-  done
+  images
   kubectl apply -f "$ROOT/deploy/local/services.yaml" >/dev/null
   for service in $SERVICES; do
     kubectl -n dataspace rollout restart "deploy/$service" >/dev/null
@@ -166,6 +190,8 @@ case "${1:-}" in
   down) down ;;
   status) status ;;
   check) need kubectl curl python3; with_keycloak check_token ;;
+  images) images ;;
   services) services ;;
-  *) echo "Usage: $0 up | down | status | check | services" >&2; exit 2 ;;
+  helm-secrets) helm_secrets ;;
+  *) echo "Usage: $0 up | down | status | check | images | services | helm-secrets" >&2; exit 2 ;;
 esac

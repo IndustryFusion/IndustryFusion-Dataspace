@@ -1,0 +1,83 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# Settings shared by every environment. Override them in values/environments/<environment>.yaml.
+
+images:
+  # Empty means no registry prefix: <repo>/<component>:<version>.
+  registry: ""
+  repo: dataspace
+  version: dev
+  pullPolicy: IfNotPresent
+
+namespaces:
+  services: dataspace
+  participants: dataspace-participants
+
+# By default these come from the IndustryFusion DigitalTwin stack, in namespace iff.
+dependencies:
+  postgres:
+    host: acid-cluster.iff
+    port: 5432
+  s3:
+    endpoint: http://seaweedfs.iff:80
+  keycloak:
+    # Every service compares a token's issuer with <url>/realms/<realm>, so mint tokens through this URL.
+    url: http://keycloak-service.iff:8080/auth
+    # Optional. Without it, health looks at the realm's address.
+    healthUrl: ""
+    realm: dataspace
+
+# The one place these limits are set. The services and the Ingress body sizes all read them.
+limits:
+  maxUploadBytes: 1073741824
+  maxJsonBytes: 4194304
+
+participants:
+  provisionReadySeconds: 300
+  demo: ""
+  resources:
+    cpuRequest: ""
+    cpuLimit: ""
+    memoryRequest: ""
+    memoryLimit: 2Gi
+
+ingress:
+  enabled: false
+  className: nginx
+  # Extra annotations, for both Ingress objects.
+  annotations: {}
+  gateway:
+    host: ""
+    # How long the Ingress waits on an upload or a download, in seconds.
+    transferTimeoutSeconds: 3600
+  management:
+    host: ""
+    # Addresses allowed to reach it, comma-separated. Empty leaves it open to whoever reaches the Ingress.
+    allowFrom: ""
+  tls:
+    enabled: false
+    # Name of a cert-manager ClusterIssuer. Empty means the Secrets below already exist.
+    certManagerClusterIssuer: ""
+    gatewaySecretName: dataspace-gateway-tls
+    managementSecretName: dataspace-management-tls
+
+# How a service's own containers are sized. Empty leaves it to the cluster.
+resources: {}
+
+ifric:
+  backendUrl: ""
+  lookupCacheSeconds: 300

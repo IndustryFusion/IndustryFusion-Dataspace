@@ -13,3 +13,7 @@ build/
 # Connector build
 connector/.gradle/
 connector/build/
+
+# Deployment secrets and downloaded tools
+deploy/helm/values/secrets.yaml
+deploy/helm/.tools/

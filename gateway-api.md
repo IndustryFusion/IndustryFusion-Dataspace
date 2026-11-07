@@ -93,7 +93,7 @@ Multipart form. Returns `202` with the same body as `POST /outbox/messages`. The
 | `conversation_id` | no | |
 | `in_reply_to` | no | Marks the file as a reply |
 
-The whole request, including its multipart framing, can be up to `MAX_UPLOAD_BYTES`, which each deployment sets on the gateway and adapters. The default is 1 GiB. Over that, the answer is `413`. An Ingress in front of the gateway must allow at least the same body size.
+The whole request, including its multipart framing, can be up to `MAX_UPLOAD_BYTES`, which each deployment sets on the gateway and adapters. The default is 1 GiB. Over that, the answer is `413`. An Ingress in front of the gateway must allow at least the same body size. If it allows exactly that size, as the [Helm chart](deploy/README.md) does, it answers a larger request itself: still `413`, but with its own body, so go by the status.
 
 A form can have up to 256 files. A file's name in the ZIP keeps only its last part, where `/`, `\\` and `:` all separate parts, without trailing dots or spaces. A name reserved on Windows, such as `CON`, gets a leading `_`. A repeated name gets a number, as in `data-2.csv`, and an empty one becomes `file-<n>`. Files are stored in the ZIP uncompressed.
 
