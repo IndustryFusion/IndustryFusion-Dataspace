@@ -119,6 +119,8 @@ jobs:
         run: pip install "ruff>=0.6,<1"
       - name: Lint
         run: ruff check --line-length 120 --select E,F,I,B,UP scripts
+      - name: Check that the contract suite refuses wrong answers
+        run: python scripts/contract_test.py --self-test
 
   helm:
     runs-on: ubuntu-latest
