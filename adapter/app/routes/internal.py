@@ -47,8 +47,8 @@ class TransferRequest(BaseModel):
     reply_expected: bool = False
     expires_at: datetime | None = None
     response_due_at: datetime | None = None
-    asset_id: str
-    provider_dsp_url: str
+    asset_id: str = Field(max_length=512)
+    provider_dsp_url: str = Field(max_length=2048)
     has_files: bool = False
 
 

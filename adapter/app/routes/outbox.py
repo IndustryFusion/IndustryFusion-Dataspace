@@ -46,13 +46,15 @@ MOST_FIELDS = 16
 LONGEST_FIELD_BYTES = 64 * 1024
 # A file part leaves memory for disk after this. There is no setting for it on the form reader.
 MultiPartParser.spool_max_size = 64 * 1024
+# It travels in the notification, which the receiver limits to 256 KiB with the message's other fields.
+LONGEST_AUTHORIZATION_BYTES = 200 * 1024
 
 Identifier = Annotated[str, Field(max_length=512)]
 
 
 class ContentRef(BaseModel):
-    asset_id: str
-    dsp_url: str
+    asset_id: str = Field(max_length=512)
+    dsp_url: str = Field(max_length=2048)
 
 
 class OutgoingMessage(BaseModel):
@@ -75,9 +77,13 @@ async def conversation_state(session, conversation_id: str) -> str:
     return conversation.state if conversation else "OPEN"
 
 
-def _stored_json(payload: dict | None) -> bytes:
-    """Never larger than the body that carried it. A lone surrogate is written back as the escape it came as."""
-    return json.dumps(payload, ensure_ascii=False).encode("utf-8", "backslashreplace")
+def _as_json(value: object) -> bytes:
+    """Compact, and a lone surrogate is written back as the escape it came as."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8", "backslashreplace")
+
+
+def _too_large(what: str, limit: int) -> HTTPException:
+    return HTTPException(status_code=413, detail=f"{what} is larger than the {limit} bytes this service accepts")
 
 
 @router.post("/outbox/messages", status_code=202)
@@ -96,13 +102,20 @@ async def send_message(body: OutgoingMessage, request: Request):
             },
         )
 
+    if body.authorization is not None and len(_as_json(body.authorization)) > LONGEST_AUTHORIZATION_BYTES:
+        raise _too_large("The authorization", LONGEST_AUTHORIZATION_BYTES)
+    # A number can take more room stored than it did in the body, and the receiver would refuse the content.
+    stored = _as_json(body.payload)
+    if body.content_ref is None and len(stored) > services.settings.max_json_bytes:
+        raise _too_large("The payload as stored", services.settings.max_json_bytes)
+
     peer = await services.registry.receiver(own_id, body.receiver_participant)
 
     message_id = str(uuid.uuid4())
     payload_ref = None
     if body.content_ref is None:
         try:
-            payload_ref = await services.storage.put(f"messages/{message_id}.json", _stored_json(body.payload))
+            payload_ref = await services.storage.put(f"messages/{message_id}.json", stored)
         except Exception as error:
             raise HTTPException(status_code=503, detail="Object storage is unavailable") from error
     return await _accept(services, body, message_id, payload_ref, peer, has_files=False)
@@ -121,7 +134,10 @@ def _read_form_fields(form) -> tuple[OutgoingMessage, list[UploadFile]]:
     try:
         return OutgoingMessage(**fields), uploads
     except ValidationError as error:
-        raise HTTPException(status_code=422, detail="receiver_participant is required") from error
+        first = error.errors()[0]
+        field = first["loc"][0]
+        problem = "is required" if first["type"] == "missing" else "is too long"
+        raise HTTPException(status_code=422, detail=f"{field} {problem}") from error
 
 
 @router.post("/outbox/files", status_code=202)
