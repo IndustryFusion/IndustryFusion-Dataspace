@@ -49,7 +49,7 @@ class Settings:
     s3_endpoint: str = field(default_factory=lambda: _url("SEAWEEDFS_ENDPOINT"))
     s3_access_key: str = field(default_factory=lambda: _env("SEAWEEDFS_ACCESS_KEY"))
     s3_secret_key: str = field(default_factory=lambda: _env("SEAWEEDFS_SECRET_KEY"))
-    s3_filer_url: str = field(default_factory=lambda: _url("SEAWEEDFS_FILER_URL"))
+    s3_iam_url: str = field(default_factory=lambda: _url("SEAWEEDFS_IAM_URL"))
     keycloak_url: str = field(default_factory=lambda: _url("KEYCLOAK_URL"))
     keycloak_health_url: str = field(default_factory=lambda: _env("KEYCLOAK_HEALTH_URL"))
     keycloak_realm: str = field(default_factory=lambda: _env("KEYCLOAK_REALM", "dataspace"))

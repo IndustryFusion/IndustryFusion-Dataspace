@@ -66,9 +66,9 @@ spec:
       containers:
         - name: seaweedfs
           image: chrislusf/seaweedfs:3.80
-          # No static list of identities: scripts/local-env.sh writes the filer's, which management keeps.
-          args: ["server", "-dir=/data", "-s3", "-s3.port=8333"]
-          ports: [{ containerPort: 8333 }, { containerPort: 8888 }]
+          # No static list of identities: scripts/local-env.sh writes the first, and management adds to it.
+          args: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-iam", "-iam.port=8111"]
+          ports: [{ containerPort: 8333 }, { containerPort: 8111 }]
           volumeMounts:
             - { name: data, mountPath: /data }
           readinessProbe:
@@ -87,9 +87,9 @@ spec:
   selector: { app: seaweedfs }
   ports:
     - { name: s3, port: 80, targetPort: 8333 }
-    - { name: filer, port: 8888 }
+    - { name: iam, port: 8111 }
 ---
-# The filer holds every S3 identity's keys in plain text, so only management may reach it.
+# Its IAM API changes who may do what, and its filer serves every identity's keys, so only management reaches the first.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -112,7 +112,7 @@ spec:
           podSelector:
             matchExpressions:
               - { key: app.kubernetes.io/name, operator: In, values: [management] }
-      ports: [{ protocol: TCP, port: 8888 }]
+      ports: [{ protocol: TCP, port: 8111 }]
     # Its master, volume server and filer call each other.
     - from:
         - podSelector:

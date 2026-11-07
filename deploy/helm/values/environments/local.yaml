@@ -17,7 +17,7 @@
 # The cluster from scripts/local-env.sh, whose images are loaded under dataspace/<component>:dev.
 dependencies:
   s3:
-    filerUrl: http://seaweedfs.iff:8888
+    iamUrl: http://seaweedfs.iff:8111
 
 participants:
   demo: "urn:demo:factory-owner=factory_owner,urn:demo:machine-builder=machine_builder"

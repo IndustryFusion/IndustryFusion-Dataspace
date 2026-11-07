@@ -365,10 +365,11 @@ class FakeIdentities:
     def __init__(self) -> None:
         self.entries: dict[str, dict] = {}
 
-    async def put(self, name: str, access_key: str, secret_key: str, bucket: str) -> bool:
-        existed = name in self.entries
-        self.entries[name] = {"access": access_key, "secret": secret_key, "bucket": bucket}
-        return existed
+    async def ensure(self, name: str, bucket: str, held: tuple[str, str] | None) -> tuple[str, str, bool]:
+        made = name not in self.entries
+        access, secret = held if held and not made else (uuid.uuid4().hex, uuid.uuid4().hex)
+        self.entries[name] = {"access": access, "secret": secret, "bucket": bucket}
+        return access, secret, made
 
     async def remove(self, name: str) -> bool:
         return self.entries.pop(name, None) is not None

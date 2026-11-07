@@ -34,10 +34,10 @@ dependencies:
     port: 5432
   s3:
     endpoint: http://seaweedfs.iff:80
-    # The filer's address, for an S3 identity per participant. It must hold the only list of identities, so a storage
-    # started with a static list can't use this, which includes the DigitalTwin stack's. Empty means participants
-    # share the identity in the secrets file. See deploy/README.md.
-    filerUrl: ""
+    # The storage's IAM API, for an S3 identity per participant. A storage started with a static list can't use this,
+    # which includes the DigitalTwin stack's. Empty means participants share the identity in the secrets file. See
+    # deploy/README.md.
+    iamUrl: ""
   keycloak:
     # Every service compares a token's issuer with <url>/realms/<realm>, so mint tokens through this URL.
     url: http://keycloak-service.iff:8080/auth

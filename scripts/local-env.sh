@@ -64,27 +64,23 @@ apply_secrets() {
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 }
 
-# Writes the first list of S3 identities to the filer. Management adds to it, and keeps what is there. Storage
-# accepts anything until it has a list, so this comes before anything else uses it.
+# Writes the first S3 identity to the storage's own list. Management adds participants to it. The storage accepts
+# anything until it has a list, so this comes before anything else uses it.
 write_storage_identities() {
   # shellcheck disable=SC1091
   . "$LOCAL/credentials.env"
-  local port pf_pid list
-  port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-  kubectl -n iff port-forward svc/seaweedfs "$port:8888" >/dev/null &
-  pf_pid=$!
-  trap "kill $pf_pid 2>/dev/null || true; trap - RETURN" RETURN
   for _ in $(seq 1 60); do
-    curl -fs -o /dev/null "http://127.0.0.1:$port/" && break
+    kubectl -n iff exec deploy/seaweedfs -- wget -qO /dev/null http://127.0.0.1:9333/cluster/status && break
     sleep 1
   done
-  list=$(printf '{"identities":[{"name":"dataspace-management","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' \
-    "$S3_ACCESS_KEY" "$S3_SECRET_KEY")
-  # A list that is already there holds what participants need.
-  if ! curl -fs -o /dev/null "http://127.0.0.1:$port/etc/iam/identity.json"; then
-    curl -fsS -X PUT -H 'Content-Type: application/json' --data-binary "$list" \
-      "http://127.0.0.1:$port/etc/iam/identity.json?saveInside=true" >/dev/null
-  fi
+  echo "s3.configure -user dataspace-management -access_key $S3_ACCESS_KEY -secret_key $S3_SECRET_KEY -actions Admin,Read,Write,List,Tagging -apply" |
+    kubectl -n iff exec -i deploy/seaweedfs -- weed shell -master=127.0.0.1:9333 >/dev/null
+  for _ in $(seq 1 60); do
+    kubectl -n iff exec deploy/seaweedfs -- wget -qO /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 403 && return
+    sleep 1
+  done
+  echo "Storage did not take up its first identity" >&2
+  return 1
 }
 
 # Runs a command with $KEYCLOAK_LOCAL_URL set to a forwarded Keycloak port.

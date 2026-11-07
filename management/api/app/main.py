@@ -113,9 +113,9 @@ class Services:
 def build_services(settings: Settings, http: httpx.AsyncClient, kubernetes: Kubernetes) -> Services:
     registry = Registry(http, settings.registry_url)
     databases = Databases(settings)
-    identities = StorageIdentities(settings, http)
+    identities = StorageIdentities(settings)
     if not identities.enabled:
-        log.warning("SEAWEEDFS_FILER_URL is not set, so participants share one S3 identity")
+        log.warning("SEAWEEDFS_IAM_URL is not set, so participants share one S3 identity")
     return Services(
         settings=settings,
         http=http,

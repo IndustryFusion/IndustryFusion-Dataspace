@@ -126,7 +126,7 @@ def check_network(probe: str) -> None:
         (connector_host(OWNER), 8081, "a connector's management port"),
         (connector_host(OWNER), 8083, "a connector's control port"),
         ("registry.dataspace", 19000, "the registry"),
-        ("seaweedfs.iff", 8888, "the storage's list of identities"),
+        ("seaweedfs.iff", 8111, "the storage's IAM API"), ("seaweedfs.iff", 8888, "the storage's filer"),
     ):
         result(f"Reaching {what}: closed", not port_open(OUTSIDE, probe, host, port))
     result("The public gateway stays open", port_open(OUTSIDE, probe, "gateway.dataspace", 8080))
@@ -155,7 +155,7 @@ def check_network(probe: str) -> None:
         not port_open("dataspace", "dsp-gateway", "registry.dataspace", 19000),
     )
     result("An adapter reaches the registry", port_open(NS, adapter(OWNER), "registry.dataspace", 19000))
-    result("An adapter can't reach the storage's list", not port_open(NS, adapter(OWNER), "seaweedfs.iff", 8888))
+    result("An adapter can't reach the storage's IAM API", not port_open(NS, adapter(OWNER), "seaweedfs.iff", 8111))
 
 
 def check_credentials() -> None:

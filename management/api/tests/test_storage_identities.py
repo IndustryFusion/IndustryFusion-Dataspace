@@ -17,102 +17,121 @@
 
 import asyncio
 import json
+import threading
+import time
 
-import httpx
 import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
 from fastapi import HTTPException
 
 from app.config import Settings
 from app.storage import StorageIdentities
 
-FILE = "http://filer.test/etc/iam/identity.json"
-ADMIN = "the-admin-key"
+
+class FakeIam:
+    """As much of the storage's IAM API as this uses. Calls take a moment, as a change is read and written back."""
+
+    def __init__(self) -> None:
+        self.users: dict[str, dict] = {"someone-else": {"keys": {"o": "o"}, "policy": None}}
+        self.running = 0
+        self.overlapped = False
+        self.guard = threading.Lock()
+
+    def _step(self):
+        with self.guard:
+            self.running += 1
+            self.overlapped = self.overlapped or self.running > 1
+        time.sleep(0.001)
+        with self.guard:
+            self.running -= 1
+
+    def list_access_keys(self, UserName):  # noqa: N803
+        self._step()
+        if UserName not in self.users:
+            raise ClientError({"Error": {"Code": "NoSuchEntity"}}, "ListAccessKeys")
+        return {"AccessKeyMetadata": [{"AccessKeyId": key} for key in self.users[UserName]["keys"]]}
+
+    def create_user(self, UserName):  # noqa: N803
+        self._step()
+        self.users[UserName] = {"keys": {}, "policy": None}
+
+    def create_access_key(self, UserName):  # noqa: N803
+        self._step()
+        access, secret = f"k{len(self.users[UserName]['keys'])}{UserName}", f"s{UserName}"
+        self.users[UserName]["keys"][access] = secret
+        return {"AccessKey": {"AccessKeyId": access, "SecretAccessKey": secret}}
+
+    def put_user_policy(self, UserName, PolicyName, PolicyDocument):  # noqa: N803
+        self._step()
+        self.users[UserName]["policy"] = json.loads(PolicyDocument)
+
+    def delete_user(self, UserName):  # noqa: N803
+        self._step()
+        del self.users[UserName]
 
 
-class Filer:
-    def __init__(self, content: dict | None = None) -> None:
-        self.content = None if content is None else json.dumps(content).encode()
-        self.status = None
-
-    async def handle(self, request: httpx.Request) -> httpx.Response:
-        # A real call lets other requests run, and the test of several at once depends on that.
-        await asyncio.sleep(0)
-        assert str(request.url).split("?")[0] == FILE
-        if self.status:
-            return httpx.Response(self.status)
-        if request.method == "PUT":
-            assert request.url.params["saveInside"] == "true", "The S3 gateway wouldn't take it up otherwise"
-            self.content = request.content
-            return httpx.Response(201)
-        return httpx.Response(200, content=self.content) if self.content is not None else httpx.Response(404)
-
-    @property
-    def names(self) -> list[str]:
-        return [entry["name"] for entry in json.loads(self.content)["identities"]]
+@pytest.fixture
+def iam():
+    return FakeIam()
 
 
-def identities(filer: Filer) -> StorageIdentities:
-    settings = Settings(s3_filer_url="http://filer.test", s3_access_key=ADMIN, s3_secret_key="admin-secret")
-    return StorageIdentities(settings, httpx.AsyncClient(transport=httpx.MockTransport(filer.handle)))
+@pytest.fixture
+def store(iam, monkeypatch):
+    identities = StorageIdentities(Settings(s3_iam_url="http://iam.test", s3_access_key="a", s3_secret_key="b"))
+    monkeypatch.setattr(identities, "_client", lambda: iam)
+    return identities
 
 
-def test_an_identity_only_has_its_own_bucket():
-    filer = Filer()
-    asyncio.run(identities(filer).put("p1", "k1", "s1", "bucket-1"))
-    entry = next(e for e in json.loads(filer.content)["identities"] if e["name"] == "p1")
-    assert entry["credentials"] == [{"accessKey": "k1", "secretKey": "s1"}]
-    assert all(action.endswith(":bucket-1") for action in entry["actions"])
-    assert {action.split(":")[0] for action in entry["actions"]} == {"Read", "Write", "List", "Tagging"}
+def test_an_identity_only_has_its_own_bucket(store, iam):
+    access, secret, made = asyncio.run(store.ensure("p1", "bucket-1", None))
+    assert made is True
+    assert iam.users["p1"]["keys"] == {access: secret}
+    statement = iam.users["p1"]["policy"]["Statement"][0]
+    assert statement["Resource"] == ["arn:aws:s3:::bucket-1", "arn:aws:s3:::bucket-1/*"]
 
 
-def test_the_administrator_is_never_locked_out():
-    filer = Filer()
-    asyncio.run(identities(filer).put("p1", "k1", "s1", "b"))
-    admin = next(e for e in json.loads(filer.content)["identities"] if e["credentials"][0]["accessKey"] == ADMIN)
-    assert "Admin" in admin["actions"]
-    asyncio.run(identities(filer).remove("p1"))
-    assert [e["credentials"][0]["accessKey"] for e in json.loads(filer.content)["identities"]] == [ADMIN]
+def test_keys_it_holds_are_kept(store, iam):
+    access, secret, _ = asyncio.run(store.ensure("p1", "b", None))
+    assert asyncio.run(store.ensure("p1", "b", (access, secret))) == (access, secret, False)
+    assert len(iam.users["p1"]["keys"]) == 1
 
 
-def test_other_entries_stay():
-    other = {"name": "someone-else", "credentials": [{"accessKey": "o", "secretKey": "o"}], "actions": ["Read"]}
-    filer = Filer({"identities": [other]})
-    store = identities(filer)
-    assert asyncio.run(store.put("p1", "k1", "s1", "b")) is False
-    assert asyncio.run(store.put("p1", "k2", "s2", "b")) is True
-    assert sorted(filer.names) == ["dataspace-management", "p1", "someone-else"]
+def test_keys_it_lost_are_replaced_without_making_it_new(store, iam):
+    access, _, _ = asyncio.run(store.ensure("p1", "b", None))
+    again, _, made = asyncio.run(store.ensure("p1", "b", None))
+    assert made is False and again != access
+
+
+def test_keys_it_holds_of_an_identity_that_has_gone_are_replaced(store, iam):
+    access, _, made = asyncio.run(store.ensure("p1", "b", ("gone", "gone")))
+    assert made is True and access != "gone"
+
+
+def test_removing_leaves_others(store, iam):
+    asyncio.run(store.ensure("p1", "b", None))
     assert asyncio.run(store.remove("p1")) is True
     assert asyncio.run(store.remove("p1")) is False
-    assert "someone-else" in filer.names and "p1" not in filer.names
+    assert set(iam.users) == {"someone-else"}
 
 
-def test_several_at_once_all_keep_theirs():
-    filer = Filer()
-    store = identities(filer)
-
+def test_several_at_once_run_one_at_a_time(store, iam):
     async def run():
-        await asyncio.gather(*(store.put(f"p{n}", f"k{n}", "s", "b") for n in range(20)))
+        await asyncio.gather(*(store.ensure(f"p{n}", f"b{n}", None) for n in range(10)))
 
     asyncio.run(run())
-    assert {f"p{n}" for n in range(20)} <= set(filer.names)
+    assert {f"p{n}" for n in range(10)} <= set(iam.users)
+    assert iam.overlapped is False
 
 
-def test_an_unreadable_list_is_not_overwritten():
-    filer = Filer()
-    filer.content = b"not json"
+def test_a_storage_that_refuses_gives_502(store, monkeypatch):
+    def refuse():
+        raise EndpointConnectionError(endpoint_url="http://iam.test")
+
+    monkeypatch.setattr(store, "_client", refuse)
     with pytest.raises(HTTPException) as refused:
-        asyncio.run(identities(filer).put("p1", "k1", "s1", "b"))
-    assert refused.value.status_code == 502
-    assert filer.content == b"not json"
-
-
-def test_a_filer_that_refuses_gives_502():
-    filer = Filer()
-    filer.status = 500
-    with pytest.raises(HTTPException) as refused:
-        asyncio.run(identities(filer).put("p1", "k1", "s1", "b"))
+        asyncio.run(store.ensure("p1", "b", None))
     assert refused.value.status_code == 502
 
 
 def test_off_without_an_address():
-    assert StorageIdentities(Settings(), httpx.AsyncClient()).enabled is False
+    assert StorageIdentities(Settings()).enabled is False

@@ -68,7 +68,7 @@ Returns the participant record with `client_id` and `client_secret`.
 
 1. Create its PostgreSQL user, and the adapter and connector databases, which that user owns and no other can connect to.
 2. Create the Keycloak role `participant:<id>`, a client-credentials client named after the participant, a `participant_id` claim mapper, and the role assignment.
-3. Create its bucket and an S3 identity limited to it, if `SEAWEEDFS_FILER_URL` is set. Otherwise it uses the configured identity, shared with every other participant, and its adapter creates the bucket. See [deploy/README.md](deploy/README.md).
+3. Create its bucket and an S3 identity limited to it, if `SEAWEEDFS_IAM_URL` is set. Otherwise it uses the configured identity, shared with every other participant, and its adapter creates the bucket. See [deploy/README.md](deploy/README.md).
 4. Create the Secret, ConfigMap, and connector and adapter Deployments and Services in `dataspace-participants`. The Secret holds what only this participant has: its database password, S3 keys, internal key and connector API key. They are generated once.
 5. Write the registry entry.
 
@@ -250,7 +250,7 @@ Also `MAX_UPLOAD_BYTES` and `MAX_JSON_BYTES`, passed on to adapters, which must 
 | Setting | Holds |
 |---|---|
 | `DEMO_PARTICIPANTS` | Comma-separated `<id>=<type>` |
-| `SEAWEEDFS_FILER_URL` | The storage's filer, for an S3 identity per participant. Empty means participants share the configured identity. See [deploy/README.md](deploy/README.md) before setting it |
+| `SEAWEEDFS_IAM_URL` | The storage's IAM API, for an S3 identity per participant. Empty means participants share the configured identity. See [deploy/README.md](deploy/README.md) before setting it |
 | `GATEWAY_PEER_URL`, `DSP_GATEWAY_PEER_URL` | What an `externally_reachable` participant announces. They have to work from outside the cluster and from inside it, as two reachable participants use them too |
 | `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION` | Participant images are `[<registry>/]<repo>/adapter:<version>` and `.../connector:<version>` |
 | `RESOURCES_PARTICIPANT_CPU_REQUEST`, `_CPU_LIMIT`, `_MEMORY_REQUEST`, `_MEMORY_LIMIT` | Per participant container. Unset ones are left out, except the memory limit, which defaults to `2Gi` |

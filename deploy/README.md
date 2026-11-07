@@ -67,7 +67,7 @@ A registration waits for the participant's pods, so it can take a few minutes.
 | `dependencies.keycloak.url` | Used by every service, and compared exactly with a token's issuer. Keycloak has to be reachable at this address from inside the cluster, and tokens have to be minted through it. No addresses are fixed: use a name your cluster resolves |
 | `ingress.management.allowFrom` | Who reaches management, required with its Ingress. See "What is and is not publicly reachable" in [architecture.md](../architecture.md). External participants' adapters read participants there, so include them |
 | `networkPolicy.enabled` | On by default. See "Security Layers" in [architecture.md](../architecture.md) |
-| `dependencies.s3.filerUrl` | For an S3 identity per participant. See below |
+| `dependencies.s3.iamUrl` | For an S3 identity per participant. See below |
 | `ingress.dspGateway.enabled`, `ingress.dspGateway.host` | Exposes the DSP gateway, for external participants. Off by default, and hosted-only installations leave it off. It routes to every hosted connector's DSP and public ports. See "DSP Gateway" in [architecture.md](../architecture.md) |
 | `participants.gatewayPeerUrl`, `participants.dspGatewayPeerUrl` | What an `externally_reachable` participant announces, such as `https://<gateway host>`. Empty means the addresses inside the cluster, which work only for peers in this cluster. They have to work from inside the cluster too |
 | `ingress.tls.certManagerClusterIssuer` | With `ingress.tls.enabled`, adds the cert-manager annotation. Without it, the named TLS Secrets have to exist |
@@ -76,16 +76,15 @@ With external participants, connectors push content through the gateway, and thr
 
 ### An S3 identity per participant
 
-Without `dependencies.s3.filerUrl`, **participants share the S3 identity in the secrets file, so one participant's credentials can read another's bucket.** PostgreSQL users and internal keys are per participant in any case.
+Without `dependencies.s3.iamUrl`, **participants share the S3 identity in the secrets file, so one participant's credentials can read another's bucket.** PostgreSQL users and internal keys are per participant in any case.
 
-To separate them, the storage has to keep its identities in the filer's `/etc/iam/identity.json`, and management has to be able to write that file:
+To separate them, the storage has to keep its identities in its own list, and management has to be able to change it:
 
-- Run SeaweedFS **without** `-s3.config`, and write the first list to the filer, with `?saveInside=true`, as its S3 gateway only takes up a list the filer holds inline, with the identity in the secrets file. `write_storage_identities` in `scripts/local-env.sh` shows how. Until it has a list, SeaweedFS accepts anyone.
-- Set `dependencies.s3.filerUrl` to the filer's address.
-- Allow only management to reach the filer's port. It serves that file, with every identity's keys in plain text, to anyone who asks.
-- Keep any other user's identity in that list. Management keeps entries it didn't make, and it must be the only writer.
+- Run SeaweedFS **without** `-s3.config`, and with `-iam`. Add the identity in the secrets file to its list: `s3.configure -user dataspace-management -access_key <key> -secret_key <secret> -actions Admin,Read,Write,List,Tagging -apply` in `weed shell`. Until it has a list, SeaweedFS accepts anyone. `write_storage_identities` in `scripts/local-env.sh` shows how.
+- Set `dependencies.s3.iamUrl` to its IAM API's address.
+- Allow only management to reach the IAM port, and nothing to reach the filer's port but the storage itself. In the version used here, the IAM API didn't refuse a wrong signature, and the filer serves every identity's keys in plain text.
 
-**Don't set this on a storage started with `-s3.config`,** which includes the [DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack's. SeaweedFS uses the filer's list instead of its static one once the file exists, so that stack's other identities would stop working, and the participants' would go at its next restart. Move that storage's identities to the filer's list first, or give the dataspace its own storage.
+**Don't set this on a storage started with `-s3.config`,** which includes the [DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack's. SeaweedFS uses its filer's list instead of its static one once that exists, so that stack's other identities would stop working, and the participants' would go at its next restart. Move that storage's identities to the filer's list first, or give the dataspace its own storage.
 
 A body over the limit is refused by the Ingress with `413`, with the Ingress's own body. A smaller request over `MAX_JSON_BYTES` is refused by the gateway, with the contract's error.
 

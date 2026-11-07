@@ -21,7 +21,6 @@ import json
 import time
 
 import boto3
-import httpx
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
@@ -29,8 +28,7 @@ from fastapi import HTTPException
 from app.config import Settings
 
 MISSING = {"404", "NoSuchBucket"}
-IDENTITY_FILE = "/etc/iam/identity.json"
-ADMINISTRATOR = "dataspace-management"
+USER_MISSING = {"NoSuchEntity", "NoSuchEntityException"}
 IDENTITY_READY_SECONDS = 30
 
 
@@ -107,68 +105,70 @@ class Buckets:
 
 
 class StorageIdentities:
-    """The filer's list of S3 identities. Every entry this service didn't make stays. It has to be the only writer."""
+    """Participants' S3 identities, through the storage's IAM API. Each is limited to one bucket."""
 
-    def __init__(self, settings: Settings, http: httpx.AsyncClient) -> None:
+    def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.http = http
         self.lock = asyncio.Lock()
 
     @property
     def enabled(self) -> bool:
-        return bool(self.settings.s3_filer_url)
+        return bool(self.settings.s3_iam_url)
 
-    async def _read(self) -> dict:
-        answer = await self.http.get(f"{self.settings.s3_filer_url}{IDENTITY_FILE}")
-        if answer.status_code == 404:
-            return {"identities": []}
-        answer.raise_for_status()
-        # A file with no entries reads as an empty one. Anything else unreadable must not be overwritten.
-        return json.loads(answer.content) if answer.content.strip() else {"identities": []}
-
-    async def _write(self, content: dict) -> None:
-        answer = await self.http.put(
-            # The S3 gateway only takes up a list the filer holds inline.
-            f"{self.settings.s3_filer_url}{IDENTITY_FILE}?saveInside=true",
-            content=json.dumps(content),
-            headers={"Content-Type": "application/json"},
+    def _client(self):
+        return boto3.client(
+            "iam",
+            endpoint_url=self.settings.s3_iam_url,
+            aws_access_key_id=self.settings.s3_access_key,
+            aws_secret_access_key=self.settings.s3_secret_key,
+            region_name="us-east-1",
+            config=Config(connect_timeout=5),
         )
-        answer.raise_for_status()
 
-    def _with_administrator(self, identities: list[dict]) -> list[dict]:
-        """A list that doesn't hold this service's own key would lock it out."""
-        keys = {credential.get("accessKey") for entry in identities for credential in entry.get("credentials", [])}
-        if self.settings.s3_access_key in keys:
-            return identities
-        administrator = {
-            "name": ADMINISTRATOR,
-            "credentials": [{"accessKey": self.settings.s3_access_key, "secretKey": self.settings.s3_secret_key}],
-            "actions": ["Admin", "Read", "Write", "List", "Tagging"],
+    @staticmethod
+    def _keys_of(client, name: str) -> list[str]:
+        try:
+            return [key["AccessKeyId"] for key in client.list_access_keys(UserName=name)["AccessKeyMetadata"]]
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") in USER_MISSING:
+                return []
+            raise
+
+    def _ensure(self, name: str, bucket: str, held: tuple[str, str] | None) -> tuple[str, str, bool]:
+        client = self._client()
+        keys = self._keys_of(client, name)
+        if held and held[0] in keys:
+            return held[0], held[1], False
+        if not keys:
+            client.create_user(UserName=name)
+        made = client.create_access_key(UserName=name)["AccessKey"]
+        statement = {
+            "Effect": "Allow",
+            "Action": ["s3:*"],
+            "Resource": [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"],
         }
-        return [administrator, *identities]
+        document = json.dumps({"Version": "2012-10-17", "Statement": [statement]})
+        client.put_user_policy(UserName=name, PolicyName="own-bucket", PolicyDocument=document)
+        return made["AccessKeyId"], made["SecretAccessKey"], not keys
 
-    async def _change(self, name: str, entry: dict | None) -> bool:
+    def _remove(self, name: str) -> bool:
+        client = self._client()
+        if not self._keys_of(client, name):
+            return False
+        client.delete_user(UserName=name)
+        return True
+
+    async def ensure(self, name: str, bucket: str, held: tuple[str, str] | None) -> tuple[str, str, bool]:
+        """Return its access key and secret, and whether this call made the identity. Keys it holds already are kept."""
         try:
             async with self.lock:
-                content = await self._read()
-                identities = content.get("identities", [])
-                kept = [item for item in identities if item.get("name") != name]
-                existed = len(kept) != len(identities)
-                await self._write(
-                    {**content, "identities": self._with_administrator([*kept, *([entry] if entry else [])])}
-                )
-                return existed
-        except (httpx.HTTPError, ValueError) as error:
-            raise HTTPException(status_code=502, detail="Storage's list of identities can't be changed") from error
-
-    async def put(self, name: str, access_key: str, secret_key: str, bucket: str) -> bool:
-        """Give this identity access to one bucket, and nothing else. Return whether it was there before."""
-        entry = {
-            "name": name,
-            "credentials": [{"accessKey": access_key, "secretKey": secret_key}],
-            "actions": [f"{action}:{bucket}" for action in ("Read", "Write", "List", "Tagging")],
-        }
-        return await self._change(name, entry)
+                return await asyncio.to_thread(self._ensure, name, bucket, held)
+        except (BotoCoreError, ClientError) as error:
+            raise HTTPException(status_code=502, detail="Storage's identities can't be changed") from error
 
     async def remove(self, name: str) -> bool:
-        return await self._change(name, None)
+        try:
+            async with self.lock:
+                return await asyncio.to_thread(self._remove, name)
+        except (BotoCoreError, ClientError) as error:
+            raise HTTPException(status_code=502, detail="Storage's identities can't be changed") from error

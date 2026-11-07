@@ -185,7 +185,7 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom: { secretKeyRef: { name: service-credentials, key: postgres-password } }
             - { name: SEAWEEDFS_ENDPOINT, value: "http://seaweedfs.iff:80" }
-            - { name: SEAWEEDFS_FILER_URL, value: "http://seaweedfs.iff:8888" }
+            - { name: SEAWEEDFS_IAM_URL, value: "http://seaweedfs.iff:8111" }
             - name: SEAWEEDFS_ACCESS_KEY
               valueFrom: { secretKeyRef: { name: service-credentials, key: s3-access-key } }
             - name: SEAWEEDFS_SECRET_KEY
