@@ -42,19 +42,19 @@ Management's PostgreSQL user needs `CREATEROLE` as well as `CREATEDB`. A partici
 
 ### Per-participant S3 identities
 
-**Decision for review.** SeaweedFS has no call for one identity that leaves others alone. It keeps identities in one list, either a static file given at start, or the filer's `/etc/iam/identity.json`, and a write to the latter **replaces** what the static file gave, until the next restart, when the static file replaces the list again. A probe confirmed this: an identity added through its IAM API removed the static administrator.
+**Decision for review.** SeaweedFS keeps identities in one list, either a static file given at start, or the filer's `/etc/iam/identity.json`. A change to the latter **replaces** what the static file gave, until the next restart, when the static file replaces the list again. A probe confirmed this.
 
-So management keeps the filer's list, when given `SEAWEEDFS_FILER_URL`: it reads the list, sets this participant's entry, keeps every other entry, and adds its own administrator. An identity's actions name its own bucket, so it can't reach another. Management creates the bucket, as the identity can't. The storage must run without a static file, and `scripts/local-env.sh` runs it so, writing the first list at setup. A list is written with `saveInside=true`, as the S3 gateway only takes up one the filer holds inline. Alternative: `-filer.saveToFilerLimit`, which holds all small files inline, and breaks a multipart upload whose last part is small.
+So management uses SeaweedFS's IAM API, when given `SEAWEEDFS_IAM_URL`: for each participant, a user, a generated access key and a policy naming its bucket, and the storage's other identities stay. Management creates the bucket, as the identity can't. The storage must run without a static file, and with its list holding the administrator in the secrets file, which `scripts/local-env.sh` writes at setup with `weed shell`.
 
-**Without `SEAWEEDFS_FILER_URL`, participants share the configured S3 identity, as they do today, and management logs that at start.** This is deliberate, because the [DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack, the default dependency, starts SeaweedFS with a static file. Writing the filer's list there would lock out that stack's own identities. An operator who wants isolation has to move that storage to the filer's list, or give the dataspace its own storage. The acceptance criterion holds only with this set, and `deploy/README.md` says so.
+**Without `SEAWEEDFS_IAM_URL`, participants share the configured S3 identity, as they do today, and management logs that at start.** This is deliberate, because the [DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack, the default dependency, starts SeaweedFS with a static file, and doesn't run the IAM API. Writing a list there would lock out that stack's own identities. An operator who wants isolation has to move that storage to the filer's list, or give the dataspace its own storage. The acceptance criterion holds only with this set, and `deploy/README.md` says so.
 
 Alternatives:
 
-- The IAM API. It makes the same replacement, and generates keys, so its administrator can't be chosen ahead.
-- Refusing to register without `SEAWEEDFS_FILER_URL`. It would stop the default stack from working at all.
+- Writing the filer's file over HTTP. The S3 gateway only takes up a list the filer holds inline, which an HTTP write isn't, and `-filer.saveToFilerLimit` to make it so breaks any multipart upload with a small last part. A live run found both.
+- Refusing to register without `SEAWEEDFS_IAM_URL`. It would stop the default stack from working at all.
 - A storage instance per participant, as the external demo has. It gives real isolation on any stack, at the cost of a stateful service per participant and a new backup story.
 
-The filer's port holds these keys in plain text. So only management may reach it. `scripts/local-env.sh` ships a policy for that, and `deploy/README.md` asks the operator for the same.
+**The IAM API of this version didn't refuse a wrong signature** in a probe, and the filer's port serves the list, with every identity's keys in plain text. So only management may reach either. `scripts/local-env.sh` ships a policy for that, and `deploy/README.md` asks the operator for the same.
 
 ### The per-participant internal key
 

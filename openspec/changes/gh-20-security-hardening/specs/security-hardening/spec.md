@@ -72,7 +72,7 @@ Each hosted participant SHALL have its own PostgreSQL user, owning its own datab
 - **THEN** a user it made is removed
 
 ### Requirement: An S3 identity per participant
-With a filer address configured, each hosted participant SHALL have its own S3 identity, limited to its own bucket, and other entries in the list SHALL be kept. Without one, participants SHALL share the configured identity, and the service SHALL log that.
+With the storage's IAM address configured, each hosted participant SHALL have its own S3 identity, limited to its own bucket, and other identities SHALL be kept. Without one, participants SHALL share the configured identity, and the service SHALL log that.
 
 #### Scenario: Its own bucket
 - **WHEN** a participant's adapter stores and reads content
@@ -94,8 +94,8 @@ With a filer address configured, each hosted participant SHALL have its own S3 i
 - **WHEN** a participant is removed
 - **THEN** its identity no longer works
 
-#### Scenario: No filer address
-- **WHEN** no filer address is configured
+#### Scenario: No IAM address
+- **WHEN** no IAM address is configured
 - **THEN** participants use the configured identity, and the list isn't touched
 
 ### Requirement: An internal key per participant
