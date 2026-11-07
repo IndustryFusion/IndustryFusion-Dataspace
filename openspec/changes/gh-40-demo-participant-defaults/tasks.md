@@ -24,3 +24,4 @@
 ## 5. Documents
 
 - [ ] 5.1 Update `management-api.md`, `keycloak.md`, `architecture.md` and `deploy/README.md` for the defaults, the JSON form, `warnings` and the hop that reachability adds; verify by reading them against the behaviour
+- [x] 5.2 Correct `keycloak.md` and `architecture.md` to say that a participant's id is its company's `company_ifric_id`; verified by reading them, and by a search showing no document, code or test states or enforces the opposite

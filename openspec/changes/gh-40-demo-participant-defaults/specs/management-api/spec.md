@@ -48,7 +48,7 @@ Demo participants and a hosted participant's reachability work without extra set
 
 ### Requirement: Demo participants
 
-`POST /api/demo` SHALL create the participants named in `DEMO_PARTICIPANTS` through the same steps. `DEMO_PARTICIPANTS` SHALL accept a JSON list of participants or `<id>=<type>` entries separated by commas. Unset or empty, it SHALL mean `urn:demo:factory-owner` as a factory owner, and `urn:demo:machine-builder` and `urn:demo:second-machine-builder` as machine builders. A value that can't be used SHALL stop the service at start.
+`POST /api/demo` SHALL create the participants named in `DEMO_PARTICIPANTS` through the same steps. `DEMO_PARTICIPANTS` SHALL accept a JSON list of participants or `<id>=<type>` entries separated by commas. Unset or empty, it SHALL mean the demo companies' IFRIC URNs: `urn:ifric:ifx-eur-com-own-42ced491-b35d-41f7-9949-fcbb5fa4dcd9` as a factory owner, and `urn:ifric:ifx-eur-com-nap-37eb511d-49c0-4700-ba17-dee8248f0fb5` and `urn:ifric:ifx-eur-com-nap-2150a82e-ccbb-47d7-be5a-8059906bc253` as machine builders. A value that can't be used SHALL stop the service at start.
 
 #### Scenario: Creating them
 - **WHEN** an administrator calls `POST /api/demo`
