@@ -235,6 +235,8 @@ spec:
             - { name: EDC_DATASOURCE_DEFAULT_USER, value: participant }
             - name: EDC_DATASOURCE_DEFAULT_PASSWORD
               valueFrom: { secretKeyRef: { name: credentials, key: postgres-password } }
+            - name: DATASPACE_KEYCLOAK_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: credentials, key: client-secret } }
           volumeMounts:
             - { name: config, mountPath: /config }
           readinessProbe:

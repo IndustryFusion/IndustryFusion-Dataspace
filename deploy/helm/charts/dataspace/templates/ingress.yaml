@@ -46,9 +46,7 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: {{ int64 .Values.limits.maxJsonBytes | quote }}
     # A registration waits for its pods.
     nginx.ingress.kubernetes.io/proxy-read-timeout: {{ add 60 .Values.participants.provisionReadySeconds | quote }}
-    {{- with .Values.ingress.management.allowFrom }}
-    nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}
-    {{- end }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ required "ingress.management.allowFrom is required with the Ingress: see architecture.md" .Values.ingress.management.allowFrom | quote }}
     {{- end }}
     {{- if and $tls.enabled $tls.certManagerClusterIssuer }}
     cert-manager.io/cluster-issuer: {{ $tls.certManagerClusterIssuer | quote }}

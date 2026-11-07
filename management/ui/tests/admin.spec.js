@@ -29,11 +29,7 @@ test('admin actions are unavailable without admin mode', async ({ page, request 
     await expect(page.getByRole('button', { name })).toHaveCount(0);
   }
   await page.getByRole('tab', { name: 'Policies' }).click();
-  await page.getByLabel('Factory owner').selectOption('urn:ui:fo');
-  await page.getByLabel('Machine builder').selectOption('urn:ui:mb');
-  await page.getByRole('button', { name: 'Show' }).click();
-  await expect(page.getByRole('table')).toBeVisible();
-  for (const name of ['Approve', 'Deny', 'Reset']) {
+  for (const name of ['Show', 'Approve', 'Deny', 'Reset']) {
     await expect(page.getByRole('button', { name })).toHaveCount(0);
   }
 });

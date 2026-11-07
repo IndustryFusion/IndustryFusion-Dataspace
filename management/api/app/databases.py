@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-"""Creates and drops participants' databases. Their names come from a hexadecimal slug."""
+"""Creates and drops participants' databases and users. Their names come from a hexadecimal slug."""
 
 import asyncpg
 from fastapi import HTTPException
@@ -38,17 +38,49 @@ class Databases:
             timeout=10,
         )
 
-    async def create(self, name: str) -> bool:
-        """Return whether this call made the database."""
+    async def ensure_user(self, name: str, password: str) -> bool:
+        """Create the user, or give it this password. Return whether this call made it. The password is hexadecimal."""
         try:
             connection = await self._connect()
             try:
-                if await connection.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", name):
-                    return False
-                await connection.execute(f'CREATE DATABASE "{name}"')
-                return True
-            except (asyncpg.DuplicateDatabaseError, asyncpg.UniqueViolationError):
-                return False
+                exists = await connection.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", name)
+                verb = "ALTER" if exists else "CREATE"
+                await connection.execute(f"""{verb} ROLE "{name}" LOGIN PASSWORD '{password}'""")
+                # Who creates a database for an owner has to be a member of that role.
+                await connection.execute(f'GRANT "{name}" TO CURRENT_USER')
+                return not exists
+            finally:
+                await connection.close()
+        except UNAVAILABLE as error:
+            raise HTTPException(status_code=503, detail="PostgreSQL refused or did not answer") from error
+
+    async def drop_user(self, name: str) -> bool:
+        """Return whether there was such a user. Its databases have to be gone."""
+        try:
+            connection = await self._connect()
+            try:
+                existed = await connection.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", name)
+                await connection.execute(f'DROP ROLE IF EXISTS "{name}"')
+                return bool(existed)
+            finally:
+                await connection.close()
+        except UNAVAILABLE as error:
+            raise HTTPException(status_code=503, detail="PostgreSQL refused or did not answer") from error
+
+    async def create(self, name: str, owner: str) -> bool:
+        """Return whether this call made the database. Only its owner can connect to it, and administrators."""
+        try:
+            connection = await self._connect()
+            try:
+                made = False
+                try:
+                    if not await connection.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", name):
+                        await connection.execute(f'CREATE DATABASE "{name}" OWNER "{owner}"')
+                        made = True
+                except (asyncpg.DuplicateDatabaseError, asyncpg.UniqueViolationError):
+                    pass
+                await connection.execute(f'REVOKE CONNECT, TEMPORARY ON DATABASE "{name}" FROM PUBLIC')
+                return made
             finally:
                 await connection.close()
         except UNAVAILABLE as error:

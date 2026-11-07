@@ -64,6 +64,7 @@ class World:
         self.registry_list_for: set[str] = set()
         self.forwarded: list[httpx.Request] = []
         self.answer: httpx.Response | None = None
+        self.compatible_answer: list[dict] | None = None
         self.time = 1000.0
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -81,6 +82,8 @@ class World:
                 who = request.url.path.removeprefix("/participants/compatible/")
                 if who not in self.participants:
                     return httpx.Response(404, json={})
+                if self.compatible_answer is not None:
+                    return httpx.Response(200, json=self.compatible_answer)
                 return httpx.Response(200, json=[{"participant_id": "peer-of-" + who}])
             wanted = request.url.path.removeprefix("/participants/")
             if wanted in self.registry_list_for:
@@ -404,6 +407,23 @@ def test_compatible_answers_for_the_caller(client, world):
     assert response.status_code == 200
     assert response.json() == [{"participant_id": f"peer-of-{OWNER}"}]
     assert world.forwarded == []
+
+
+def test_compatible_leaves_out_what_only_works_inside_the_hub(client, world):
+    peers = [
+        {"participant_id": "hosted", "hosted": True, "externally_reachable": False,
+         "adapter_url": "http://adapter.internal", "dsp_url": "http://connector.internal"},
+        {"participant_id": "reachable", "hosted": True, "externally_reachable": True,
+         "adapter_url": "http://adapter.internal", "dsp_url": "http://dsp.public/x", "peer_notify_url": "http://g/peer/r"},
+        {"participant_id": "external", "hosted": False, "externally_reachable": True,
+         "adapter_url": "http://a.example", "dsp_url": "http://d.example"},
+    ]  # fmt: skip
+    world.compatible_answer = peers
+    answer = {entry["participant_id"]: entry for entry in client.get("/participants/compatible", headers=auth()).json()}
+    assert (answer["hosted"]["adapter_url"], answer["hosted"]["dsp_url"]) == (None, None)
+    assert (answer["reachable"]["adapter_url"], answer["reachable"]["dsp_url"]) == (None, "http://dsp.public/x")
+    assert answer["reachable"]["peer_notify_url"] == "http://g/peer/r"
+    assert (answer["external"]["adapter_url"], answer["external"]["dsp_url"]) == ("http://a.example", "http://d.example")
 
 
 def test_compatible_needs_a_token_and_registration(client):

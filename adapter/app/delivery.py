@@ -26,7 +26,7 @@ from urllib.parse import quote
 import httpx
 from sqlalchemy import update
 
-from app.auth import TRANSFER_TOKEN_HEADER, OwnToken, TokenVerifier, transfer_token
+from app.auth import DELIVER_CONTENT, READ_PAYLOAD, TRANSFER_TOKEN_HEADER, OwnToken, TokenVerifier, transfer_token
 from app.config import Settings
 from app.connector import Connector, ConnectorError
 from app.conversations import note_the_answer
@@ -155,7 +155,8 @@ async def deliver(services: Services, message: dict, peer: dict) -> None:
             provider_dsp = message["content_ref"]["dsp_url"]
         else:
             source = f"{settings.adapter_url}/internal/payload/{quote(message_id, safe='')}"
-            await services.connector.offer(message_id, source)
+            header = (TRANSFER_TOKEN_HEADER, transfer_token(settings, READ_PAYLOAD, message_id))
+            await services.connector.offer(message_id, source, header)
         await set_outbox(services, message_id, status="registered")
 
         target = (peer.get("peer_notify_url") or peer.get("adapter_url") or "").rstrip("/")
@@ -199,7 +200,7 @@ async def fetch(services: Services, message_id: str, sender: str, asset_id: str,
         # The provider's connector makes this call, and it may be outside this adapter's network.
         own_address = settings.peer_notify_url or settings.adapter_url
         destination = f"{own_address}/internal/inbox-receive/{quote(message_id, safe='')}"
-        header = (TRANSFER_TOKEN_HEADER, transfer_token(settings, message_id))
+        header = (TRANSFER_TOKEN_HEADER, transfer_token(settings, DELIVER_CONTENT, message_id))
         transfer = await connector.push(agreement, provider_dsp, destination, header)
         await connector.wait_for_transfer(transfer, deadline)
     except Exception as error:  # a background task has nobody to report to, so the row must say what happened

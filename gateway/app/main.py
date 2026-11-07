@@ -258,6 +258,13 @@ async def forward(
     return StreamingResponse(relay(), status_code=answer.status_code, headers=returned)
 
 
+def shown_to_agents(peer: dict) -> dict:
+    """A hosted participant's own addresses only work inside the hub. An external one's are its public ones."""
+    if not peer.get("hosted"):
+        return peer
+    return {**peer, "adapter_url": None, "dsp_url": peer.get("dsp_url") if peer.get("externally_reachable") else None}
+
+
 def adapter_address(record: dict) -> str:
     address = (record.get("adapter_url") or "").rstrip("/")
     if not address:
@@ -302,7 +309,7 @@ def create_app(
     @application.get("/participants/compatible")
     async def compatible(request: Request) -> JSONResponse:
         participant_id, _ = await caller(request)
-        return JSONResponse(await directory.compatible(participant_id))
+        return JSONResponse([shown_to_agents(peer) for peer in await directory.compatible(participant_id)])
 
     async def to_peer(receiver: str, request: Request, path: str) -> Response:
         # Any valid token will do here. The receiving adapter decides whether it accepts the caller.

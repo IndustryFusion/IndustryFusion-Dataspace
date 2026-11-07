@@ -40,7 +40,7 @@ spec:
     matchLabels: { app: adapter-${SLUG} }
   template:
     metadata:
-      labels: { app: adapter-${SLUG} }
+      labels: { app: adapter-${SLUG}, dataspace.industryfusion.org/component: adapter }
     spec:
       containers:
         - name: adapter

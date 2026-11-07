@@ -85,7 +85,7 @@ app.kubernetes.io/part-of: dataspace
 - { name: SEAWEEDFS_ENDPOINT, value: {{ .Values.dependencies.s3.endpoint | quote }} }
 {{ include "dataspace.fromSecret" (dict "name" "SEAWEEDFS_ACCESS_KEY" "key" "s3-access-key") }}
 {{ include "dataspace.fromSecret" (dict "name" "SEAWEEDFS_SECRET_KEY" "key" "s3-secret-key") }}
-{{ include "dataspace.fromSecret" (dict "name" "ADAPTER_INTERNAL_KEY" "key" "adapter-internal-key") }}
+- { name: SEAWEEDFS_FILER_URL, value: {{ .Values.dependencies.s3.filerUrl | quote }} }
 - { name: REGISTRY_URL, value: "http://registry.{{ $services }}:19000" }
 - { name: GATEWAY_URL, value: "http://gateway.{{ $services }}:8080" }
 - { name: GATEWAY_PEER_URL, value: {{ .Values.participants.gatewayPeerUrl | default (printf "http://gateway.%s:8080" $services) | quote }} }

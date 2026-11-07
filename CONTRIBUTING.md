@@ -147,6 +147,8 @@ It uses only its own kubeconfig, `.local/kubeconfig`, so your other clusters are
 
 With the services deployed, `scripts/message-exchange-check.py` runs two agents exchanging messages through the gateway, `scripts/connector-transfer-check.py` tests two connectors on their own, `scripts/management-check.py` onboards and removes participants through the management API, with real failures at each step, and `scripts/ifric-check.py` checks company details with real Keycloak tokens and a stand-in for the IFRIC registry.
 
+`scripts/security-check.py` tries what participants must not be able to do to each other, from real pods: reading a payload, injecting a message, reaching components, using another's credentials, and a connector with the wrong identity.
+
 `scripts/external-demo.py up` deploys two self-hosted participants, each in its own namespace with its own PostgreSQL, S3 storage, adapter and connector, and a NetworkPolicy limiting it to the public routes. `down` removes them. See "External participants" in [management-api.md](management-api.md).
 
 To try the Helm install from [deploy/README.md](deploy/README.md) instead of `services`, run `scripts/local-env.sh images`, install an Ingress controller, and use `-e local` with the file that `scripts/local-env.sh helm-secrets` writes as `DATASPACE_SECRETS_FILE`. `scripts/ingress-check.py` then checks the install through the Ingress, including an upload at the limit.

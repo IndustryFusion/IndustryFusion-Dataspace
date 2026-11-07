@@ -147,9 +147,10 @@ either end. `registry` similarly has its own `registry` database;
 it owns none of its own.
 
 Every one of these is a **separate database** on the same shared Postgres
-cluster (`acid-cluster.iff`) — not a shared schema. A participant's adapter
-can't query another participant's tables even by accident; they're
-different databases entirely, just hosted on the same cluster.
+cluster (`acid-cluster.iff`) — not a shared schema, and each participant has
+its own PostgreSQL user, which owns its two databases and can't connect to
+anyone else's. Each also has its own S3 identity, limited to its own bucket, if
+the storage's identities can be managed: see `deploy/README.md`.
 
 ### What is and is not publicly reachable
 
@@ -157,8 +158,8 @@ different databases entirely, just hosted on the same cluster.
 |-----------|--------|-------|
 | API Gateway | Yes (via Ingress) | Single HTTPS endpoint for all agents |
 | Management GUI | Ops team only | Behind VPN or separate Ingress with IP allowlist |
-| Registry | No | Cluster-internal |
-| Adapters | No | Cluster-internal; only reachable via gateway |
+| Registry | No | Cluster-internal. Only the gateway, management and adapters can reach it, by NetworkPolicy |
+| Adapters | No | Cluster-internal; only reachable via gateway, by the hub's own components, by NetworkPolicy |
 | EDC connectors | No | Cluster-internal. Hosted connectors are never exposed directly; external participants reach them only through the DSP gateway |
 | DSP gateway | Optional (via Ingress) | Enabled when external participants are in use; never exposes a connector's control or management port |
 | Keycloak | Yes | Agents need to fetch tokens; standard OIDC endpoint |
@@ -328,7 +329,7 @@ Eclipse Dataspace Components 0.9.0 — one instance per participant. Handles the
 | DSP endpoint (`:8082`) | Protocol endpoint — used only by other EDC connectors |
 | Management API (`:8081`) | Used only by the local adapter |
 
-**Known limit:** the connector uses a mock identity on the DSP layer, so one connector does not verify which participant another connector belongs to. Replacing it is tracked in #20.
+A connector proves who it is on the DSP layer with a token from its participant's own Keycloak client, and checks the one it receives: signature, issuer, expiry, a `participant_id` claim and that participant's role. It compares the result with the participant a negotiation names, so a connector claiming to be another participant is refused. Connector policies still permit any authenticated participant. See [keycloak.md](keycloak.md).
 
 Hosted EDC connectors communicate with each other over DSP **inside the cluster**, and their DSP endpoints are never exposed directly. External participants reach a hosted connector only through the DSP gateway.
 
@@ -336,7 +337,7 @@ Hosted EDC connectors communicate with each other over DSP **inside the cluster*
 
 Stateless path router for DSP traffic from external participants. It maps `/{slug}/api/v1/dsp/{path}` to a hosted connector's port 8082 and `/{slug}/api/v1/public/{path}` to its port 8084, where the slug is `sha256(participant_id)[:8]`. It never exposes the control port, and does no authentication of its own: DSP traffic is authorized by the connectors. See "Request Flow — External participant ↔ hosted participant".
 
-Hosted-only installations do not need to expose it, and the Ingress for it is off by default. It keeps no state, so it can't tell whether a slug's participant is `externally_reachable`: exposing it makes the DSP and public ports of every hosted connector reachable, and until #20 connectors use a mock identity and permit-all policies.
+Hosted-only installations do not need to expose it, and the Ingress for it is off by default. It keeps no state, so it can't tell whether a slug's participant is `externally_reachable`: exposing it makes the DSP and public ports of every hosted connector reachable. A connector then refuses anyone without a participant's token, and connector policies permit any participant that has one.
 
 ### Management GUI
 
@@ -626,14 +627,29 @@ Adapter            validates JWT again (participant role check)
   │
   │  HTTP (cluster-internal)
   ▼
-EDC Management     API key auth (X-Api-Key header)
+EDC Management     API key auth (X-Api-Key header), one key per participant
   │
   │  (internal / DSP)
   ▼
 EDC DSP            Dataspace Protocol (connector-to-connector)
+                   each side checks the other's participant token
 ```
 
 Defense-in-depth: even if the gateway misroutes a request, the adapter rejects it because the JWT's `participant:X` role does not match the adapter's own participant ID.
+
+The routes a connector's data plane calls, `GET /internal/payload/{id}` and `POST /internal/inbox-receive/{id}`, need a token for that route and that message, which the adapter gives the connector that has to call it. Management reaches an adapter's own capability routes with a key that participant alone has.
+
+NetworkPolicies limit who can open a connection at all:
+
+| To | From |
+|---|---|
+| An adapter's port 8000 | The gateway, management, and pods in the participants' namespace |
+| A connector's DSP and public ports | Connectors, and the DSP gateway |
+| A connector's management port | Adapters |
+| A connector's control port | Connectors |
+| The registry | The gateway, management, and adapters |
+
+They limit what comes in. Hub components can call out, as external participants' addresses aren't known in advance. They need a network plugin that enforces them, and the checks above don't depend on them.
 
 ---
 

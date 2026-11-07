@@ -438,6 +438,12 @@ def discovery(run: Run) -> None:
     ids = [entry.get("participant_id") for entry in compatible.body if isinstance(entry, dict)]
     report.that("GET /participants/compatible names the other side", run.builder_id in ids, ids)
     report.that("GET /participants/compatible doesn't name this side", run.owner_id not in ids, ids)
+    hosted = [entry for entry in compatible.body if isinstance(entry, dict) and entry.get("hosted")]
+    report.that(
+        "A hosted peer's addresses inside the hub are left out",
+        all(entry["adapter_url"] is None and entry["dsp_url"] is None for entry in hosted),
+        hosted,
+    )
     answer = run.owner.request("GET", "/participants/compatible", authenticated=False)
     report.shape("No token: 401", answer, 401, STANDARD)
     call = urllib.request.Request(f"{run.owner.gateway}/participants/compatible")

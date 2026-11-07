@@ -49,6 +49,7 @@ class Settings:
     s3_endpoint: str = field(default_factory=lambda: _url("SEAWEEDFS_ENDPOINT"))
     s3_access_key: str = field(default_factory=lambda: _env("SEAWEEDFS_ACCESS_KEY"))
     s3_secret_key: str = field(default_factory=lambda: _env("SEAWEEDFS_SECRET_KEY"))
+    s3_filer_url: str = field(default_factory=lambda: _url("SEAWEEDFS_FILER_URL"))
     keycloak_url: str = field(default_factory=lambda: _url("KEYCLOAK_URL"))
     keycloak_health_url: str = field(default_factory=lambda: _env("KEYCLOAK_HEALTH_URL"))
     keycloak_realm: str = field(default_factory=lambda: _env("KEYCLOAK_REALM", "dataspace"))
@@ -57,7 +58,6 @@ class Settings:
     gateway_peer_url: str = field(default_factory=lambda: _url("GATEWAY_PEER_URL"))
     dsp_gateway_url: str = field(default_factory=lambda: _url("DSP_GATEWAY_URL"))
     dsp_gateway_peer_url: str = field(default_factory=lambda: _url("DSP_GATEWAY_PEER_URL"))
-    adapter_internal_key: str = field(default_factory=lambda: _env("ADAPTER_INTERNAL_KEY"))
     participants_namespace: str = field(
         default_factory=lambda: _env("PARTICIPANTS_NAMESPACE", "dataspace-participants")
     )

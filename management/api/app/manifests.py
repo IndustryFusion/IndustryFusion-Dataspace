@@ -18,6 +18,7 @@
 
 import hashlib
 import pathlib
+from dataclasses import dataclass
 from urllib.parse import quote
 
 from app.config import Settings
@@ -25,6 +26,8 @@ from app.config import Settings
 PART_OF = "dataspace-management"
 SLUG_LABEL = "dataspace.industryfusion.org/slug"
 ID_ANNOTATION = "dataspace.industryfusion.org/participant-id"
+# What the NetworkPolicies in the participants' namespace select on.
+COMPONENT_LABEL = "dataspace.industryfusion.org/component"
 ANNOUNCED_ANNOTATION = "dataspace.industryfusion.org/announced-dsp-address"
 CONNECTOR_PORTS = {"default": 8080, "management": 8081, "dsp": 8082, "control": 8083, "public": 8084}
 CONNECTOR_TEMPLATE = pathlib.Path(__file__).parent / "connector.properties.template"
@@ -44,6 +47,25 @@ def connector_name(participant_id: str) -> str:
 
 def secret_name(participant_id: str) -> str:
     return f"participant-{slug(participant_id)}"
+
+
+def database_user(participant_id: str) -> str:
+    return f"participant_{slug(participant_id)}"
+
+
+def storage_identity(participant_id: str) -> str:
+    return f"participant-{slug(participant_id)}"
+
+
+@dataclass(frozen=True)
+class Credentials:
+    """What a hosted participant holds that no other does, other than its client secret."""
+
+    edc_api_key: str
+    database_password: str
+    internal_key: str
+    s3_access_key: str
+    s3_secret_key: str
 
 
 def database_names(participant_id: str) -> list[str]:
@@ -119,7 +141,10 @@ def _deployment(
         "spec": {
             "selector": {"matchLabels": {"app": name}},
             "template": {
-                "metadata": {"labels": {**metadata["labels"], "app": name}, "annotations": pod_annotations or {}},
+                "metadata": {
+                    "labels": {**metadata["labels"], "app": name, COMPONENT_LABEL: name.split("-")[0]},
+                    "annotations": pod_annotations or {},
+                },
                 "spec": pod_spec,
             },
         },
@@ -145,11 +170,12 @@ def connector_properties(participant_id: str, settings: Settings, reachable: boo
     text = CONNECTOR_TEMPLATE.read_text().replace("${CONNECTOR_URL}", url)
     text = text.replace("${DSP_ADDRESS}", announced_dsp(participant_id, settings, reachable))
     text = text.replace("${PUBLIC_ADDRESS}", public)
+    text = text.replace("${KEYCLOAK_URL}", settings.keycloak_url).replace("${KEYCLOAK_REALM}", settings.keycloak_realm)
     return text.replace("${PARTICIPANT_ID}", participant_id.replace("\\", "\\\\"))
 
 
-def secret(participant_id: str, settings: Settings, client_secret: str, edc_api_key: str) -> dict:
-    user, password = settings.postgres_user, settings.postgres_password
+def secret(participant_id: str, settings: Settings, client_secret: str, credentials: Credentials) -> dict:
+    user, password = database_user(participant_id), credentials.database_password
     database = database_names(participant_id)[0]
     return {
         "apiVersion": "v1",
@@ -162,11 +188,11 @@ def secret(participant_id: str, settings: Settings, client_secret: str, edc_api_
             ),
             "db-user": user,
             "db-password": password,
-            "edc-api-key": edc_api_key,
+            "edc-api-key": credentials.edc_api_key,
             "client-secret": client_secret,
-            "s3-access-key": settings.s3_access_key,
-            "s3-secret-key": settings.s3_secret_key,
-            "internal-key": settings.adapter_internal_key,
+            "s3-access-key": credentials.s3_access_key,
+            "s3-secret-key": credentials.s3_secret_key,
+            "internal-key": credentials.internal_key,
         },
     }
 
@@ -194,6 +220,7 @@ def connector_deployment(participant_id: str, settings: Settings, reachable: boo
             {"name": "EDC_DATASOURCE_DEFAULT_URL", "value": jdbc},
             _from_secret("EDC_DATASOURCE_DEFAULT_USER", participant_id, "db-user"),
             _from_secret("EDC_DATASOURCE_DEFAULT_PASSWORD", participant_id, "db-password"),
+            _from_secret("DATASPACE_KEYCLOAK_CLIENT_SECRET", participant_id, "client-secret"),
         ],
         "volumeMounts": [{"name": "config", "mountPath": "/config"}],
         "readinessProbe": {
@@ -255,11 +282,16 @@ def adapter_service(participant_id: str) -> dict:
 
 
 def all_objects(
-    participant_id: str, participant_type: str, settings: Settings, client_secret: str, key: str, reachable: bool
+    participant_id: str,
+    participant_type: str,
+    settings: Settings,
+    client_secret: str,
+    credentials: Credentials,
+    reachable: bool,
 ) -> list:
     """Dependencies first: a pod that starts needs its Secret and ConfigMap to be there."""
     return [
-        secret(participant_id, settings, client_secret, key),
+        secret(participant_id, settings, client_secret, credentials),
         config_map(participant_id, settings, reachable),
         connector_deployment(participant_id, settings, reachable),
         connector_service(participant_id),

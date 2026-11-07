@@ -40,9 +40,6 @@ generate_credentials() {
   mkdir -p "$LOCAL"
   chmod 700 "$LOCAL"
   if [ -f "$LOCAL/credentials.env" ]; then
-    # An environment made before the management service existed lacks this one.
-    grep -q '^ADAPTER_INTERNAL_KEY=' "$LOCAL/credentials.env" ||
-      echo "ADAPTER_INTERNAL_KEY=$(openssl rand -hex 24)" >> "$LOCAL/credentials.env"
     return
   fi
   umask 077
@@ -53,23 +50,41 @@ S3_ACCESS_KEY=$(openssl rand -hex 12)
 S3_SECRET_KEY=$(openssl rand -hex 24)
 KEYCLOAK_ADMIN_USER=admin
 KEYCLOAK_ADMIN_PASSWORD=$(openssl rand -hex 24)
-ADAPTER_INTERNAL_KEY=$(openssl rand -hex 24)
 CREDENTIALS
 }
 
 apply_secrets() {
   # shellcheck disable=SC1091
   . "$LOCAL/credentials.env"
-  local s3config
-  s3config=$(printf '{"identities":[{"name":"dataspace","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' \
-    "$S3_ACCESS_KEY" "$S3_SECRET_KEY")
   kubectl -n iff create secret generic infra-credentials \
     --from-literal=postgres-user="$POSTGRES_USER" \
     --from-literal=postgres-password="$POSTGRES_PASSWORD" \
     --from-literal=keycloak-admin-user="$KEYCLOAK_ADMIN_USER" \
     --from-literal=keycloak-admin-password="$KEYCLOAK_ADMIN_PASSWORD" \
-    --from-literal=s3-config="$s3config" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+}
+
+# Writes the first list of S3 identities to the filer. Management adds to it, and keeps what is there. Storage
+# accepts anything until it has a list, so this comes before anything else uses it.
+write_storage_identities() {
+  # shellcheck disable=SC1091
+  . "$LOCAL/credentials.env"
+  local port pf_pid list
+  port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+  kubectl -n iff port-forward svc/seaweedfs "$port:8888" >/dev/null &
+  pf_pid=$!
+  trap "kill $pf_pid 2>/dev/null || true; trap - RETURN" RETURN
+  for _ in $(seq 1 60); do
+    curl -fs -o /dev/null "http://127.0.0.1:$port/" && break
+    sleep 1
+  done
+  list=$(printf '{"identities":[{"name":"dataspace-management","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' \
+    "$S3_ACCESS_KEY" "$S3_SECRET_KEY")
+  # A list that is already there holds what participants need.
+  if ! curl -fs -o /dev/null "http://127.0.0.1:$port/etc/iam/identity.json"; then
+    curl -fsS -X PUT -H 'Content-Type: application/json' --data-binary "$list" \
+      "http://127.0.0.1:$port/etc/iam/identity.json" >/dev/null
+  fi
 }
 
 # Runs a command with $KEYCLOAK_LOCAL_URL set to a forwarded Keycloak port.
@@ -116,6 +131,7 @@ up() {
   kubectl apply -f "$ROOT/deploy/local/infra.yaml" >/dev/null
   kubectl -n iff rollout status deploy/acid-cluster --timeout=300s
   kubectl -n iff rollout status deploy/seaweedfs --timeout=300s
+  write_storage_identities
   kubectl -n iff rollout status deploy/keycloak-service --timeout=420s
   with_keycloak setup_realm
   with_keycloak check_token
@@ -148,7 +164,6 @@ secrets:
   s3:
     accessKey: "$S3_ACCESS_KEY"
     secretKey: "$S3_SECRET_KEY"
-  adapterInternalKey: "$ADAPTER_INTERNAL_KEY"
 SECRETS
   echo "$LOCAL/helm-secrets.yaml"
 }
@@ -164,10 +179,10 @@ services() {
     --from-literal=postgres-password="$POSTGRES_PASSWORD" \
     --from-literal=s3-access-key="$S3_ACCESS_KEY" \
     --from-literal=s3-secret-key="$S3_SECRET_KEY" \
-    --from-literal=adapter-internal-key="$ADAPTER_INTERNAL_KEY" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   images
   kubectl apply -f "$ROOT/deploy/local/services.yaml" >/dev/null
+  kubectl apply -f "$ROOT/deploy/local/network-policies.yaml" >/dev/null
   for service in $SERVICES; do
     kubectl -n dataspace rollout restart "deploy/$service" >/dev/null
     kubectl -n dataspace rollout status "deploy/$service" --timeout=180s

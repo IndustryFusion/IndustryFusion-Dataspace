@@ -99,10 +99,13 @@ spec:
 
 def main() -> int:
     key = secrets.token_hex(16)
+    with lc.port_forward("iff", "keycloak-service", 8080) as keycloak:
+        admin = lc.KeycloakAdmin(f"{keycloak}/auth")
+        client_secrets = {participant: admin.add_participant(participant) for participant in (PROVIDER, CONSUMER)}
     try:
         lc.apply(stand_in_manifest())
-        provider_service = lc.deploy_connector(PROVIDER, key)
-        consumer_service = lc.deploy_connector(CONSUMER, key)
+        provider_service = lc.deploy_connector(PROVIDER, key, client_secrets[PROVIDER])
+        consumer_service = lc.deploy_connector(CONSUMER, key, client_secrets[CONSUMER])
         lc.wait_ready(lc.PARTICIPANTS, "connector-check-stand-in")
         lc.wait_ready(lc.PARTICIPANTS, provider_service)
         lc.wait_ready(lc.PARTICIPANTS, consumer_service)

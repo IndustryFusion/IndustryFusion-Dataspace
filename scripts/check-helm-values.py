@@ -34,11 +34,11 @@ CANARY = {
     "secrets": {
         "postgres": {"user": "canary-pg-user", "password": "canary-pg-password"},
         "s3": {"accessKey": "canary-s3-access", "secretKey": "canary-s3-secret"},
-        "adapterInternalKey": "canary-internal-key",
     }
 }
 IP_ADDRESS = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 BODY_SIZE = "nginx.ingress.kubernetes.io/proxy-body-size"
+ALLOWLIST = "nginx.ingress.kubernetes.io/whitelist-source-range"
 
 
 def render(component: str, environment: pathlib.Path, secrets: str, *extra: str) -> list[dict]:
@@ -66,7 +66,8 @@ def check(environment: pathlib.Path, secrets: str) -> list[str]:
     problems = []
     by_component = {
         component: render(component, environment, secrets, "--set", "ingress.enabled=true",
-                          "--set", "ingress.gateway.host=g.example", "--set", "ingress.management.host=m.example")
+                          "--set", "ingress.gateway.host=g.example", "--set", "ingress.management.host=m.example",
+                          "--set", "ingress.management.allowFrom=10.0.0.0/8")
         for component in COMPONENTS
     }  # fmt: skip
     for component, objects in by_component.items():
@@ -74,7 +75,11 @@ def check(environment: pathlib.Path, secrets: str) -> list[str]:
             if not item.get("apiVersion") or not item.get("kind"):
                 problems.append(f"{component}: an object has no apiVersion or kind: {sorted(item)}")
                 continue
-            text = yaml.safe_dump(item)
+            # An allowlist is addresses by its nature.
+            shown = {**item, "metadata": {**item["metadata"], "annotations": {
+                key: value for key, value in item["metadata"].get("annotations", {}).items() if key != ALLOWLIST
+            }}}  # fmt: skip
+            text = yaml.safe_dump(shown)
             if item["kind"] != "Secret" and "canary-" in text:
                 problems.append(f"{component}: a credential is in a {item['kind']}")
             if IP_ADDRESS.search(text):
@@ -89,6 +94,31 @@ def check(environment: pathlib.Path, secrets: str) -> list[str]:
         wanted = upload if name == "gateway" else json_limit
         if size != wanted:
             problems.append(f"{name}: Ingress body size {size} isn't the limit {wanted}")
+
+    # A management Ingress that is open to whoever reaches it isn't a mistake that can be made.
+    attempt = subprocess.run(
+        [
+            "helm", "template", "x", str(ROOT / "charts" / "dataspace"), "-f", str(ROOT / "values" / "common.yaml"),
+            "-f", secrets, "--set", "component=management", "--set", "ingress.enabled=true",
+            "--set", "ingress.management.host=m.example",
+        ],  # fmt: skip
+        capture_output=True,
+        text=True,
+    )
+    if attempt.returncode == 0 or "ingress.management.allowFrom" not in attempt.stderr:
+        problems.append("A management Ingress without an allowlist was accepted")
+
+    # On by default, and each policy where it belongs.
+    common = {o["metadata"]["name"]: o for o in by_component["common"] if o["kind"] == "NetworkPolicy"}
+    if set(common) != {"adapters", "connectors", "registry"}:
+        problems.append(f"The NetworkPolicies are {sorted(common)}")
+    elif {common[name]["metadata"].get("namespace") for name in ("adapters", "connectors")} != {
+        "dataspace-participants"
+    }:
+        problems.append("The adapters' and connectors' NetworkPolicies aren't in the participants' namespace")
+    off = render("common", environment, secrets, "--set", "networkPolicy.enabled=false")
+    if any(o["kind"] == "NetworkPolicy" for o in off):
+        problems.append("networkPolicy.enabled=false still renders a NetworkPolicy")
 
     without = render("dsp-gateway", environment, secrets, "--set", "ingress.enabled=true")
     if any(o["kind"] == "Ingress" for o in without):
@@ -151,7 +181,7 @@ def main() -> int:
 
     # The committed example has to name every secret, with no values.
     example = yaml.safe_load((ROOT / "values" / "secrets.yaml.example").read_text())["secrets"]
-    if any(value for value in (*example["postgres"].values(), *example["s3"].values(), example["adapterInternalKey"])):
+    if any(value for value in (*example["postgres"].values(), *example["s3"].values())):
         problems.append("secrets.yaml.example holds a value")
 
     for problem in problems:

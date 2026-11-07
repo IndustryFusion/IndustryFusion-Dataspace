@@ -18,6 +18,7 @@
 
 import json
 import time
+from urllib.parse import unquote
 
 import httpx
 import jwt
@@ -25,7 +26,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
-from app.auth import OwnToken, TokenVerifier
+from app.auth import DELIVER_CONTENT, READ_PAYLOAD, TRANSFER_TOKEN_HEADER, OwnToken, TokenVerifier, transfer_token
 from app.config import Settings, role_for
 from app.connector import ConnectorError  # noqa: F401 - imported by tests from here
 from app.db import Database
@@ -39,6 +40,7 @@ PEER = "urn:test:mb"
 ISSUER = "http://keycloak.test/realms/dataspace"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 OTHER_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+NO_TOKEN = "x-test-without-token"
 
 
 def token(participant: str = ME, issuer: str = ISSUER, key=KEY, roles: list[str] | None = None) -> str:
@@ -68,7 +70,8 @@ class FakeConnector:
         self.on_push = None
         self.after_push_error: Exception | None = None
 
-    async def offer(self, asset_id: str, source_url: str) -> None:
+    async def offer(self, asset_id: str, source_url: str, header: tuple[str, str]) -> None:
+        self.offer_header = header
         if self.offer_error:
             raise self.offer_error
         if self.on_offer:
@@ -209,6 +212,15 @@ def harness(tmp_path):
     )
     with TestClient(create_app(services)) as client:
         client.portal.call(services.db.ensure_schema)
+
+        def with_transfer_token(request: httpx.Request) -> None:
+            """Tests of what these routes do call them as a connector does. See test_inbox.py for the token itself."""
+            route, _, message_id = request.url.path.removeprefix("/internal/").partition("/")
+            if route in {READ_PAYLOAD, DELIVER_CONTENT} and TRANSFER_TOKEN_HEADER not in request.headers:
+                if NO_TOKEN not in request.headers:
+                    request.headers[TRANSFER_TOKEN_HEADER] = transfer_token(settings, route, unquote(message_id))
+
+        client.event_hooks["request"].append(with_transfer_token)
         built = Harness(client, services, world, connector)
 
         async def push_empty_object(destination: str) -> None:

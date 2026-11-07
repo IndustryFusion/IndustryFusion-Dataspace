@@ -14,34 +14,43 @@
 # limitations under the License.
 #
 
-"""Capability calls to a hosted participant's adapter, using its internal routes."""
+"""Capability calls to a hosted participant's adapter, using its internal routes and its own key."""
 
+import base64
 from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
 
+from app import manifests
+from app.kubernetes import Kubernetes
+
 PASSED_ON = {400, 403, 404, 409, 422}
 
 
 class Adapters:
-    def __init__(self, http: httpx.AsyncClient, internal_key: str) -> None:
+    def __init__(self, http: httpx.AsyncClient, kubernetes: Kubernetes) -> None:
         self.http = http
-        self.internal_key = internal_key
+        self.kubernetes = kubernetes
+
+    async def _key_of(self, participant_id: str) -> str:
+        secret = await self.kubernetes.get("Secret", manifests.secret_name(participant_id))
+        encoded = (secret or {}).get("data", {}).get("internal-key")
+        if not encoded:
+            raise HTTPException(status_code=503, detail="This participant has no internal key")
+        return base64.b64decode(encoded).decode()
 
     async def call(self, record: dict, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
-        """Call the adapter of a registry record. The key is only ever sent to a hosted participant's adapter."""
+        """Call the adapter of a registry record. A key is only ever sent to its own participant's hosted adapter."""
         if not record.get("hosted", False):
             raise HTTPException(status_code=409, detail="An external participant runs its own adapter")
         address = (record.get("adapter_url") or "").rstrip("/")
         if not address:
             raise HTTPException(status_code=503, detail="This participant has no adapter address")
+        key = await self._key_of(record["participant_id"])
         try:
             answer = await self.http.request(
-                method,
-                f"{address}/internal/capabilities{path}",
-                json=body,
-                headers={"X-Internal-Key": self.internal_key},
+                method, f"{address}/internal/capabilities{path}", json=body, headers={"X-Internal-Key": key}
             )
         except httpx.HTTPError as error:
             raise HTTPException(status_code=503, detail="The participant's adapter is unavailable") from error

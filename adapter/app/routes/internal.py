@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import update
 
-from app.auth import TRANSFER_TOKEN_HEADER, bearer_token, holds_role, transfer_token_is_right
+from app.auth import DELIVER_CONTENT, READ_PAYLOAD, bearer_token, holds_role, require_transfer_token
 from app.conversations import (
     apply,
     invalid_answer,
@@ -158,6 +158,7 @@ async def transfer_request(body: TransferRequest, request: Request):
 @router.get("/payload/{message_id}")
 async def payload(message_id: str, request: Request) -> Response:
     services = request.app.state.services
+    require_transfer_token(request, READ_PAYLOAD, message_id)
     async with services.db.session() as session:
         row = await session.get(OutboxMessage, message_id)
     content = await services.storage.read_stream(row.payload_ref) if row and row.payload_ref else None
@@ -188,10 +189,7 @@ async def _write_body(request: Request, target, limit: int) -> None:
 @router.post("/inbox-receive/{message_id}")
 async def inbox_receive(message_id: str, request: Request):
     services = request.app.state.services
-    # The gateway forwards nothing here without this header. A call inside the cluster without it stays allowed: #20.
-    given = request.headers.get(TRANSFER_TOKEN_HEADER)
-    if given is not None and not transfer_token_is_right(services.settings, message_id, given):
-        raise HTTPException(status_code=401, detail="Wrong transfer token")
+    require_transfer_token(request, DELIVER_CONTENT, message_id)
     async with services.db.session() as session:
         row = await session.get(InboxMessage, message_id)
     if row is None:

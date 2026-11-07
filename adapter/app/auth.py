@@ -29,14 +29,22 @@ from app.config import Settings, role_for
 TRANSFER_TOKEN_HEADER = "X-Transfer-Token"
 
 
-def transfer_token(settings: Settings, message_id: str) -> str:
-    """Lets its holder deliver one message's content here. It is given to the provider's connector."""
-    material = f"inbox-receive:{message_id}".encode()
+READ_PAYLOAD, DELIVER_CONTENT = "payload", "inbox-receive"
+
+
+def transfer_token(settings: Settings, route: str, message_id: str) -> str:
+    """Lets its holder call one of the connector's routes here, for one message. See protocol.md."""
+    material = f"{route}:{message_id}".encode()
     return hmac.new(settings.keycloak_client_secret.encode(), material, hashlib.sha256).hexdigest()
 
 
-def transfer_token_is_right(settings: Settings, message_id: str, given: str) -> bool:
-    return hmac.compare_digest(transfer_token(settings, message_id).encode(), given.encode())
+def require_transfer_token(request: Request, route: str, message_id: str) -> None:
+    settings = request.app.state.services.settings
+    given = request.headers.get(TRANSFER_TOKEN_HEADER)
+    if given is None:
+        raise HTTPException(status_code=401, detail="Missing transfer token")
+    if not hmac.compare_digest(transfer_token(settings, route, message_id).encode(), given.encode()):
+        raise HTTPException(status_code=401, detail="Wrong transfer token")
 
 
 class TokenVerifier:

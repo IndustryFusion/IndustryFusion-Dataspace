@@ -20,12 +20,12 @@ from functools import partial
 
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
-from conftest import ME, PEER, ConnectorError, auth
+from conftest import ME, NO_TOKEN, PEER, ConnectorError, auth
 from sqlalchemy import update
 from sqlalchemy.exc import OperationalError
 
 from app import delivery
-from app.auth import TRANSFER_TOKEN_HEADER, transfer_token
+from app.auth import DELIVER_CONTENT, READ_PAYLOAD, TRANSFER_TOKEN_HEADER, transfer_token
 from app.db import InboxMessage, now
 from app.delivery import fetch, set_inbox_in_transfer
 from app.retention import purge_expired
@@ -425,7 +425,7 @@ def test_the_destination_is_this_adapter_with_a_token_for_this_message(harness):
     assert harness.pushed_to == "http://me.test/internal/inbox-receive/m1"
     name, value = harness.connector.push_header
     assert name == TRANSFER_TOKEN_HEADER
-    assert value == transfer_token(harness.services.settings, "m1")
+    assert value == transfer_token(harness.services.settings, DELIVER_CONTENT, "m1")
 
 
 def test_with_a_peer_address_the_destination_is_the_peer_route(harness):
@@ -439,32 +439,68 @@ def test_with_a_peer_address_the_destination_is_the_peer_route(harness):
 def test_content_with_its_token_is_taken(harness):
     assert harness.notify().status_code == 202
     harness.settle()
-    sent = {TRANSFER_TOKEN_HEADER: transfer_token(harness.services.settings, "m1")}
+    sent = {TRANSFER_TOKEN_HEADER: transfer_token(harness.services.settings, DELIVER_CONTENT, "m1")}
     answer = harness.client.post("/internal/inbox-receive/m1", content=b'{"a": 1}', headers=sent)
     assert answer.status_code == 200
     assert harness.client.get("/inbox/messages/m1", headers=auth()).json()["payload"] == {"a": 1}
 
 
-@pytest.mark.parametrize("given", ["wrong", "", "another message"])
-def test_content_with_a_wrong_token_changes_nothing(harness, given):
+def wrong_tokens(settings) -> dict[str, dict[str, str]]:
+    return {
+        "none": {NO_TOKEN: "1"},
+        "wrong": {TRANSFER_TOKEN_HEADER: "wrong"},
+        "empty": {TRANSFER_TOKEN_HEADER: ""},
+        "another message": {TRANSFER_TOKEN_HEADER: transfer_token(settings, DELIVER_CONTENT, "m2")},
+        "the other route": {TRANSFER_TOKEN_HEADER: transfer_token(settings, READ_PAYLOAD, "m1")},
+        "another participant": {
+            TRANSFER_TOKEN_HEADER: transfer_token(
+                dataclasses.replace(settings, keycloak_client_secret="another"), DELIVER_CONTENT, "m1"
+            )
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "kind", ["none", "wrong", "empty", "another message", "the other route", "another participant"]
+)
+def test_content_with_a_wrong_token_changes_nothing(harness, kind):
     assert harness.notify().status_code == 202
     harness.settle()
     before = harness.client.get("/inbox/messages/m1", headers=auth()).json()
-    if given == "another message":
-        given = transfer_token(harness.services.settings, "m2")
-    answer = harness.client.post(
-        "/internal/inbox-receive/m1", content=b'{"a": 1}', headers={TRANSFER_TOKEN_HEADER: given}
-    )
-    assert answer.status_code == 401
+    sent = wrong_tokens(harness.services.settings)[kind]
+    assert harness.client.post("/internal/inbox-receive/m1", content=b'{"a": 1}', headers=sent).status_code == 401
     assert harness.client.get("/inbox/messages/m1", headers=auth()).json() == before
 
 
 def test_a_wrong_token_looks_the_same_for_a_message_that_does_not_exist(harness):
-    answer = harness.client.post("/internal/inbox-receive/none", content=b"x", headers={TRANSFER_TOKEN_HEADER: "wrong"})
-    assert answer.status_code == 401
+    sent = {TRANSFER_TOKEN_HEADER: "wrong"}
+    assert harness.client.post("/internal/inbox-receive/none", content=b"x", headers=sent).status_code == 401
+    assert harness.client.get("/internal/payload/none", headers=sent).status_code == 401
+
+
+def test_a_message_is_offered_with_a_token_for_reading_its_payload(harness):
+    message_id = harness.send(payload={"a": 1}).json()["message_id"]
+    name, value = harness.connector.offer_header
+    assert name == TRANSFER_TOKEN_HEADER
+    assert value == transfer_token(harness.services.settings, READ_PAYLOAD, message_id)
+    assert harness.client.get(f"/internal/payload/{message_id}", headers={name: value}).status_code == 200
+
+
+def test_a_payload_needs_its_own_token(harness):
+    message_id = harness.send(payload={"secret": 1}).json()["message_id"]
+    settings = harness.services.settings
+    for sent in (
+        {NO_TOKEN: "1"},
+        {TRANSFER_TOKEN_HEADER: "wrong"},
+        {TRANSFER_TOKEN_HEADER: transfer_token(settings, READ_PAYLOAD, "another")},
+        {TRANSFER_TOKEN_HEADER: transfer_token(settings, DELIVER_CONTENT, message_id)},
+    ):
+        answer = harness.client.get(f"/internal/payload/{message_id}", headers=sent)
+        assert answer.status_code == 401
+        assert b"secret" not in answer.content
 
 
 def test_a_token_depends_on_the_participants_own_secret(harness):
     settings = harness.services.settings
     other = dataclasses.replace(settings, keycloak_client_secret="someone else's")
-    assert transfer_token(settings, "m1") != transfer_token(other, "m1")
+    assert transfer_token(settings, DELIVER_CONTENT, "m1") != transfer_token(other, DELIVER_CONTENT, "m1")

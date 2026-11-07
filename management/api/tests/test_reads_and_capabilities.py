@@ -14,6 +14,7 @@
 # limitations under the License.
 #
 
+import base64
 import dataclasses
 
 import httpx
@@ -30,6 +31,27 @@ def setup_pair(world):
     world.register(MB, "machine_builder")
 
 
+def own_key(world, participant: str) -> str:
+    held = world.kubernetes.objects[("Secret", manifests.secret_name(participant))]["data"]["internal-key"]
+    return base64.b64decode(held).decode()
+
+
+def test_each_adapter_is_called_with_its_own_key(world):
+    setup_pair(world)
+    assert own_key(world, FO) != own_key(world, MB)
+    for participant in (FO, MB):
+        world.client.get(f"/api/participants/{participant}/capabilities", headers=world.admin)
+        assert world.adapters.calls[-1][2] == own_key(world, participant)
+
+
+PUBLIC_READS = ["/api/participants", f"/api/participants/{FO}", f"/api/participants/compatible/{MB}"]
+
+
+def records_in(answer) -> list[dict]:
+    body = answer.json()
+    return body if isinstance(body, list) else [body]
+
+
 def test_reads_need_no_token(world):
     setup_pair(world)
     listed = world.client.get("/api/participants").json()
@@ -41,6 +63,52 @@ def test_reads_need_no_token(world):
     }  # fmt: skip
     compatible = world.client.get(f"/api/participants/compatible/{FO}").json()
     assert [entry["participant_id"] for entry in compatible] == [MB]
+
+
+@pytest.mark.parametrize("path", PUBLIC_READS)
+def test_a_public_read_shows_no_address_of_a_hosted_participant(world, path):
+    setup_pair(world)
+    answer = world.client.get(path)
+    assert "dataspace-participants" not in answer.text
+    for record in records_in(answer):
+        assert record["adapter_url"] is None and record["dsp_url"] is None
+
+
+def test_a_public_read_shows_a_reachable_participants_public_addresses(world):
+    world.register(FO, externally_reachable=True)
+    record = world.client.get(f"/api/participants/{FO}").json()
+    assert record["adapter_url"] is None
+    assert record["dsp_url"].startswith("http://dsp-public.test:8085/")
+    assert record["peer_notify_url"] == f"http://gateway.test:8080/peer/{FO}"
+
+
+def test_a_public_read_keeps_an_external_participants_addresses(world):
+    world.register(
+        "urn:test:ext", "machine_builder", hosted=False, adapter_url="http://a.example", dsp_url="http://d.example"
+    )
+    record = world.client.get("/api/participants/urn:test:ext").json()
+    assert (record["adapter_url"], record["dsp_url"]) == ("http://a.example", "http://d.example")
+
+
+@pytest.mark.parametrize("path", PUBLIC_READS)
+def test_an_administrator_reads_the_whole_record(world, path):
+    setup_pair(world)
+    for record in records_in(world.client.get(path, headers=world.admin)):
+        assert "dataspace-participants" in record["adapter_url"]
+
+
+@pytest.mark.parametrize("path", PUBLIC_READS)
+def test_a_bad_token_on_a_read_is_refused(world, path):
+    setup_pair(world)
+    assert world.client.get(path, headers={"Authorization": "Bearer nonsense"}).status_code == 401
+
+
+@pytest.mark.parametrize("path", [f"/api/participants/{FO}/capabilities", f"/api/policy?fo={FO}&mb={MB}"])
+def test_who_has_access_needs_an_administrator(world, path):
+    setup_pair(world)
+    assert world.client.get(path).status_code == 401
+    assert world.adapters.calls == []
+    assert world.client.get(path, headers=world.admin).status_code == 200
 
 
 def test_reads_of_something_unknown_give_404(world):
@@ -71,13 +139,13 @@ def test_credentials_of_a_client_this_service_did_not_make(world):
     assert world.client.get(path, headers=world.admin).status_code == 404
 
 
-def test_reading_capabilities_uses_the_internal_key_and_no_token(world):
+def test_reading_capabilities_uses_the_participants_own_internal_key(world):
     setup_pair(world)
-    answer = world.client.get(f"/api/participants/{FO}/capabilities")
+    answer = world.client.get(f"/api/participants/{FO}/capabilities", headers=world.admin)
     assert answer.status_code == 200
     assert answer.json()["capabilities"][0]["capability"] == "twin:history"
     method, url, key, _ = world.adapters.calls[-1]
-    assert (method, key) == ("GET", "the-internal-key")
+    assert (method, key) == ("GET", own_key(world, FO))
     assert url == f"http://adapter-{manifests.slug(FO)}.dataspace-participants:8000/internal/capabilities"
 
 
@@ -87,7 +155,7 @@ def test_changing_a_default(world):
     answer = world.client.patch(path, json={"default_policy": "auto"}, headers=world.admin)
     assert answer.status_code == 200
     method, url, key, body = world.adapters.calls[-1]
-    assert method == "PATCH" and url.endswith("/internal/capabilities/twin:history") and key == "the-internal-key"
+    assert method == "PATCH" and url.endswith("/internal/capabilities/twin:history") and key == own_key(world, FO)
     assert body == {"default_policy": "auto"}
 
 
@@ -129,7 +197,7 @@ def test_changing_a_decision(world, action):
     answer = world.client.patch(f"/api/participants/{FO}/approvals/a1", json={"action": action}, headers=world.admin)
     assert answer.status_code == 200
     method, url, key, body = world.adapters.calls[-1]
-    assert method == "PATCH" and url.endswith("/internal/capabilities/approvals/a1") and key == "the-internal-key"
+    assert method == "PATCH" and url.endswith("/internal/capabilities/approvals/a1") and key == own_key(world, FO)
     assert body["action"] == action
 
 
@@ -145,27 +213,27 @@ def test_an_adapters_refusal_is_passed_on(world, status):
 def test_a_wrong_internal_key_is_not_called_an_auth_error_of_the_caller(world):
     setup_pair(world)
     world.adapters.answer = httpx.Response(401, json={"detail": "Wrong internal key"})
-    assert world.client.get(f"/api/participants/{FO}/capabilities").status_code == 502
+    assert world.client.get(f"/api/participants/{FO}/capabilities", headers=world.admin).status_code == 502
 
 
 @pytest.mark.parametrize("response", [httpx.Response(500, json={}), httpx.Response(200, text="not json")])
 def test_an_unusable_adapter_gives_503(world, response):
     setup_pair(world)
     world.adapters.answer = response
-    assert world.client.get(f"/api/participants/{FO}/capabilities").status_code == 503
+    assert world.client.get(f"/api/participants/{FO}/capabilities", headers=world.admin).status_code == 503
 
 
 def test_an_adapter_that_does_not_answer_gives_503(world):
     setup_pair(world)
     world.adapters.up = False
-    assert world.client.get(f"/api/participants/{FO}/capabilities").status_code == 503
+    assert world.client.get(f"/api/participants/{FO}/capabilities", headers=world.admin).status_code == 503
 
 
 def test_an_external_participant_never_gets_the_key(world):
     world.register("urn:test:ext", "factory_owner", hosted=False, adapter_url="http://ext.example", dsp_url="http://d")
     world.register(MB, "machine_builder")
     responses = [
-        world.client.get("/api/participants/urn:test:ext/capabilities"),
+        world.client.get("/api/participants/urn:test:ext/capabilities", headers=world.admin),
         world.client.patch(
             "/api/participants/urn:test:ext/capabilities/twin:history",
             json={"default_policy": "auto"},
@@ -185,12 +253,12 @@ def test_an_external_participant_never_gets_the_key(world):
 
 
 def test_unknown_participants_on_capability_routes(world):
-    assert world.client.get("/api/participants/urn:none/capabilities").status_code == 404
+    assert world.client.get("/api/participants/urn:none/capabilities", headers=world.admin).status_code == 404
     answer = world.client.patch("/api/participants/urn:none/approvals/a", json={"action": "reset"}, headers=world.admin)
     assert answer.status_code == 404
 
 
-def test_policy_for_a_hosted_pair_needs_no_token(world):
+def test_policy_for_a_hosted_pair(world):
     setup_pair(world)
     world.adapters.state["approvals"] = [
         {"id": "a1", "consumer_id": MB, "capability": "twin:history", "status": "approved", "decision_note": "Yes"},
@@ -202,7 +270,7 @@ def test_policy_for_a_hosted_pair_needs_no_token(world):
             "decision_note": None,
         },
     ]
-    answer = world.client.get("/api/policy", params={"fo": FO, "mb": MB})
+    answer = world.client.get("/api/policy", params={"fo": FO, "mb": MB}, headers=world.admin)
     assert answer.status_code == 200
     body = answer.json()
     assert body["unavailable"] == []
@@ -243,18 +311,18 @@ def test_policy_with_an_external_side_as_admin(world):
 def test_policy_for_a_wrong_pair(world):
     setup_pair(world)
     world.register("urn:test:fo2", "factory_owner")
-    get = lambda fo, mb: world.client.get("/api/policy", params={"fo": fo, "mb": mb}).status_code  # noqa: E731
+    get = lambda fo, mb: world.client.get("/api/policy", params={"fo": fo, "mb": mb}, headers=world.admin).status_code  # noqa: E731
     assert get(FO, "urn:none") == 404
     assert get("urn:none", MB) == 404
     assert get(MB, FO) == 422
     assert get(FO, "urn:test:fo2") == 422
-    assert world.client.get("/api/policy", params={"fo": FO}).status_code == 422
+    assert world.client.get("/api/policy", params={"fo": FO}, headers=world.admin).status_code == 422
 
 
 def test_policy_with_an_adapter_down_gives_503(world):
     setup_pair(world)
     world.adapters.up = False
-    assert world.client.get("/api/policy", params={"fo": FO, "mb": MB}).status_code == 503
+    assert world.client.get("/api/policy", params={"fo": FO, "mb": MB}, headers=world.admin).status_code == 503
 
 
 def test_health_when_all_answer(world):

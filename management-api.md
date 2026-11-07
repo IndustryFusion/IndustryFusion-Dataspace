@@ -23,20 +23,20 @@ The API uses the caller's token for the Keycloak Admin API. It stores no data of
 | Route | Auth |
 |---|---|
 | `GET /api/health` | None |
-| `GET /api/participants` | None |
-| `GET /api/participants/{id}` | None |
-| `GET /api/participants/compatible/{id}` | None |
+| `GET /api/participants` | None, for what is public. See [Reads](#reads) |
+| `GET /api/participants/{id}` | None, for what is public |
+| `GET /api/participants/compatible/{id}` | None, for what is public |
 | `POST /api/participants` | `dataspace-admin` |
 | `POST /api/demo` | `dataspace-admin` |
 | `DELETE /api/participants/{id}` | `dataspace-admin` |
 | `GET /api/participants/{id}/credentials` | `dataspace-admin` |
-| `GET /api/participants/{id}/capabilities` | None |
+| `GET /api/participants/{id}/capabilities` | `dataspace-admin` |
 | `PATCH /api/participants/{id}/capabilities/{capability}` | `dataspace-admin` |
 | `POST /api/participants/{id}/approvals` | `dataspace-admin` |
 | `PATCH /api/participants/{id}/approvals/{approval_id}` | `dataspace-admin` |
-| `GET /api/policy?fo=&mb=` | None for hosted pairs. `dataspace-admin` if either side is external |
+| `GET /api/policy?fo=&mb=` | `dataspace-admin` |
 
-#20 restricts the unauthenticated reads.
+`GET /api/health` shows each component's status, with details that hold no addresses or credentials.
 
 Errors use `{"detail": "..."}` with `401`, `403`, `404`, `409`, `422`, `502` or `503`.
 
@@ -66,12 +66,13 @@ Returns the participant record with `client_id` and `client_secret`.
 
 **A hosted participant** is provisioned in this order:
 
-1. Create the adapter and connector databases.
+1. Create its PostgreSQL user, and the adapter and connector databases, which that user owns and no other can connect to.
 2. Create the Keycloak role `participant:<id>`, a client-credentials client named after the participant, a `participant_id` claim mapper, and the role assignment.
-3. Create the Secret, ConfigMap, and connector and adapter Deployments and Services in `dataspace-participants`.
-4. Write the registry entry.
+3. Create its bucket and an S3 identity limited to it, if `SEAWEEDFS_FILER_URL` is set. Otherwise it uses the configured identity, shared with every other participant, and its adapter creates the bucket. See [deploy/README.md](deploy/README.md).
+4. Create the Secret, ConfigMap, and connector and adapter Deployments and Services in `dataspace-participants`. The Secret holds what only this participant has: its database password, S3 keys, internal key and connector API key. They are generated once.
+5. Write the registry entry.
 
-**An external participant** gets steps 2 and 4 only, as it runs its own adapter and connector.
+**An external participant** gets steps 2 and 5 only, as it runs its own adapter and connector.
 
 The registry entry is written once the participant's pods are available, so a registration can take minutes. Allow for that in any proxy in front of this service. A participant that peers can find is one that can receive.
 
@@ -91,7 +92,7 @@ Creates the demo participants named in `DEMO_PARTICIPANTS` through the same step
 
 ### `DELETE /api/participants/{id}`
 
-Removes the registry entry, the Keycloak client and role, the pods and every other Kubernetes object, the databases and the participant's bucket, leaving no orphaned Deployments.
+Removes the registry entry, the Keycloak client and role, the pods and every other Kubernetes object, the databases and PostgreSQL user, and the participant's bucket and S3 identity, leaving no orphaned Deployments.
 
 Every step is tried. If one fails the answer is `502` naming it, and repeating the call finishes the removal. `404` means nothing was found.
 
@@ -105,15 +106,17 @@ Returns `client_id` and `client_secret`.
 
 ```json
 {
-  "participant_id": "...", "participant_type": "...", "adapter_url": "...", "dsp_url": "...",
+  "participant_id": "...", "participant_type": "...", "adapter_url": null, "dsp_url": null,
   "hosted": true, "externally_reachable": false, "peer_notify_url": null,
   "company_name": "...", "company_category": "...", "city": "...", "country": "..."
 }
 ```
 
+**What is public.** Without a token, a hosted participant has `adapter_url` `null`, and `dsp_url` `null` unless it is `externally_reachable`, when that is the DSP gateway's address. An external participant's own addresses are shown, as its peers need them. With a `dataspace-admin` token, the record is whole. Any other token gives `401` or `403`, rather than being treated as none.
+
 The last four fields come from the IFRIC registry, and are left out if it is unavailable, not configured or does not know the participant. See [IFRIC details](#ifric-details).
 
-External adapters use these read routes as their `REGISTRY_URL`, as `<management URL>/api`.
+External adapters use these read routes as their `REGISTRY_URL`, as `<management URL>/api`. What is public is enough for that.
 
 ## External participants
 
@@ -123,7 +126,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
 
 **To onboard one:**
 
-1. Make sure of the doors. The gateway has to be reachable from where it runs, and so does the DSP gateway, which isn't exposed by default: see `ingress.dspGateway`, `participants.gatewayPeerUrl` and `participants.dspGatewayPeerUrl` in [deploy/README.md](deploy/README.md).
+1. Make sure of the doors. The gateway has to be reachable from where it runs, and so does the DSP gateway, which isn't exposed by default: see `ingress.dspGateway`, `participants.gatewayPeerUrl` and `participants.dspGatewayPeerUrl` in [deploy/README.md](deploy/README.md). So do these read routes: add its address to `ingress.management.allowFrom`.
 2. Register it, with `hosted: false` and the addresses where hosted connectors and adapters can reach it. It gets only its Keycloak client and registry entry, with no databases or pods. The answer has its `client_secret`.
 
    ```json
@@ -142,7 +145,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
    | `REGISTRY_URL` | `<management URL>/api` |
    | `KEYCLOAK_URL`, `KEYCLOAK_REALM` | Exactly what the hub's services use, as tokens' issuers are compared exactly |
 
-   Leave `PEER_NOTIFY_URL` empty, as its `adapter_url` is already reachable. Its connector's `edc.participant.id` is its `participant_id`, and its callback address is its `dsp_url`.
+   Leave `PEER_NOTIFY_URL` empty, as its `adapter_url` is already reachable. Its connector's `edc.participant.id` is its `participant_id`, its callback address is its `dsp_url`, and it needs the same Keycloak settings and client secret: hosted connectors refuse one without a token from that client.
 
 **What it needs to reach:** the gateway, the DSP gateway, these read routes and Keycloak. **What has to reach it:** hosted connectors, on its connector's DSP port and its adapter's `/internal/inbox-receive`, and hosted adapters, on its `/internal/transfer-request` and `/internal/capabilities`. Keep its connector's management and control ports closed.
 
@@ -152,7 +155,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
 
 ## Capabilities and policies
 
-Access is advisory. See [protocol.md](protocol.md). These routes use the adapter's internal capability routes, with `ADAPTER_INTERNAL_KEY`. That key is only sent to hosted adapters, so these routes give `409` for an external participant. A decision on a resolved request gives `409`, as on the agent route: reset first, or use `POST /api/participants/{id}/approvals`, which replaces it.
+Access is advisory. See [protocol.md](protocol.md). These routes need an administrator, and show who asked for what. They use the adapter's internal capability routes, with the key that participant alone has, read from its Secret. It is only sent to its own hosted adapter, so these routes give `409` for an external participant. A decision on a resolved request gives `409`, as on the agent route: reset first, or use `POST /api/participants/{id}/approvals`, which replaces it.
 
 ### `GET /api/participants/{id}/capabilities`
 
@@ -212,7 +215,7 @@ The capability view for one factory owner and machine builder pair, in both dire
 }
 ```
 
-An external side's capabilities are held by its own adapter, so it is listed in `unavailable`.
+An external side's capabilities are held by its own adapter, so it is listed in `unavailable`. This shows who has access to what, so it needs an administrator.
 
 ## Health
 
@@ -240,15 +243,16 @@ If configured, the API reads `GET /company/get-all-companies` from the [IFRIC re
 
 ## Configuration
 
-`POSTGRES_*`, `SEAWEEDFS_*`, `KEYCLOAK_URL`, `KEYCLOAK_HEALTH_URL`, `KEYCLOAK_REALM`, `REGISTRY_URL`, `GATEWAY_URL`, `GATEWAY_PEER_URL`, `DSP_GATEWAY_URL`, `DSP_GATEWAY_PEER_URL`, `ADAPTER_INTERNAL_KEY`, `PARTICIPANTS_NAMESPACE`, `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION`, `RESOURCES_PARTICIPANT_*`, `DEMO_PARTICIPANTS`, `IFRIC_BACKEND_URL`, `IFRIC_READER_CLIENT_ID`, `IFRIC_READER_CLIENT_SECRET`, `IFRIC_LOOKUP_CACHE_SECONDS`.
+`POSTGRES_*`, `SEAWEEDFS_*`, `KEYCLOAK_URL`, `KEYCLOAK_HEALTH_URL`, `KEYCLOAK_REALM`, `REGISTRY_URL`, `GATEWAY_URL`, `GATEWAY_PEER_URL`, `DSP_GATEWAY_URL`, `DSP_GATEWAY_PEER_URL`, `PARTICIPANTS_NAMESPACE`, `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION`, `RESOURCES_PARTICIPANT_*`, `DEMO_PARTICIPANTS`, `IFRIC_BACKEND_URL`, `IFRIC_READER_CLIENT_ID`, `IFRIC_READER_CLIENT_SECRET`, `IFRIC_LOOKUP_CACHE_SECONDS`.
 
 Also `MAX_UPLOAD_BYTES` and `MAX_JSON_BYTES`, passed on to adapters, which must match the gateway's, and `PROVISION_READY_SECONDS` (default 300), how long a registration waits for pods.
 
 | Setting | Holds |
 |---|---|
 | `DEMO_PARTICIPANTS` | Comma-separated `<id>=<type>` |
+| `SEAWEEDFS_FILER_URL` | The storage's filer, for an S3 identity per participant. Empty means participants share the configured identity. See [deploy/README.md](deploy/README.md) before setting it |
 | `GATEWAY_PEER_URL`, `DSP_GATEWAY_PEER_URL` | What an `externally_reachable` participant announces. They have to work from outside the cluster and from inside it, as two reachable participants use them too |
 | `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION` | Participant images are `[<registry>/]<repo>/adapter:<version>` and `.../connector:<version>` |
 | `RESOURCES_PARTICIPANT_CPU_REQUEST`, `_CPU_LIMIT`, `_MEMORY_REQUEST`, `_MEMORY_LIMIT` | Per participant container. Unset ones are left out, except the memory limit, which defaults to `2Gi` |
 
-The service needs a PostgreSQL user that can create databases, and RBAC in the participants namespace. It can read Secrets there, so it holds what they hold.
+The service needs a PostgreSQL user that can create databases and roles, and RBAC in the participants namespace. It can read Secrets there, so it holds what they hold.

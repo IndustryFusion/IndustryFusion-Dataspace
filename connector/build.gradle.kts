@@ -34,6 +34,7 @@ dependencies {
 
     implementation(edc("core-spi"))
     implementation(edc("boot-spi"))
+    implementation("com.nimbusds:nimbus-jose-jwt:9.40")
 
     // Runtime and configuration
     runtimeOnly(edc("boot"))
@@ -42,14 +43,13 @@ dependencies {
     runtimeOnly(edc("configuration-filesystem"))
     runtimeOnly(edc("api-observability"))
 
-    // Control plane, with token-protected management API and mock DSP identity
+    // Control plane, with token-protected management API. Its DSP identity is in this project's extension
     runtimeOnly(edc("control-plane-core"))
     runtimeOnly(edc("control-plane-api"))
     runtimeOnly(edc("control-plane-api-client"))
     runtimeOnly(edc("management-api"))
     runtimeOnly(edc("auth-tokenbased"))
     runtimeOnly(edc("dsp"))
-    runtimeOnly(edc("iam-mock"))
 
     // Data plane in the same process
     runtimeOnly(edc("control-api-configuration"))
