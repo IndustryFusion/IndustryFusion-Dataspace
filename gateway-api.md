@@ -201,7 +201,11 @@ The same object, plus:
 }
 ```
 
-`outstanding_requests` holds requests that have no reply yet, in the same form as `messages`. A reply is an accepted message that names the request in `in_reply_to`. Messages refused for audit are listed too, with `applied: false`, and with `status` `rejected` if sent or `error` if received. They answer nothing.
+`outstanding_requests` holds requests that have no reply yet, in the same form as `messages`. A reply is an accepted message that names the request in `in_reply_to`: one this adapter received and didn't refuse, or one it sent that the receiver accepted.
+
+When a request is answered, the time is stored with the request, so `replied_at` stays set, and the request stays out of `outstanding_requests`, after retention has removed the reply. Without a stored time, `replied_at` is that of the earliest reply still kept that isn't refused, including one still on its way.
+
+Retention removes messages' content and rows after their periods, and never the conversation. An old conversation keeps its state and outcome, lists whatever messages remain, and can be continued. Messages refused for audit are listed too, with `applied: false`, and with `status` `rejected` if sent or `error` if received. They answer nothing.
 
 ## Capabilities
 

@@ -115,10 +115,10 @@ async def read_conversation(conversation_id: str, request: Request) -> dict:
             "status": row.status,
             "error_message": row.error_message,
             "has_files": getattr(row, "has_files", bool(ref and ref.endswith(".zip"))),
-            "replied_at": replied.get(row.message_id),
+            "replied_at": iso(row.replied_at) or replied.get(row.message_id),
             "payload": await _payload(services, ref),
         }
         messages.append(view)
-        if row.performative == "request" and not _refused(direction, row) and row.message_id not in replied:
+        if row.performative == "request" and not _refused(direction, row) and not view["replied_at"]:
             outstanding.append(view)
     return {**_summary(conversation), "messages": messages, "outstanding_requests": outstanding}
