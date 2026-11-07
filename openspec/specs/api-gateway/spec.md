@@ -51,10 +51,10 @@ The catch-all route SHALL NOT reach any `internal/*` path of an adapter, however
 - **THEN** the answer is not found, and nothing is forwarded
 
 ### Requirement: Peer notification route
-The gateway SHALL forward `POST /peer/{receiver}/internal/transfer-request` to the named receiver's adapter for any valid token, leaving authorization to the receiver.
+The gateway SHALL forward `POST /peer/{receiver}/internal/transfer-request`, `GET /peer/{receiver}/internal/capabilities` and `POST /peer/{receiver}/internal/capabilities/approvals` to the named receiver's adapter for any valid token, leaving authorization to the receiver, and SHALL remove `X-Internal-Key` from what it forwards on every peer route.
 
 #### Scenario: Forwarded to the receiver
-- **WHEN** a holder of a valid token calls the route for a registered receiver
+- **WHEN** a holder of a valid token calls one of these routes for a registered receiver
 - **THEN** the receiver's adapter gets the request, and its answer is returned
 
 #### Scenario: Unknown receiver
@@ -62,15 +62,35 @@ The gateway SHALL forward `POST /peer/{receiver}/internal/transfer-request` to t
 - **THEN** the answer is not found
 
 #### Scenario: No token
-- **WHEN** the route is called without a valid token
+- **WHEN** one of these routes is called without a valid token
 - **THEN** the answer is unauthorized
 
+#### Scenario: The internal key doesn't pass
+- **WHEN** a caller sends `X-Internal-Key` on a peer route
+- **THEN** the adapter gets the request without it
+
+#### Scenario: Other internal routes stay closed
+- **WHEN** a caller tries another method or path under `/peer/{receiver}/internal/`, such as a management `PATCH`
+- **THEN** nothing reaches the receiver's internal route
+
+#### Scenario: Fields between adapters pass through
+- **WHEN** a notification has `sender_applied`, and its answer has `kept_step`
+- **THEN** each reaches the other side unchanged
+
 ### Requirement: Compatible participants
-`GET /participants/compatible` SHALL answer from the registry for the participant in the token.
+The gateway SHALL answer `GET /participants/compatible` for the calling participant with what the registry answers, leaving out the addresses of hosted participants that only work inside the hub.
 
 #### Scenario: Peers listed
-- **WHEN** a participant asks for its compatible participants
-- **THEN** the registry's answer for that participant is returned
+- **WHEN** a registered participant calls it
+- **THEN** it gets the participants compatible with it
+
+#### Scenario: A hosted peer
+- **WHEN** a peer is hosted
+- **THEN** its `adapter_url` is null, and its `dsp_url` is null unless it is reachable
+
+#### Scenario: An external peer
+- **WHEN** a peer is external
+- **THEN** its own addresses stay
 
 ### Requirement: Registry cache
 The gateway SHALL cache each participant's registry record for 30 seconds, and SHALL NOT cache failures.
@@ -107,3 +127,33 @@ Two agents SHALL exchange messages in both directions using only the gateway and
 #### Scenario: Definition of done
 - **WHEN** agent A sends a request through the gateway, and agent B reads it and replies through the gateway
 - **THEN** each message arrives in the other's inbox through the connectors, with no direct call between the agents or to an adapter
+
+### Requirement: Streaming and upload limit
+The gateway SHALL forward request and answer bodies as they arrive, and SHALL refuse a request body over the configured limit with payload too large. The limit is `MAX_UPLOAD_BYTES` for `POST /outbox/files`, and `MAX_JSON_BYTES` for anything else.
+
+#### Scenario: Large body
+- **WHEN** a body is forwarded in either direction
+- **THEN** its bytes reach the other side unchanged, without being held whole in the gateway's memory
+
+#### Scenario: Stated length over the limit
+- **WHEN** a request states a length over the limit
+- **THEN** the answer is payload too large, and the adapter is not contacted
+
+#### Scenario: Unstated length over the limit
+- **WHEN** a request has no stated length, and its body passes the limit
+- **THEN** the answer is payload too large
+
+### Requirement: Content route for peers
+The gateway SHALL forward `POST /peer/{receiver}/internal/inbox-receive/{id}` to the named receiver's adapter when it has a transfer token header, without asking for a bearer token, up to the upload limit.
+
+#### Scenario: Forwarded with the header
+- **WHEN** a connector pushes content with the header for a registered receiver
+- **THEN** the receiver's adapter gets the body and the header, and its answer is returned
+
+#### Scenario: No header
+- **WHEN** the route is called without the header
+- **THEN** the answer is unauthorized, and nothing is forwarded
+
+#### Scenario: Over the limit
+- **WHEN** the body is larger than the upload limit
+- **THEN** the answer is too large
