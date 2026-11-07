@@ -18,8 +18,8 @@
 - [x] 3.3 Add the new column to an existing table on start; verify a test that upgrades an older table
 
 - [x] 3.4 Apply the role rules at notification; verify tests
-- [x] 3.5 Carry `based_on`, settle any crossing steps, and refuse to reopen a settled state; verify deterministic tests for each id order and for a forged step
-- [x] 3.6 Let a repeat replace a failed step, at accept and at delivery; let the other side's step win over a failed one; take the receiver's copy from its answer; verify tests with notifications that fail
+- [x] 3.5 Keep settlement to simultaneous `close` and `escalate`, ending once a step is answered as applied; verify deterministic tests for each id order and for a forged step
+- [x] 3.6 Send a repeat of a failed step as an applied step, without changing the earlier row; verify on two adapters
 - [x] 3.7 Keep a refused row refused, and hide the conversation from another counterpart; verify tests
 - [x] 3.8 Resolve the delivery gate when accepting is cancelled; verify a test
 
@@ -33,6 +33,7 @@
 - [x] 5.1 Build a harness with two real adapter apps, each on its own PostgreSQL database, notifying each other; verify it fails if the receiver's rules are removed
 - [x] 5.2 Verify both end in the same state for request and reply, grant, deny, cancel, close, escalate and deescalate, reopen, and simultaneous close
 - [x] 5.3 Verify a refused message shows `rejected` at the sender, and the resulting difference matches `protocol.md`
+- [x] 5.5 Verify each documented difference between the copies reads as documented, with fixed ids; verify tests on two adapters
 - [x] 5.4 Verify bursts and races: messages on one conversation, closes racing on one side, and messages racing with a close
 
 ## 6. Documents

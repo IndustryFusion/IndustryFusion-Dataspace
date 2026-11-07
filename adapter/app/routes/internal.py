@@ -29,18 +29,18 @@ from sqlalchemy import update
 from app.auth import bearer_token, holds_role
 from app.conversations import (
     apply,
-    copy_for_the_sender,
-    decide_incoming,
-    decide_unapplied,
     invalid_answer,
     is_refused,
+    locked_decision,
+    locked_for_unapplied,
     refusal_text,
     refused_answer,
+    settle_simultaneous,
 )
 from app.db import InboxMessage, OutboxMessage, add_inbox_row, now
 from app.delivery import fetch, note_transfer, set_inbox_in_transfer
 from app.limits import BodyTooLarge, arrival_limit, over_limit
-from app.protocol import check_validity
+from app.protocol import NO_CHANGE, check_validity
 
 router = APIRouter(prefix="/internal")
 
@@ -61,11 +61,10 @@ class TransferRequest(BaseModel):
     reply_expected: bool = False
     expires_at: datetime | None = None
     response_due_at: datetime | None = None
-    asset_id: str
-    provider_dsp_url: str
+    asset_id: str = Field(max_length=512)
+    provider_dsp_url: str = Field(max_length=2048)
     has_files: bool = False
     sender_applied: bool = True
-    based_on: str | None = None
 
 
 @router.post("/transfer-request", status_code=202)
@@ -101,7 +100,6 @@ async def transfer_request(body: TransferRequest, request: Request):
         "asset_id": body.asset_id,
         "provider_dsp_url": body.provider_dsp_url,
         "has_files": body.has_files,
-        "based_on": body.based_on,
     }
     duplicate = {"message_id": body.message_id, "status": "duplicate"}
 
@@ -113,20 +111,23 @@ async def transfer_request(body: TransferRequest, request: Request):
             await session.commit()
         return invalid_answer(invalid, body.performative) if added else duplicate
 
+    kept_step = None
     async with services.db.session() as session:
         if body.sender_applied:
-            conversation, decision = await decide_incoming(
+            conversation, decision = await locked_decision(
                 session,
                 body.conversation_id,
                 body.sender_participant,
-                body.message_id,
                 body.performative,
+                body.sender_participant,
                 body.outcome,
-                body.based_on,
-                "based_on" in body.model_fields_set,
             )
+            if conversation is not None and decision.reason != "counterpart_mismatch":
+                settled = await settle_simultaneous(session, conversation, body.message_id, body.performative)
+                decision = settled or decision
+                kept_step = conversation.state_message_id if settled is NO_CHANGE else None
         else:
-            conversation, decision = await decide_unapplied(
+            conversation, decision = await locked_for_unapplied(
                 session,
                 body.conversation_id,
                 body.sender_participant,
@@ -148,11 +149,10 @@ async def transfer_request(body: TransferRequest, request: Request):
             return duplicate
         if conversation is not None:
             apply(conversation, decision, body.message_id, body.sender_participant, body.outcome)
-        copy = copy_for_the_sender(conversation, decision.applied)
         await session.commit()
 
     services.spawn(fetch(services, body.message_id, body.sender_participant, body.asset_id, body.provider_dsp_url))
-    return {"message_id": body.message_id, "status": "transferring", **copy}
+    return {"message_id": body.message_id, "status": "transferring", "kept_step": kept_step}
 
 
 @router.get("/payload/{message_id}")
