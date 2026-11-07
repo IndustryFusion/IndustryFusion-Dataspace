@@ -149,6 +149,39 @@ With the services deployed, `scripts/message-exchange-check.py` runs two agents 
 
 To try the Helm install from [deploy/README.md](deploy/README.md) instead of `services`, run `scripts/local-env.sh images`, install an Ingress controller, and use `-e local` with the file that `scripts/local-env.sh helm-secrets` writes as `DATASPACE_SECRETS_FILE`. `scripts/ingress-check.py` then checks the install through the Ingress, including an upload at the limit.
 
+### Contract tests
+
+`scripts/contract_test.py` checks a deployment against [gateway-api.md](gateway-api.md) and [flow.md](flow.md): each route, field, status value and error shape, each flow, and the worked scenario for an agent application. It creates its own participants through the management API, and removes them.
+
+```bash
+scripts/local-env.sh up && scripts/local-env.sh services
+python3 scripts/contract_test.py --local
+```
+
+`--local` also works on a Helm install on that cluster. For another deployment, give its addresses:
+
+```bash
+python3 scripts/contract_test.py --gateway-url <url> --keycloak-url <url> \
+  --management-url <url> --admin-secret <dataspace-admin-cli secret>
+```
+
+Or use existing participants, with `--owner <id>:<secret>` and `--builder <id>:<secret>`. External participants' flows are listed as not run, until #18.
+
+`--self-test` needs no deployment and runs in CI. It shows that each shape refuses a wrong answer. `--tamper 'GET /conversations/*:outcome'` removes a field from a route's real answers, and the run must then fail. A change can also set a value, as in `:outcome="nonsense"`, or be `messages:flip` or `messages:swap`, and a rule that matches no route fails the run. `--only` limits a run to named sections, and `--max-json-bytes` and `--max-upload-bytes` give a deployment's own limits. A maintainer can run the suite in CI with the `Contract tests` workflow, from the Actions tab.
+
+### Client and mock agent
+
+`scripts/dataspace_client.py` is a client for the agent API, for use from Python or the command line. `scripts/mock_agent.py` answers messages as an agent would, through the gateway. Both take their settings from the options or the environment:
+
+```bash
+export DATASPACE_GATEWAY_URL=<url> DATASPACE_KEYCLOAK_URL=<url> \
+  DATASPACE_CLIENT_ID=<participant id> DATASPACE_CLIENT_SECRET=<secret>
+python3 scripts/dataspace_client.py compatible
+python3 scripts/dataspace_client.py send <receiver> --performative request --payload '{"summary": "..."}'
+python3 scripts/dataspace_client.py inbox --status received
+python3 scripts/mock_agent.py
+```
+
 `scripts/setup-local-hosts.sh add` adds host entries for reaching the environment by name, and `remove` takes them out.
 
 ## Working locally (optional)
