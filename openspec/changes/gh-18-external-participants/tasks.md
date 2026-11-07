@@ -22,7 +22,7 @@
 
 ## 5. Demo
 
-- [ ] 5.1 Add the template and the script; verify `up` and `down` on a local cluster
+- [x] 5.1 Add the template and the script; verify `up` and `down` on a local cluster
 - [x] 5.2 Show the NetworkPolicy is active; verify from a pod that hosted adapters and connectors, the registry and the shared PostgreSQL can't be reached, and that the public routes can
 
 ## 6. End to end
@@ -39,4 +39,4 @@
 
 ## 8. Report
 
-- [ ] 8.1 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 8.1 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
