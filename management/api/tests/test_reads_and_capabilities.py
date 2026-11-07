@@ -27,8 +27,8 @@ FO, MB = "urn:test:fo", "urn:test:mb"
 
 
 def setup_pair(world):
-    world.register(FO, "factory_owner")
-    world.register(MB, "machine_builder")
+    world.register(FO, "factory_owner", externally_reachable=False)
+    world.register(MB, "machine_builder", externally_reachable=False)
 
 
 def own_key(world, participant: str) -> str:

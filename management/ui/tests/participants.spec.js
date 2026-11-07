@@ -47,11 +47,12 @@ test('register a hosted participant, see its credentials, set reachability, and 
   await credentials.getByRole('button', { name: 'Close' }).click();
 
   const row = rowOf(page, ID);
-  await row.getByRole('button', { name: 'Make reachable' }).click();
-  await expect(row.getByRole('button', { name: 'Make unreachable' })).toBeVisible({ timeout: 60000 });
   await expect(row.getByRole('cell').nth(3)).toHaveText('Yes');
   await row.getByRole('button', { name: 'Make unreachable' }).click();
   await expect(row.getByRole('button', { name: 'Make reachable' })).toBeVisible({ timeout: 60000 });
+  await expect(row.getByRole('cell').nth(3)).toHaveText('No');
+  await row.getByRole('button', { name: 'Make reachable' }).click();
+  await expect(row.getByRole('button', { name: 'Make unreachable' })).toBeVisible({ timeout: 60000 });
 
   page.on('dialog', (dialog) => dialog.accept());
   await row.getByRole('button', { name: 'Delete' }).click();
@@ -209,4 +210,27 @@ test('an action error stays visible when the reload after it fails too', async (
   page.on('dialog', (dialog) => dialog.accept());
   await rowOf(page, 'urn:ui:fo').getByRole('button', { name: 'Delete' }).click();
   await expect(page.getByRole('alert')).toContainText('The action failed like this');
+});
+
+test('the registration form starts reachable, and sends what it shows', async ({ page }) => {
+  const sent = [];
+  page.on('request', (call) => {
+    if (call.method() === 'POST' && call.url().endsWith('/api/participants')) sent.push(call.postDataJSON());
+  });
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  const form = page.getByRole('form', { name: 'Register a participant' });
+  await expect(form.getByLabel('Reachable from outside')).toBeChecked();
+  await register(page, `${ID}-a`);
+  await expect(rowOf(page, `${ID}-a`).getByRole('cell').nth(3)).toHaveText('Yes');
+  await page.getByRole('region', { name: 'Credentials' }).getByRole('button', { name: 'Close' }).click();
+
+  await expect(form.getByLabel('Reachable from outside')).toBeChecked();
+  await form.getByLabel('Reachable from outside').uncheck();
+  await register(page, `${ID}-b`);
+  await expect(rowOf(page, `${ID}-b`).getByRole('cell').nth(3)).toHaveText('No');
+  expect(sent.map((body) => [body.participant_id, body.externally_reachable])).toEqual([
+    [`${ID}-a`, true],
+    [`${ID}-b`, false],
+  ]);
 });

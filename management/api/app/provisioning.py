@@ -50,7 +50,7 @@ class Registration:
     participant_id: str
     participant_type: str
     hosted: bool = True
-    externally_reachable: bool = False
+    externally_reachable: bool | None = None
     adapter_url: str | None = None
     dsp_url: str | None = None
     peer_notify_url: str | None = None
@@ -122,14 +122,30 @@ class Provisioner:
             return None, None
         return secret["metadata"].get("annotations", {}).get(manifests.ID_ANNOTATION), secret
 
-    def _record(self, request: Registration) -> dict:
+    def _reachability(self, request: Registration) -> tuple[bool, list[str]]:
+        """Whether this participant will be reachable from outside, and why not if it was meant to be."""
+        if not request.hosted:
+            return bool(request.externally_reachable), []
+        if request.externally_reachable is False:
+            return False, []
+        missing = [
+            name
+            for name, value in (
+                ("GATEWAY_PEER_URL", self.settings.gateway_peer_url),
+                ("DSP_GATEWAY_PEER_URL", self.settings.dsp_gateway_peer_url),
+            )
+            if not value
+        ]
+        if missing:
+            warning = (
+                "Registered as not reachable from outside, as this service has no "
+                f"{' or '.join(missing)}. Set it, and register the participant again to make it reachable"
+            )
+            return False, [warning]
+        return True, []
+
+    def _record(self, request: Registration, reachable: bool) -> dict:
         if request.hosted:
-            reachable = request.externally_reachable
-            if reachable and not (self.settings.gateway_peer_url and self.settings.dsp_gateway_peer_url):
-                raise HTTPException(
-                    status_code=422,
-                    detail="externally_reachable needs GATEWAY_PEER_URL and DSP_GATEWAY_PEER_URL on this service",
-                )
             adapter_url, _ = manifests.hosted_addresses(request.participant_id, self.settings.participants_namespace)
             dsp_url = manifests.announced_dsp(request.participant_id, self.settings, reachable)
             notify = manifests.peer_route(self.settings.gateway_peer_url, request.participant_id) if reachable else None
@@ -141,7 +157,7 @@ class Provisioner:
             "adapter_url": adapter_url,
             "dsp_url": dsp_url,
             "hosted": request.hosted,
-            "externally_reachable": request.externally_reachable,
+            "externally_reachable": reachable,
             "peer_notify_url": notify,
         }
 
@@ -210,6 +226,7 @@ class Provisioner:
     async def _kubernetes_step(
         self,
         request: Registration,
+        reachable: bool,
         client_secret: str,
         credentials: manifests.Credentials,
         existing_secret: dict | None,
@@ -222,7 +239,7 @@ class Provisioner:
             undo.add("pods", lambda: self._wait_gone(participant_id, UNDO_PODS_SECONDS))
         bare_type = roles.bare_name(request.participant_type)
         objects = manifests.all_objects(
-            participant_id, bare_type, self.settings, client_secret, credentials, request.externally_reachable
+            participant_id, bare_type, self.settings, client_secret, credentials, reachable
         )
         for manifest in objects:
             previous = await self.kubernetes.apply(manifest)
@@ -259,7 +276,8 @@ class Provisioner:
     async def register(self, request: Registration, keycloak: KeycloakAdmin) -> dict:
         participant_id = request.participant_id
         async with self._one_at_a_time(participant_id):
-            record = self._record(request)
+            reachable, warnings = self._reachability(request)
+            record = self._record(request, reachable)
             deadline = asyncio.get_running_loop().time() + self.settings.ready_seconds
             # Before anything is changed: is this token allowed, and is the client free to use?
             if await keycloak.client_exists_unowned(participant_id):
@@ -284,7 +302,9 @@ class Provisioner:
                         credentials = await self._storage_step(
                             participant_id, credentials, existing_secret is None, undo
                         )
-                        await self._kubernetes_step(request, client_secret, credentials, existing_secret, undo)
+                        await self._kubernetes_step(
+                            request, reachable, client_secret, credentials, existing_secret, undo
+                        )
                     saved = await self.registry.save(record)
             except Exception as error:
                 status, detail = _answer_for(error)
@@ -293,7 +313,7 @@ class Provisioner:
                 if remaining:
                     detail = f"{detail}. Some of it could not be undone, so DELETE it: {', '.join(remaining)}"
                 raise HTTPException(status_code=status, detail=detail) from error
-            return {**saved, "client_id": participant_id, "client_secret": client_secret}
+            return {**saved, "client_id": participant_id, "client_secret": client_secret, "warnings": warnings}
 
     async def remove(self, participant_id: str, keycloak: KeycloakAdmin) -> None:
         async with self._one_at_a_time(participant_id):

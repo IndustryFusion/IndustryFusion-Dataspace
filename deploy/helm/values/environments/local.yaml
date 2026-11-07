@@ -19,9 +19,6 @@ dependencies:
   s3:
     iamUrl: http://seaweedfs.iff:8111
 
-participants:
-  demo: "urn:demo:factory-owner=factory_owner,urn:demo:machine-builder=machine_builder"
-
 ingress:
   enabled: true
   gateway:
