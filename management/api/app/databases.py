@@ -79,7 +79,11 @@ class Databases:
                         made = True
                 except (asyncpg.DuplicateDatabaseError, asyncpg.UniqueViolationError):
                     pass
-                await connection.execute(f'REVOKE CONNECT, TEMPORARY ON DATABASE "{name}" FROM PUBLIC')
+                try:
+                    await connection.execute(f'REVOKE CONNECT, TEMPORARY ON DATABASE "{name}" FROM PUBLIC')
+                except asyncpg.InternalServerError:
+                    # Another call on the same database is doing the same.
+                    pass
                 return made
             finally:
                 await connection.close()
