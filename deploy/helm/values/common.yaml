@@ -53,6 +53,7 @@ limits:
 participants:
   # How long a whole registration may take. An undo can add up to 50 seconds, and the Ingress allows for that.
   provisionReadySeconds: 300
+  # Empty means the default demo participants, the demo companies' IFRIC ids. "[]" means none. See management-api.md.
   demo: ""
   # What an externally reachable participant announces, so they must work from outside the cluster and inside it.
   # Empty means the services' addresses inside the cluster, which is enough only for peers in this cluster.

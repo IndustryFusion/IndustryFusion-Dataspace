@@ -32,7 +32,7 @@ from pydantic import BaseModel, field_validator
 
 from app import roles
 from app.adapters import Adapters, policy_entries
-from app.config import Settings
+from app.config import ConfigurationError, DemoParticipant, Settings
 from app.databases import Databases
 from app.health import component_health
 from app.ifric import CompanyDirectory
@@ -55,7 +55,8 @@ class ParticipantRequest(BaseModel):
     participant_id: str
     participant_type: str
     hosted: bool = True
-    externally_reachable: bool = False
+    # Left out: reachable for a hosted participant, and not for an external one.
+    externally_reachable: bool | None = None
     adapter_url: str | None = None
     dsp_url: str | None = None
     peer_notify_url: str | None = None
@@ -133,7 +134,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     if getattr(application.state, "services", None) is not None:
         yield
         return
-    settings = Settings()
+    try:
+        settings = Settings()
+    except ConfigurationError as error:
+        # One clear line rather than a traceback, and the service doesn't start.
+        log.critical("Cannot start: %s", error)
+        raise SystemExit(1) from None
     http = httpx.AsyncClient(timeout=30)
     kube_http, kube_token = in_cluster_client()
     kubernetes = Kubernetes(kube_http, kube_token, settings.participants_namespace, settings.poll_seconds)
@@ -219,8 +225,8 @@ async def create_demo(services: Services = Depends(services_of), token: str = De
     keycloak = services.keycloak(token)
     outcomes = await asyncio.gather(
         *(
-            services.provisioner.register(Registration(participant, kind), keycloak)
-            for participant, kind in services.settings.demo_participants
+            services.provisioner.register(Registration(**DemoParticipant(*given)._asdict()), keycloak)
+            for given in services.settings.demo_participants
         ),
         return_exceptions=True,
     )

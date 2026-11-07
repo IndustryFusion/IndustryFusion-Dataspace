@@ -49,7 +49,7 @@ Errors use `{"detail": "..."}` with `401`, `403`, `404`, `409`, `422`, `502` or 
   "participant_id": "urn:example:machine-builder-1",
   "participant_type": "machine_builder",
   "hosted": true,
-  "externally_reachable": false,
+  "externally_reachable": true,
   "adapter_url": null,
   "dsp_url": null,
   "peer_notify_url": null
@@ -60,9 +60,10 @@ Errors use `{"detail": "..."}` with `401`, `403`, `404`, `409`, `422`, `502` or 
 - `hosted` defaults to `true`. For a hosted participant, `adapter_url` and `dsp_url` come from the participant id, with the slug `sha256(participant_id)[:8]`.
 - An external participant gives its own `adapter_url` and `dsp_url`. See [External participants](#external-participants).
 - `peer_notify_url` is the address peers outside the cluster use to reach this participant's adapter. For a hosted participant that is the gateway's peer route.
-- `externally_reachable` on a hosted participant makes it announce addresses that work from outside: `peer_notify_url` and `dsp_url` become the public ones, and `adapter_url` stays its adapter's real address. It needs `GATEWAY_PEER_URL` and `DSP_GATEWAY_PEER_URL` on this service, and gives `422` without them.
+- `externally_reachable` on a hosted participant makes it announce addresses that work from outside: `peer_notify_url` and `dsp_url` become the public ones, and `adapter_url` stays its adapter's real address. Left out, it is `true` for a hosted participant and `false` for an external one. Two reachable hosted participants talk through these public addresses too, one hop longer than directly, so give `false` for a hosted participant that only talks inside the hub.
+- Reachability needs `GATEWAY_PEER_URL` and `DSP_GATEWAY_PEER_URL` on this service. Without one, a hosted participant that is to be reachable is registered as not reachable, and the answer's `warnings` says so and names the missing setting.
 
-Returns the participant record with `client_id` and `client_secret`.
+Returns the participant record with `client_id`, `client_secret` and `warnings`, a list of messages about anything registered differently from what was asked. `warnings` isn't stored, and reads don't have it.
 
 **A hosted participant** is provisioned in this order:
 
@@ -78,7 +79,7 @@ The registry entry is written once the participant's pods are available, so a re
 
 Completed steps are undone if a later one fails. Anything that couldn't be, or that there was no time for, is named in the answer. A failed re-registration does not drop an existing participant's databases, and a half-finished Keycloak client from an earlier failure is completed. Existing participants need no reconfiguration.
 
-Registering an existing participant again updates it and keeps its credentials. This is how to change `externally_reachable` or an external participant's addresses. Changing `externally_reachable` restarts the participant's adapter and connector, which interrupts any transfer in progress. A hosted participant's `peer_notify_url` is the gateway's peer route when `externally_reachable` is true, and `null` otherwise. It gives `409`:
+Registering an existing participant again updates it and keeps its credentials. This is how to change `externally_reachable` or an external participant's addresses. A hosted participant registered again without `externally_reachable` becomes reachable, as a new one would. Changing `externally_reachable` restarts the participant's adapter and connector, which interrupts any transfer in progress. A hosted participant's `peer_notify_url` is the gateway's peer route when `externally_reachable` is true, and `null` otherwise. It gives `409`:
 
 - if `hosted` or `participant_type` would change. Delete the participant first.
 - if the id equals a client in the realm that this service did not create.
@@ -88,7 +89,17 @@ Registering an existing participant again updates it and keeps its credentials. 
 
 ### `POST /api/demo`
 
-Creates the demo participants named in `DEMO_PARTICIPANTS` through the same steps, at the same time. Returns a list of the same records. If one fails its steps are undone, the others stay, and the call can be repeated.
+Creates the demo participants named in `DEMO_PARTICIPANTS` through the same steps, at the same time. Returns a list of the same records, each with its `warnings`. If one fails its steps are undone, the others stay, and the call can be repeated.
+
+Unset or empty, `DEMO_PARTICIPANTS` names the demo companies, by their IFRIC ids, hosted and reachable:
+
+| `participant_id` | `participant_type` |
+|---|---|
+| `urn:ifric:ifx-eur-com-own-42ced491-b35d-41f7-9949-fcbb5fa4dcd9` | `factory_owner` |
+| `urn:ifric:ifx-eur-com-nap-37eb511d-49c0-4700-ba17-dee8248f0fb5` | `machine_builder` |
+| `urn:ifric:ifx-eur-com-nap-2150a82e-ccbb-47d7-be5a-8059906bc253` | `machine_builder` |
+
+It can also be a JSON list, where each entry has `participant_id` and `participant_type`, and may have `externally_reachable`, or `<id>=<type>` entries separated by commas. `[]` means no demo participants. A value that can't be used stops the service at start, with a log line naming `DEMO_PARTICIPANTS` and the problem: JSON that isn't such a list, an unknown key, an unknown type, an id that registration would refuse, an id given twice, or an entry without `=`.
 
 ### `DELETE /api/participants/{id}`
 
@@ -239,7 +250,7 @@ The components are `registry`, `gateway`, `dsp-gateway`, `keycloak`, `postgresql
 
 ## IFRIC details
 
-If configured, the API reads `GET /company/get-all-companies` from the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss), using a token from an optional `dataspace-ifric-reader` client. It caches the result for `IFRIC_LOOKUP_CACHE_SECONDS` (default 300). A failure just leaves the fields out.
+If configured, the API reads `GET /company/get-all-companies` from the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss), using a token from an optional `dataspace-ifric-reader` client. It is configured when `IFRIC_BACKEND_URL` and `IFRIC_READER_CLIENT_SECRET` are set. `IFRIC_READER_CLIENT_ID` defaults to `dataspace-ifric-reader`. It caches the result for `IFRIC_LOOKUP_CACHE_SECONDS` (default 300). A failure just leaves the fields out.
 
 ## Configuration
 
@@ -249,9 +260,9 @@ Also `MAX_UPLOAD_BYTES` and `MAX_JSON_BYTES`, passed on to adapters, which must 
 
 | Setting | Holds |
 |---|---|
-| `DEMO_PARTICIPANTS` | Comma-separated `<id>=<type>` |
+| `DEMO_PARTICIPANTS` | The demo participants: a JSON list or comma-separated `<id>=<type>`. Unset or empty means the default in [`POST /api/demo`](#post-apidemo), and `[]` none |
 | `SEAWEEDFS_IAM_URL` | The storage's IAM API, for an S3 identity per participant. Empty means participants share the configured identity. See [deploy/README.md](deploy/README.md) before setting it |
-| `GATEWAY_PEER_URL`, `DSP_GATEWAY_PEER_URL` | What an `externally_reachable` participant announces. They have to work from outside the cluster and from inside it, as two reachable participants use them too |
+| `GATEWAY_PEER_URL`, `DSP_GATEWAY_PEER_URL` | What an `externally_reachable` participant announces. They have to work from outside the cluster and from inside it, as two reachable participants use them too, and hosted participants are reachable by default. Without them, hosted participants are registered as not reachable |
 | `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION` | Participant images are `[<registry>/]<repo>/adapter:<version>` and `.../connector:<version>` |
 | `RESOURCES_PARTICIPANT_CPU_REQUEST`, `_CPU_LIMIT`, `_MEMORY_REQUEST`, `_MEMORY_LIMIT` | Per participant container. Unset ones are left out, except the memory limit, which defaults to `2Gi` |
 

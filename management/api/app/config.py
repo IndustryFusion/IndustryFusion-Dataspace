@@ -16,8 +16,12 @@
 
 """Configuration, read from the environment."""
 
+import json
 from dataclasses import dataclass, field
 from os import environ
+from typing import NamedTuple
+
+from app import roles
 
 
 def _env(name: str, default: str = "") -> str:
@@ -28,15 +32,76 @@ def _url(name: str) -> str:
     return _env(name).rstrip("/")
 
 
-def parse_demo_participants(value: str) -> list[tuple[str, str]]:
-    """`<id>=<type>` entries, separated by commas."""
+DEMO_SETTING = "DEMO_PARTICIPANTS"
+DEFAULT_DEMO = (
+    '[{"participant_id": "urn:ifric:ifx-eur-com-own-42ced491-b35d-41f7-9949-fcbb5fa4dcd9",'
+    ' "participant_type": "factory_owner"},'
+    ' {"participant_id": "urn:ifric:ifx-eur-com-nap-37eb511d-49c0-4700-ba17-dee8248f0fb5",'
+    ' "participant_type": "machine_builder"},'
+    ' {"participant_id": "urn:ifric:ifx-eur-com-nap-2150a82e-ccbb-47d7-be5a-8059906bc253",'
+    ' "participant_type": "machine_builder"}]'
+)
+DEMO_KEYS = {"participant_id", "participant_type", "externally_reachable"}
+IFRIC_READER_DEFAULT = "dataspace-ifric-reader"
+
+
+class ConfigurationError(ValueError):
+    """A setting that can't be used. The service doesn't start with one."""
+
+
+class DemoParticipant(NamedTuple):
+    participant_id: str
+    participant_type: str
+    # None means the registration default.
+    externally_reachable: bool | None = None
+
+
+def _demo_entries(value: str) -> list[DemoParticipant]:
+    if value.lstrip().startswith("["):
+        try:
+            listed = json.loads(value)
+        except ValueError as error:
+            raise ConfigurationError(f"{DEMO_SETTING} is not valid JSON: {error}") from None
+        if not isinstance(listed, list):
+            raise ConfigurationError(f"{DEMO_SETTING} must be a JSON list of participants")
+        entries = []
+        for position, item in enumerate(listed, start=1):
+            where = f"{DEMO_SETTING} entry {position}"
+            if not isinstance(item, dict):
+                raise ConfigurationError(f"{where} must be an object")
+            unknown = sorted(set(item) - DEMO_KEYS)
+            if unknown:
+                raise ConfigurationError(f"{where} has an unknown key: {', '.join(unknown)}")
+            participant_id, participant_type = item.get("participant_id"), item.get("participant_type")
+            reachable = item.get("externally_reachable")
+            if not isinstance(participant_id, str) or not isinstance(participant_type, str):
+                raise ConfigurationError(f"{where} needs participant_id and participant_type as strings")
+            if reachable is not None and not isinstance(reachable, bool):
+                raise ConfigurationError(f"{where} has externally_reachable that is not true or false")
+            entries.append(DemoParticipant(participant_id, participant_type, reachable))
+        return entries
     entries = []
     for entry in value.split(","):
         if entry.strip():
             participant_id, separator, participant_type = entry.strip().rpartition("=")
             if not separator or not participant_id:
-                raise ValueError(f"DEMO_PARTICIPANTS entry needs <id>=<type>: {entry}")
-            entries.append((participant_id, participant_type))
+                raise ConfigurationError(f"{DEMO_SETTING} entry needs <id>=<type>: {entry.strip()}")
+            entries.append(DemoParticipant(participant_id.strip(), participant_type.strip()))
+    return entries
+
+
+def parse_demo_participants(value: str) -> list[DemoParticipant]:
+    """A JSON list of participants, or `<id>=<type>` entries separated by commas. Empty means the default."""
+    entries = _demo_entries(value if value.strip() else DEFAULT_DEMO)
+    seen: set[str] = set()
+    for entry in entries:
+        if not roles.id_is_safe(entry.participant_id):
+            raise ConfigurationError(f"{DEMO_SETTING} has an id that registration would refuse: {entry.participant_id}")
+        if not roles.is_known(entry.participant_type):
+            raise ConfigurationError(f"{DEMO_SETTING} has an unknown participant_type: {entry.participant_type}")
+        if entry.participant_id in seen:
+            raise ConfigurationError(f"{DEMO_SETTING} names {entry.participant_id} twice")
+        seen.add(entry.participant_id)
     return entries
 
 
@@ -70,15 +135,17 @@ class Settings:
     cpu_limit: str = field(default_factory=lambda: _env("RESOURCES_PARTICIPANT_CPU_LIMIT"))
     memory_request: str = field(default_factory=lambda: _env("RESOURCES_PARTICIPANT_MEMORY_REQUEST"))
     memory_limit: str = field(default_factory=lambda: _env("RESOURCES_PARTICIPANT_MEMORY_LIMIT", "2Gi"))
-    demo_participants: list[tuple[str, str]] = field(
-        default_factory=lambda: parse_demo_participants(_env("DEMO_PARTICIPANTS"))
+    demo_participants: list[DemoParticipant] = field(
+        default_factory=lambda: parse_demo_participants(_env(DEMO_SETTING))
     )
     max_upload_bytes: str = field(default_factory=lambda: _env("MAX_UPLOAD_BYTES", str(1024**3)))
     max_json_bytes: str = field(default_factory=lambda: _env("MAX_JSON_BYTES", str(4 * 1024**2)))
     ready_seconds: float = field(default_factory=lambda: float(_env("PROVISION_READY_SECONDS", "300")))
     poll_seconds: float = field(default_factory=lambda: float(_env("PROVISION_POLL_SECONDS", "2")))
     ifric_backend_url: str = field(default_factory=lambda: _url("IFRIC_BACKEND_URL"))
-    ifric_reader_client_id: str = field(default_factory=lambda: _env("IFRIC_READER_CLIENT_ID"))
+    ifric_reader_client_id: str = field(
+        default_factory=lambda: _env("IFRIC_READER_CLIENT_ID") or IFRIC_READER_DEFAULT
+    )
     ifric_reader_client_secret: str = field(default_factory=lambda: _env("IFRIC_READER_CLIENT_SECRET"))
     ifric_lookup_cache_seconds: float = field(default_factory=lambda: float(_env("IFRIC_LOOKUP_CACHE_SECONDS", "300")))
     ui_dir: str = field(default_factory=lambda: _env("MANAGEMENT_UI_DIR", "/srv/ui"))
