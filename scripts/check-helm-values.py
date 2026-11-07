@@ -35,10 +35,13 @@ CANARY = {
         "postgres": {"user": "canary-pg-user", "password": "canary-pg-password"},
         "s3": {"accessKey": "canary-s3-access", "secretKey": "canary-s3-secret"},
         "adapterInternalKey": "canary-internal-key",
+        "adminClientSecret": "canary-admin-secret",
     }
 }
 IP_ADDRESS = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 BODY_SIZE = "nginx.ingress.kubernetes.io/proxy-body-size"
+READ_TIMEOUT = "nginx.ingress.kubernetes.io/proxy-read-timeout"
+CERT_MANAGER = "cert-manager.io/cluster-issuer"
 
 
 def render(component: str, environment: pathlib.Path, secrets: str, *extra: str) -> list[dict]:
@@ -105,6 +108,34 @@ def check(environment: pathlib.Path, secrets: str) -> list[str]:
     for component in ("registry", "gateway", "dsp-gateway"):
         if env_of_account(by_component[component]) is not None:
             problems.append(f"{component} has a service account it doesn't need")
+        pod = next(o for o in by_component[component] if o["kind"] == "Deployment")["spec"]["template"]["spec"]
+        if pod.get("automountServiceAccountToken") is not False:
+            problems.append(f"{component} mounts a service account token it doesn't need")
+
+    for component, objects in by_component.items():
+        for item in objects:
+            if item["kind"] in {"ClusterRole", "ClusterRoleBinding"}:
+                problems.append(f"{component}: a {item['kind']} reaches outside its namespaces")
+    role = next(o for o in by_component["common"] if o["kind"] == "Role")
+    if role["metadata"]["namespace"] != "dataspace-participants":
+        problems.append("Management's Role isn't limited to the participants' namespace")
+
+    # A registration has one deadline, and its undo up to 50 seconds. The Ingress must not cut that off.
+    ready = int(env_of(management)["PROVISION_READY_SECONDS"]["value"])
+    timeout = int(next(o for o in management if o["kind"] == "Ingress")["metadata"]["annotations"][READ_TIMEOUT])
+    if timeout < ready + 50:
+        problems.append(f"management: the Ingress waits {timeout}s for a registration that can take {ready + 50}s")
+
+    tls = ("--set", "ingress.enabled=true", "--set", "ingress.gateway.host=g.example",
+           "--set", "ingress.management.host=m.example", "--set", "ingress.tls.enabled=true",
+           "--set", "ingress.tls.certManagerClusterIssuer=the-issuer")  # fmt: skip
+    for component, host in (("gateway", "g.example"), ("management", "m.example")):
+        ingress = next(o for o in render(component, environment, secrets, *tls) if o["kind"] == "Ingress")
+        if ingress["metadata"]["annotations"].get(CERT_MANAGER) != "the-issuer":
+            problems.append(f"{component}: TLS with a cluster issuer has no cert-manager annotation")
+        sections = ingress["spec"].get("tls", [])
+        if not any(host in entry.get("hosts", []) and entry.get("secretName") for entry in sections):
+            problems.append(f"{component}: TLS has no section for its host")
     return problems
 
 
@@ -136,7 +167,8 @@ def main() -> int:
 
     # The committed example has to name every secret, with no values.
     example = yaml.safe_load((ROOT / "values" / "secrets.yaml.example").read_text())["secrets"]
-    if any(value for value in (*example["postgres"].values(), *example["s3"].values(), example["adapterInternalKey"])):
+    named = (example["adapterInternalKey"], example["adminClientSecret"])
+    if any(value for value in (*example["postgres"].values(), *example["s3"].values(), *named)):
         problems.append("secrets.yaml.example holds a value")
 
     for problem in problems:

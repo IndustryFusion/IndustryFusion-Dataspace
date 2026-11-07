@@ -78,7 +78,7 @@ Returns `202`:
 { "message_id": "...", "status": "pending", "applied": true, "conversation_state": "OPEN" }
 ```
 
-Repeating a `close`, `escalate`, `deescalate` or `reopen` whose status has become `error` or `rejected`, with the same outcome, sends it to the receiver as a step, with `applied: true`. The earlier message keeps its status. Otherwise a repeat has `applied: false`. See "When the two copies differ" in [protocol.md](protocol.md).
+Repeating a `close`, `escalate`, `deescalate` or `reopen` whose status has become `error` or `rejected`, with the same outcome, sends it to the receiver as a step, with `applied: true`, whatever its id. The earlier message keeps its status. The receiver's rules decide what it does there, and a receiver already closed keeps its own outcome. Otherwise a repeat has `applied: false`. See "When the two copies differ" in [protocol.md](protocol.md).
 
 ### `POST /outbox/files`
 
@@ -193,7 +193,7 @@ The same object, plus:
       "message_id": "...", "direction": "sent", "performative": "request",
       "capability": null, "in_reply_to": null, "outcome": null,
       "sender_participant": "...", "receiver_participant": "...",
-      "created_at": "...", "applied": true, "status": "notified", "has_files": false,
+      "created_at": "...", "applied": true, "status": "notified", "error_message": null, "has_files": false,
       "replied_at": null, "payload": {}
     }
   ],

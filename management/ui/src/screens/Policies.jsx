@@ -20,7 +20,10 @@ import { useAdmin } from '../admin.jsx';
 import { participantPath, request } from '../api.js';
 
 const isType = (entry, type) => (entry.participant_type || '').endsWith(type);
-const companyOf = (entry) => (entry.company_name ? `${entry.participant_id} (${entry.company_name})` : entry.participant_id);
+const companyOf = (entry) =>
+  typeof entry.company_name === 'string' && entry.company_name
+    ? `${entry.participant_id} (${entry.company_name})`
+    : entry.participant_id;
 
 export default function Policies() {
   const admin = useAdmin();

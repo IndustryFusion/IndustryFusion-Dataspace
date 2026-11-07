@@ -31,11 +31,13 @@ export function AdminProvider({ children }) {
   const token = useRef(null);
   const timer = useRef(null);
   const [active, setActive] = useState(false);
+  const [ended, setEnded] = useState(null);
 
   const stop = useCallback(() => {
     clearTimeout(timer.current);
     credentials.current = null;
     token.current = null;
+    setEnded(null);
     setActive(false);
   }, []);
 
@@ -46,13 +48,17 @@ export function AdminProvider({ children }) {
     clearTimeout(timer.current);
     const seconds = Math.max((answer.expires_in || 60) - REFRESH_MARGIN_SECONDS, 5);
     timer.current = setTimeout(() => {
-      refresh().catch(stop);
+      refresh().catch((failure) => {
+        stop();
+        setEnded(`Admin mode ended, as its token could not be renewed: ${failure.message}`);
+      });
     }, seconds * 1000);
   }, [stop]);
 
   const start = useCallback(
     async (clientId, clientSecret) => {
       credentials.current = { clientId, clientSecret };
+      setEnded(null);
       try {
         await refresh();
       } catch (error) {
@@ -82,11 +88,11 @@ export function AdminProvider({ children }) {
     [refresh],
   );
 
-  return <AdminContext.Provider value={{ active, start, stop, call }}>{children}</AdminContext.Provider>;
+  return <AdminContext.Provider value={{ active, ended, start, stop, call }}>{children}</AdminContext.Provider>;
 }
 
 export function AdminBar() {
-  const { active, start, stop } = useAdmin();
+  const { active, ended, start, stop } = useAdmin();
   const [open, setOpen] = useState(false);
   const [clientId, setClientId] = useState('dataspace-admin-cli');
   const [secret, setSecret] = useState('');
@@ -106,6 +112,11 @@ export function AdminBar() {
   if (!open) {
     return (
       <div className="admin-bar">
+        {ended && (
+          <span role="alert" className="error">
+            {ended}
+          </span>
+        )}
         <button type="button" onClick={() => setOpen(true)}>
           Admin mode
         </button>

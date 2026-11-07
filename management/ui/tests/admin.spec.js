@@ -106,3 +106,14 @@ test('a call refused with 401 fetches a new token and is tried again', async ({ 
   await expect(page.getByRole('region', { name: 'Credentials' })).toContainText('urn:ui:fo');
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
+
+test('a failed refresh tells the administrator why admin mode ended', async ({ page, request }) => {
+  await request.post('/test/short-tokens');
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  await page.route('**/api/admin/token', (route) =>
+    route.fulfill({ status: 503, json: { detail: 'Keycloak is unavailable' } }),
+  );
+  await expect(page.getByRole('button', { name: 'Leave admin mode' })).toHaveCount(0, { timeout: 20000 });
+  await expect(page.getByRole('alert')).toContainText('Keycloak is unavailable');
+});

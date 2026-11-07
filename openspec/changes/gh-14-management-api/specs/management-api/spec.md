@@ -53,7 +53,7 @@ The service SHALL give an administrator a token from Keycloak for client credent
 - **THEN** its `peer_notify_url` is the gateway's peer route for it, and otherwise it is `null`
 
 #### Scenario: An invalid request
-- **WHEN** the request has an unknown `participant_type`, or a `participant_id` that is blank, too long, or holds whitespace or control characters
+- **WHEN** the request has an unknown `participant_type`, or a `participant_id` that doesn't start with a letter or digit, holds anything but ASCII letters, digits, `.`, `_`, `:` and `-`, is longer than 200 characters, or is `compatible`
 - **THEN** the answer is `422`, and nothing is created
 
 ### Requirement: Registering an external participant
@@ -79,6 +79,14 @@ A failure at any step SHALL undo the steps this request completed, and SHALL NOT
 #### Scenario: A failed re-registration
 - **WHEN** registering an existing participant again fails at any step
 - **THEN** its databases, client, secrets and registry entry remain, and any Kubernetes object the request changed is put back
+
+#### Scenario: A token that expires during the wait
+- **WHEN** the caller's token expires while a registration waits for pods, and the wait fails
+- **THEN** the service's own credential undoes the Keycloak objects, and none of them remains
+
+#### Scenario: One deadline
+- **WHEN** a registration's pods never become available
+- **THEN** the answer comes within `PROVISION_READY_SECONDS` plus at most 50 seconds for the undo, naming anything that wasn't undone
 
 #### Scenario: An undo that fails
 - **WHEN** undoing a step fails too
