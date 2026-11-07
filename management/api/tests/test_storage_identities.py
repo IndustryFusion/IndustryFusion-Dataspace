@@ -34,11 +34,14 @@ class Filer:
         self.content = None if content is None else json.dumps(content).encode()
         self.status = None
 
-    def handle(self, request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == FILE
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        # A real call lets other requests run, and the test of several at once depends on that.
+        await asyncio.sleep(0)
+        assert str(request.url).split("?")[0] == FILE
         if self.status:
             return httpx.Response(self.status)
         if request.method == "PUT":
+            assert request.url.params["saveInside"] == "true", "The S3 gateway wouldn't take it up otherwise"
             self.content = request.content
             return httpx.Response(201)
         return httpx.Response(200, content=self.content) if self.content is not None else httpx.Response(404)

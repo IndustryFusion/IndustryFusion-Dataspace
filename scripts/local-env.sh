@@ -83,7 +83,7 @@ write_storage_identities() {
   # A list that is already there holds what participants need.
   if ! curl -fs -o /dev/null "http://127.0.0.1:$port/etc/iam/identity.json"; then
     curl -fsS -X PUT -H 'Content-Type: application/json' --data-binary "$list" \
-      "http://127.0.0.1:$port/etc/iam/identity.json" >/dev/null
+      "http://127.0.0.1:$port/etc/iam/identity.json?saveInside=true" >/dev/null
   fi
 }
 

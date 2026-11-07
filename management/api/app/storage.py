@@ -128,7 +128,8 @@ class StorageIdentities:
 
     async def _write(self, content: dict) -> None:
         answer = await self.http.put(
-            f"{self.settings.s3_filer_url}{IDENTITY_FILE}",
+            # The S3 gateway only takes up a list the filer holds inline.
+            f"{self.settings.s3_filer_url}{IDENTITY_FILE}?saveInside=true",
             content=json.dumps(content),
             headers={"Content-Type": "application/json"},
         )
