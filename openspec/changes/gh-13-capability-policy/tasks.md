@@ -32,7 +32,7 @@
 ## 5. End to end
 
 - [x] 5.1 Extend `scripts/message-exchange-check.py` with request, approval, access check, denial and reset through both agent and internal routes, and an incompatible participant; verify on the local cluster
-- [ ] 5.2 Verify the management API's own routes for reset. This needs #14
+- [x] 5.2 Verify the management API's own routes for reset. This needs #14. Verified with `scripts/management-check.py` from #14 on a local cluster
 - [x] 5.3 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
 
 ## Workflow follow-up
