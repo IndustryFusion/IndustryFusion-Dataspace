@@ -9,7 +9,7 @@
 ## 2. Credentials
 
 - [x] 2.1 Give each hosted participant its own database user; verify with tests, and on a local cluster that one can't connect to another's database
-- [x] 2.2 Give each hosted participant its own S3 identity; verify with tests, and on a local cluster that one can't read another's bucket
+- [ ] 2.2 Give each hosted participant its own S3 identity; verify with tests, and on a local cluster that one can't read another's bucket. Direct reads, writes and listing are refused. A copy from another's bucket into its own isn't, in this version of the storage, so this stays open for a maintainer's decision
 - [x] 2.3 Replace `ADAPTER_INTERNAL_KEY` with a key per participant; verify with tests, and on a local cluster that one's key is refused by another's adapter
 
 ## 3. Connector identity

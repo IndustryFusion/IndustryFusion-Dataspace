@@ -72,15 +72,19 @@ Each hosted participant SHALL have its own PostgreSQL user, owning its own datab
 - **THEN** a user it made is removed
 
 ### Requirement: An S3 identity per participant
-With the storage's IAM address configured, each hosted participant SHALL have its own S3 identity, limited to its own bucket, and other identities SHALL be kept. Without one, participants SHALL share the configured identity, and the service SHALL log that.
+With the storage's IAM address configured, each hosted participant SHALL have its own S3 identity, limited to its own bucket for what it can read, write and list directly, and other identities SHALL be kept. Without one, participants SHALL share the configured identity, and the service SHALL log that.
 
 #### Scenario: Its own bucket
 - **WHEN** a participant's adapter stores and reads content
 - **THEN** it does so with its own identity
 
 #### Scenario: Another's bucket
-- **WHEN** one participant's identity reads, writes or lists another's bucket
+- **WHEN** one participant's identity directly reads, writes or lists another's bucket
 - **THEN** it is refused
+
+#### Scenario: A copy from another's bucket, a known gap
+- **WHEN** one participant's identity copies an object it can name from another's bucket into its own, with `CopyObject` or `UploadPartCopy`
+- **THEN** this version of the storage doesn't refuse it, and the security check reports that as a known gap, not as a pass. The criterion is only partly met until a maintainer decides
 
 #### Scenario: Others in the list
 - **WHEN** an identity is added or removed

@@ -54,6 +54,15 @@ Alternatives:
 - Refusing to register without `SEAWEEDFS_IAM_URL`. It would stop the default stack from working at all.
 - A storage instance per participant, as the external demo has. It gives real isolation on any stack, at the cost of a stateful service per participant and a new backup story.
 
+**A known gap: this version of SeaweedFS lets an identity copy from another's bucket.** `CopyObject` and `UploadPartCopy` are only checked for `Write` on the destination, and nothing checks read permission on the source. So with a participant's real keys, a direct read, write or list of another's bucket is refused, and a copy of an object it can name into its own bucket succeeds, after which it reads those bytes. Listing stays refused, so it has to know the key. A key is `messages/<message_id>.json` or `files/<message_id>.zip`, so a peer knows the keys of the messages it exchanged with that participant, not of others, unless it can guess an id. **So "one participant's credentials cannot read another's storage" is only partly met.** It awaits a maintainer's decision.
+
+A live probe of 3.80 found no small fix. `Write` is what a put needs too, so an identity that can store its own content can copy. A policy with only named actions refused everything, a `Deny` on the other bucket or on `s3:CopyObject` and `s3:UploadPartCopy` changed nothing, an identity with actions scoped by `s3.configure -buckets` copies the same way, and `weed s3` has no setting for it. Alternatives for the decision, none built:
+
+- A newer SeaweedFS, if it checks the source. Not tested here.
+- A proxy in front of S3 that refuses `X-Amz-Copy-Source`. A component in the path of all content.
+- A storage instance per participant, as above, where there is no other bucket to name.
+- A key prefix that peers can't derive, or encrypting content in the adapter with a per-participant key. Either leaves the copy possible and makes it useless, and changes how content is stored.
+
 **The IAM API of this version didn't refuse a wrong signature** in a probe, and the filer's port serves the list, with every identity's keys in plain text. So only management may reach either. `scripts/local-env.sh` ships a policy for that, and `deploy/README.md` asks the operator for the same.
 
 ### The per-participant internal key
@@ -99,5 +108,6 @@ Rendering it without `ingress.management.allowFrom` now fails, rather than leavi
 ## Risks
 
 - [A policy that is too tight stops transfers] → The end-to-end and external tests run with them active.
+- [An identity can copy from another's bucket] → Not closed. See "A known gap" above. `scripts/security-check.py` reports it, and exits with 2 while it is there.
 - [No enforcing network plugin] → Policies do nothing, silently. Token checks don't depend on them. `scripts/security-check.py` reports it.
 - [Two writers to the filer's list] → Management runs as one replica, and holds a lock around the list. Another writer could lose a change, so the design says it must be the only one.
