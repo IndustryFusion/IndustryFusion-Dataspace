@@ -152,14 +152,16 @@ def test_one_side_answered_before_the_other_step_arrives(order, performative):
         with message_ids(*ORDERS[order]):
             first = await fo.send(**fields)
             second = await mb.send(**other)
-        # The factory owner's notification goes through and is answered, while the machine builder's waits.
-        for _ in range(200):
-            if (await fo.status(first["message_id"]))["status"] == "notified":
-                break
-            await asyncio.sleep(0.01)
-        assert (await fo.status(first["message_id"]))["status"] == "notified"
-        assert await applied_of(fo, first["message_id"]) is (order == "fo-lower")
-        release.set()
+        try:
+            # The factory owner's notification goes through and is answered, while the machine builder's waits.
+            for _ in range(200):
+                if (await fo.status(first["message_id"]))["status"] == "notified":
+                    break
+                await asyncio.sleep(0.01)
+            assert (await fo.status(first["message_id"]))["status"] == "notified"
+            assert await applied_of(fo, first["message_id"]) is (order == "fo-lower")
+        finally:
+            release.set()
         await settle(fo, mb)
         one, two = await fo.conversation("c"), await mb.conversation("c")
         assert (one["state"], one["outcome"], one["escalated_by"]) == (
