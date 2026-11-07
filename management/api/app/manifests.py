@@ -133,7 +133,8 @@ def _deployment(
     pod_annotations: dict[str, str] | None = None,
 ) -> dict:
     metadata = _metadata(participant_id, name)
-    pod_spec: dict = {"containers": [container]}
+    # A resolver sends two lookups at once, and some network plugins that enforce NetworkPolicies lose one of them.
+    pod_spec: dict = {"containers": [container], "dnsConfig": {"options": [{"name": "single-request"}]}}
     if volumes:
         pod_spec["volumes"] = volumes
     return {

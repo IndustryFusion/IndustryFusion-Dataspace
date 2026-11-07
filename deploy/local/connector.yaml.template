@@ -49,6 +49,9 @@ spec:
     metadata:
       labels: { app: connector-${SLUG}, dataspace.industryfusion.org/component: connector }
     spec:
+      # A resolver sends two lookups at once, and some network plugins that enforce NetworkPolicies lose one of them.
+      dnsConfig:
+        options: [{ name: single-request }]
       containers:
         - name: connector
           image: dataspace/connector:dev

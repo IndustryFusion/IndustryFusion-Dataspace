@@ -29,6 +29,9 @@ spec:
     metadata:
       labels: { app: registry }
     spec:
+      # A resolver sends two lookups at once, and some network plugins that enforce NetworkPolicies lose one of them.
+      dnsConfig:
+        options: [{ name: single-request }]
       containers:
         - name: registry
           image: dataspace/registry:dev
