@@ -16,7 +16,7 @@
 
 ## 3. End to end
 
-- [ ] 3.1 Show an external participant's policies on the Policies screen with `scripts/external-demo.py` up, through the real gateway and adapter; verify on a local cluster. The API's answer was verified on a local cluster through the real gateway and adapter; the screen itself only with stand-ins
+- [x] 3.1 Show an external participant's policies on the Policies screen with `scripts/external-demo.py` up, through the real gateway and adapter; verify on a local cluster
 
 ## 4. Documents
 
