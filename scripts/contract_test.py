@@ -1101,7 +1101,7 @@ def _status_of(call: urllib.request.Request) -> int:
 
 
 def burst_crosses(run: Run, what: str, sender: DataspaceClient, receiver: DataspaceClient, count: int = 8) -> None:
-    """Sent at once, so an ordering or a loss under load shows. Each has to arrive exactly once, with its own content."""
+    """Sent at once, so that a loss under load shows. Each has to arrive exactly once, with its own content."""
     report = run.report
     answers: dict[int, Answer] = {}
 
