@@ -40,6 +40,9 @@ export default function Policies() {
       .catch((failure) => setError(failure.message));
   }, []);
 
+  // The hub decides only for its own participants. An external one keeps its policy in its own adapter.
+  const hosted = new Set(participants.filter((entry) => entry.hosted).map((entry) => entry.participant_id));
+
   const read = async (fo, mb) => {
     const query = new URLSearchParams({ fo, mb }).toString();
     return admin.call('GET', `/api/policy?${query}`);
@@ -123,9 +126,14 @@ export default function Policies() {
         {admin.active && <button type="submit">Show</button>}
       </form>
       {!admin.active && <p role="note">Reading who has access needs admin mode.</p>}
-      {admin.active && view && view.unavailable.length > 0 && (
-        <p role="note">Held by its own adapter, so not shown here: {view.unavailable.join(', ')}</p>
-      )}
+      {admin.active &&
+        view &&
+        view.unavailable.map((id) => (
+          <p role="note" key={id}>
+            Could not read the policies of {id}, which runs its own adapter:{' '}
+            {(view.unavailable_reasons || {})[id] || 'no reason was given'}
+          </p>
+        ))}
       {admin.active && view && (
         <table>
           <thead>
@@ -137,6 +145,8 @@ export default function Policies() {
               <th>Status</th>
               <th>Source</th>
               <th>Note</th>
+              <th>Classification</th>
+              <th>Conversation</th>
               {admin.active && <th>Actions</th>}
             </tr>
           </thead>
@@ -150,7 +160,12 @@ export default function Policies() {
                 <td>{entry.status}</td>
                 <td>{entry.source}</td>
                 <td>{entry.decision_note}</td>
-                {admin.active && (
+                <td>{entry.data_classification}</td>
+                <td>{entry.conversation_id}</td>
+                {admin.active && !hosted.has(entry.provider) && (
+                  <td className="actions">Held by its own adapter</td>
+                )}
+                {admin.active && hosted.has(entry.provider) && (
                   <td className="actions">
                     <button type="button" disabled={busy} onClick={() => decide(entry, 'approve')}>
                       Approve

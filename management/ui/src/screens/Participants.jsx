@@ -93,6 +93,26 @@ function RegisterForm({ onDone, run, busy }) {
   );
 }
 
+function CopyButton({ value, what }) {
+  const [said, setSaid] = useState(null);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setSaid('Copied');
+    } catch {
+      setSaid('Could not copy. The browser allows it only on a secure page');
+    }
+  };
+  return (
+    <>
+      <button type="button" onClick={copy} aria-label={`Copy ${what}`}>
+        Copy
+      </button>
+      {said && <span role="status"> {said}</span>}
+    </>
+  );
+}
+
 function Credentials({ credentials, onClose }) {
   return (
     <div className="panel" role="region" aria-label="Credentials">
@@ -100,10 +120,12 @@ function Credentials({ credentials, onClose }) {
       {credentials.map((entry) => (
         <dl key={entry.client_id}>
           <dt>Client id</dt>
-          <dd>{entry.client_id}</dd>
+          <dd>
+            {entry.client_id} <CopyButton value={entry.client_id} what="client id" />
+          </dd>
           <dt>Client secret</dt>
           <dd>
-            <code>{entry.client_secret}</code>
+            <code>{entry.client_secret}</code> <CopyButton value={entry.client_secret} what="client secret" />
           </dd>
         </dl>
       ))}
@@ -113,6 +135,9 @@ function Credentials({ credentials, onClose }) {
     </div>
   );
 }
+
+// A read without admin mode leaves out a hosted participant's addresses, which only work inside the hub.
+const address = (value) => (typeof value === 'string' && value ? value : 'Not public');
 
 // These come from another service, and anything but text would stop the page from drawing.
 const asText = (value) => (typeof value === 'string' || typeof value === 'number' ? value : '');
@@ -124,16 +149,27 @@ export default function Participants() {
   const [busy, setBusy] = useState(false);
   const [credentials, setCredentials] = useState(null);
 
+  // In admin mode the read carries the token, so it has every address.
   const load = useCallback(async () => {
     try {
-      setParticipants(await request('GET', '/api/participants'));
+      setParticipants(
+        admin.active ? await admin.call('GET', '/api/participants') : await request('GET', '/api/participants'),
+      );
       return true;
     } catch (failure) {
       // What went wrong first is the one to show, if this is after an action.
       setError((shown) => shown || failure.message);
       return false;
     }
-  }, []);
+  }, [admin.active, admin.call]);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    setRefreshing(true);
+    setError(null);
+    await load();
+    setRefreshing(false);
+  };
 
   // A secret on the screen goes with the mode that fetched it.
   useEffect(() => {
@@ -196,6 +232,11 @@ export default function Participants() {
         />
       )}
       {credentials && <Credentials credentials={credentials} onClose={() => setCredentials(null)} />}
+      <p>
+        <button type="button" onClick={refresh} disabled={refreshing || busy}>
+          Refresh
+        </button>
+      </p>
       {participants && participants.length === 0 && <p>No participants are registered.</p>}
       {participants && participants.length > 0 && (
         <table>
@@ -205,6 +246,8 @@ export default function Participants() {
               <th>Type</th>
               <th>Hosted</th>
               <th>Reachable from outside</th>
+              <th>Adapter</th>
+              <th>DSP</th>
               {showCompany && (
                 <>
                   <th>Company</th>
@@ -219,10 +262,15 @@ export default function Participants() {
           <tbody>
             {participants.map((entry) => (
               <tr key={entry.participant_id}>
-                <td>{entry.participant_id}</td>
+                <td>
+                  {entry.participant_id}
+                  {!entry.hosted && <span className="marker"> (external)</span>}
+                </td>
                 <td>{shortType(entry.participant_type)}</td>
                 <td>{entry.hosted ? 'Yes' : 'No'}</td>
                 <td>{entry.externally_reachable ? 'Yes' : 'No'}</td>
+                <td>{address(entry.adapter_url)}</td>
+                <td>{address(entry.dsp_url)}</td>
                 {showCompany && (
                   <>
                     <td>{asText(entry.company_name)}</td>

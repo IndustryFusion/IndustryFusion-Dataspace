@@ -344,9 +344,9 @@ Hosted-only installations do not need to expose it, and the Ingress for it is of
 
 React SPA + FastAPI backend. Ops-facing, not agent-facing.
 
-- **Health tab**: probes all services every 15 s
-- **Participants tab**: shows the registry; admin mode unlocks add/remove, credentials and reachability
-- **Policies tab**: shows capability access for a factory owner and machine builder pair; admin mode unlocks approve, deny and reset
+- **Health tab**: probes all services every 15 s and on Refresh, with a summary, each component's response time and the time of the check
+- **Participants tab**: shows the registry, with each participant's adapter and DSP addresses as the read returns them, and marks external participants; a Refresh button reads it again; admin mode unlocks add/remove, credentials with copy buttons, and reachability
+- **Policies tab**: shows capability access for a factory owner and machine builder pair, with each capability's data classification and the conversation of its decision, to an administrator; admin mode unlocks approve, deny and reset for hosted providers. An external provider's capabilities are read through the gateway's peer route with a token of the other side of the pair, as that side's adapter would read them
 
 Admin mode requires the `dataspace-admin` realm role in Keycloak (see `keycloak.md`).
 

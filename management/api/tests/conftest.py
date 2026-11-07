@@ -48,6 +48,17 @@ def make_token(roles=("dataspace-admin",), key=SIGNING_KEY, issuer=ISSUER, expir
     return jwt.encode(claims, key, algorithm="RS256", headers={"kid": kid})
 
 
+def participant_token(participant_id: str) -> str:
+    """What Keycloak gives a participant's client: its id as a claim, and its role."""
+    claims = {
+        "iss": ISSUER,
+        "exp": int(time.time()) + 300,
+        "participant_id": participant_id,
+        "realm_access": {"roles": [f"participant:{participant_id}"]},
+    }
+    return jwt.encode(claims, SIGNING_KEY, algorithm="RS256", headers={"kid": "k1"})
+
+
 def json_response(status: int, body: object = None) -> httpx.Response:
     return httpx.Response(status, json=body) if body is not None else httpx.Response(status)
 
@@ -88,6 +99,12 @@ class FakeKeycloak:
         if path == "/auth/realms/dataspace/protocol/openid-connect/token":
             form = parse_qs(request.content.decode())
             self.token_requests.append(form.get("client_id", [""])[0])
+            participant = next(
+                (c for c in self.clients.values() if [c.get("secret")] == form.get("client_secret")), None
+            )
+            if participant is not None and [participant["clientId"]] == form.get("client_id"):
+                answer = {"access_token": participant_token(participant["clientId"]), "expires_in": 300}
+                return json_response(200, answer)
             if form.get("client_secret") == ["right"]:
                 token = make_token(expires_in=300 + self.seconds_ahead)
                 answer = {"access_token": token, "expires_in": self.token_seconds, "token_type": "Bearer"}
@@ -291,6 +308,65 @@ class FakeAdapters:
         return json_response(200, {"ok": True, **(body or {})})
 
 
+class FakeGateway:
+    """The gateway's health, and its peer route for capability reads, with each external adapter behind it.
+
+    An external adapter answers a peer's own token with its capabilities and that peer's approvals, as a real one does.
+    """
+
+    def __init__(self, registry: "FakeRegistry") -> None:
+        self.registry = registry
+        self.calls: list[dict] = []
+        self.up = True
+        self.delay = 0.0
+        self.answer: httpx.Response | None = None
+        self.capabilities = [
+            {
+                "capability": "mb:confidential", "label": "Vendor confidential", "description": "...",
+                "data_classification": "confidential", "default_policy": "on-request",
+            }
+        ]  # fmt: skip
+        self.approvals: list[dict] = []
+        # Set to answer every approval, whoever asks, as a misbehaving adapter would.
+        self.leaky = False
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if not self.up:
+            raise httpx.ConnectError("down")
+        path = unquote(request.url.raw_path.decode())
+        if path == "/health":
+            return json_response(200, {})
+        self.calls.append(
+            {
+                "method": request.method,
+                "path": path,
+                "authorization": request.headers.get("Authorization"),
+                "internal_key": request.headers.get("X-Internal-Key"),
+            }
+        )
+        if self.answer is not None:
+            return self.answer
+        match = re.fullmatch(r"/peer/(.+)/internal/capabilities", path)
+        if not match or request.method != "GET":
+            return json_response(404, {"detail": "Not found"})
+        try:
+            claims = jwt.decode(
+                (request.headers.get("Authorization") or "").removeprefix("Bearer "),
+                SIGNING_KEY.public_key(),
+                algorithms=["RS256"],
+                issuer=ISSUER,
+            )
+        except jwt.PyJWTError:
+            return json_response(401, {"detail": "Invalid token"})
+        peer = claims.get("participant_id")
+        if not peer or f"participant:{peer}" not in claims.get("realm_access", {}).get("roles", []):
+            return json_response(403, {"detail": "The token does not belong to a participant"})
+        if match[1] not in self.registry.records:
+            return json_response(404, {"detail": "Receiver is not registered"})
+        approvals = self.approvals if self.leaky else [a for a in self.approvals if a["consumer_id"] == peer]
+        return json_response(200, {"capabilities": self.capabilities, "approvals": approvals})
+
+
 class FakeIfric:
     def __init__(self) -> None:
         self.companies: object = []
@@ -383,6 +459,7 @@ class World:
         self.keycloak, self.kubernetes, self.registry = FakeKeycloak(), FakeKubernetes(), FakeRegistry()
         self.adapters = FakeAdapters()
         self.ifric = FakeIfric()
+        self.gateway = FakeGateway(self.registry)
         self.settings = Settings(
             keycloak_url=KEYCLOAK,
             registry_url=REGISTRY,
@@ -411,7 +488,10 @@ class World:
                 return self.registry.handle(request)
             if host == "ifric.test":
                 return self.ifric.handle(request)
-            if host in ("gateway.test", "dsp.test", "storage.test"):
+            if host == "gateway.test":
+                await asyncio.sleep(self.gateway.delay)
+                return self.gateway.handle(request)
+            if host in ("dsp.test", "storage.test"):
                 return json_response(200, {})
             return self.adapters.handle(request)
 

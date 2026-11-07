@@ -73,6 +73,8 @@ Nothing in the dataspace limits this. **Registering an external participant is a
 
 A connector's token adds nothing to this: it comes from the same client, and reaches the same things. It does go to a peer's connector as well as its adapter, so a peer that runs only a connector holds it too.
 
+The management API asks for a participant's token too, to read an external participant's capabilities on the Policies tab. For a pair whose provider is external, it reads the consumer's client secret with the administrator's token, gets a token for the consumer, and reads the provider's capability state through the gateway's peer route, as the consumer's own adapter would. So the external adapter gets that token like any other from the consumer. The management API uses it for that one read, and doesn't keep, log or return it. It only does this for an administrator, who can already read the secret. The token comes from this service's `KEYCLOAK_URL`, so the external adapter has to accept that issuer, as for any other token from the hub.
+
 ## Connectors
 
 A connector gets a token with its participant's client, `client_credentials`, and presents it on the Dataspace Protocol. It takes the other side's identity from the `participant_id` claim, once it has checked the signature against the realm's keys, RS256 only, the exact issuer, an expiry, and the role `participant:<id>`. So `KEYCLOAK_URL` has to be the same address for connectors as for every other service, and an external participant's connector needs to reach Keycloak as well as its adapter does.
