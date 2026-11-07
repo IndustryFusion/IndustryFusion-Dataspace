@@ -39,6 +39,7 @@ import local_cluster as lc
 
 FACTORY_OWNER = "urn:check:factory-owner"
 MACHINE_BUILDER = "urn:check:machine-builder"
+OTHER_OWNER = "urn:check:other-factory-owner"
 KEYCLOAK_NS, KEYCLOAK_SERVICE, KEYCLOAK_PORT = "iff", "keycloak-service", 8080
 REGISTRY_NS, REGISTRY_SERVICE, REGISTRY_PORT = "dataspace", "registry", 19000
 GATEWAY_NS, GATEWAY_SERVICE, GATEWAY_PORT = "dataspace", "gateway", 8080
@@ -52,7 +53,7 @@ def setup(keycloak: str, registry: str, key: str) -> dict[str, str]:
     for participant, role in ((FACTORY_OWNER, "factory_owner"), (MACHINE_BUILDER, "machine_builder")):
         client_secrets[participant] = admin.add_participant(participant)
         connector = lc.deploy_connector(participant, key)
-        adapter = lc.deploy_adapter(participant, role, key, client_secrets[participant])
+        adapter = lc.deploy_adapter(participant, role, key, client_secrets[participant], internal_key=key)
         name = lc.slug(participant)
         status, answer = lc.http(
             "POST",
@@ -67,11 +68,24 @@ def setup(keycloak: str, registry: str, key: str) -> dict[str, str]:
         assert status == 200, answer
         lc.wait_ready(lc.PARTICIPANTS, connector)
         lc.wait_ready(lc.PARTICIPANTS, adapter)
+    # Only registered, with the same role as the factory owner, so that it is an incompatible provider.
+    status, answer = lc.http(
+        "POST",
+        f"{registry}/participants",
+        {
+            "participant_id": OTHER_OWNER,
+            "participant_type": "factory_owner",
+            "adapter_url": "http://nowhere.invalid:8000",
+            "dsp_url": "http://nowhere.invalid:8082/api/v1/dsp",
+        },
+    )
+    assert status == 200, answer
     return client_secrets
 
 
 def teardown(keycloak: str, registry: str) -> None:
     admin = lc.KeycloakAdmin(keycloak)
+    lc.http("DELETE", f"{registry}/participants/{OTHER_OWNER}")
     for participant in (FACTORY_OWNER, MACHINE_BUILDER):
         lc.http("DELETE", f"{registry}/participants/{participant}")
         lc.remove_adapter(participant)
@@ -601,6 +615,123 @@ def size_limits(owner: Agent) -> None:
         print("JSON over 4 MiB with no stated length: 413")
 
 
+def capabilities(owner: Agent, builder: Agent, key: str) -> None:
+    """A request, decisions and access checks between two participants, with a provider that is the factory owner."""
+
+    def access(agent: Agent, query: str) -> dict[str, dict]:
+        status, items = lc.http("GET", f"{agent.base}/capabilities/access?{query}", headers=agent.headers())
+        assert status == 200, (status, items)
+        return {item["capability"]: item for item in items}
+
+    def ask(agent: Agent, provider: str, capability: str, **fields) -> tuple[int, dict]:
+        body = {"provider_participant": provider, "capability": capability, **fields}
+        return lc.http("POST", f"{agent.base}/capabilities/requests", body, agent.headers())
+
+    def decide(approval_id: str, **body) -> tuple[int, dict]:
+        return lc.http("PATCH", f"{owner.base}/capabilities/requests/{approval_id}", body, owner.headers())
+
+    def policy(capability: str, action: str) -> tuple[int, dict]:
+        body = {"consumer_id": MACHINE_BUILDER, "capability": capability, "action": action}
+        return lc.http("POST", f"{owner.base}/capabilities/policy", body, owner.headers())
+
+    provider_query = f"provider={FACTORY_OWNER}"
+    seen = access(builder, provider_query)
+    assert seen["twin:history"]["status"] == "on-request" and seen["twin:direct"]["status"] == "auto", seen
+    assert access(owner, f"provider={MACHINE_BUILDER}")["mb:confidential"]["status"] == "auto"
+    print("Access check: defaults through the gateway, from each side")
+
+    status, request = ask(builder, FACTORY_OWNER, "twin:history", purpose="Compare runs", note="Line 3")
+    assert status == 202 and request["status"] == "pending", (status, request)
+    assert access(builder, provider_query)["twin:history"]["status"] == "pending"
+    status, listed = lc.http("GET", f"{owner.base}/capabilities/requests?status=pending", headers=owner.headers())
+    assert status == 200 and [item["id"] for item in listed] == [request["id"]], listed
+    status, decided = decide(request["id"], action="approve", note="For this quarter")
+    assert status == 200 and decided["decision_note"] == "For this quarter" and decided["note"] == "Line 3", decided
+    entry = access(builder, provider_query)["twin:history"]
+    assert (entry["status"], entry["source"]) == ("approved", "explicit"), entry
+    assert access(owner, f"consumer={MACHINE_BUILDER}")["twin:history"]["status"] == "approved"
+    status, again = decide(request["id"], action="deny")
+    assert status == 409, (status, again)
+    print("Request, approval and access check: approved on both views, the note returned, a second decision 409")
+
+    status, answer = ask(owner, OTHER_OWNER, "twin:history")
+    assert status == 403, (status, answer)
+    print("Request from an incompatible role: 403")
+
+    status, answer = ask(builder, FACTORY_OWNER, "mb:confidential")
+    assert status == 404, (status, answer)
+    print("A capability the provider doesn't offer: 404")
+
+    status, denied = ask(builder, FACTORY_OWNER, "twin:adjacents")
+    assert status == 202, denied
+    status, answer = decide(denied["id"], action="deny", note="Not this line")
+    assert status == 200 and answer["status"] == "denied", answer
+    entry = access(builder, provider_query)["twin:adjacents"]
+    assert (entry["status"], entry["decision_note"]) == ("denied", "Not this line"), entry
+
+    before = lc.http("GET", f"{owner.base}/capabilities/requests", headers=owner.headers())[1]
+    asked = builder.send(FACTORY_OWNER, performative="request", capability="twin:adjacents", payload={"a": 1})
+    arrived = owner.receive(asked)
+    assert (arrived["capability"], arrived["payload"]) == ("twin:adjacents", {"a": 1}), arrived
+    chat = arrived["conversation_id"]
+    sent = owner.send(MACHINE_BUILDER, conversation_id=chat, capability="twin:adjacents", payload={"line": [1, 2]})
+    arrived = builder.receive(sent)
+    assert arrived["payload"] == {"line": [1, 2]}, arrived
+    print("A message naming a denied capability: delivered in both directions")
+
+    grant = owner.send(
+        MACHINE_BUILDER,
+        conversation_id=chat,
+        performative="grant",
+        capability="twin:adjacents",
+        in_reply_to=asked,
+        authorization=AUTHORIZATION,
+    )
+    builder.receive(grant)
+    refusal = owner.send(
+        MACHINE_BUILDER, conversation_id=chat, performative="deny", capability="twin:history", in_reply_to=asked
+    )
+    builder.receive(refusal)
+    after = lc.http("GET", f"{owner.base}/capabilities/requests", headers=owner.headers())[1]
+    assert after == before, (before, after)
+    assert access(builder, provider_query)["twin:adjacents"]["status"] == "denied"
+    assert access(builder, provider_query)["twin:history"]["status"] == "approved"
+    print("grant and deny messages: approval records unchanged")
+
+    status, answer = policy("twin:adjacents", "reset")
+    assert status == 200 and (answer["status"], answer["source"]) == ("on-request", "default"), answer
+    assert access(builder, provider_query)["twin:adjacents"]["status"] == "on-request"
+    status, answer = ask(builder, FACTORY_OWNER, "twin:adjacents")
+    assert status == 202 and answer["status"] == "pending", answer
+    print("Reset through the agent route: back to the default, and the consumer can ask again")
+
+    name = lc.slug(FACTORY_OWNER)
+    with lc.port_forward(lc.PARTICIPANTS, f"adapter-{name}", 8000) as adapter:
+        headers = {"X-Internal-Key": key}
+        status, state = lc.http("GET", f"{adapter}/internal/capabilities", headers=headers)
+        assert status == 200 and state["approvals"], (status, state)
+        status, answer = lc.http(
+            "PATCH", f"{adapter}/internal/capabilities/approvals/{request['id']}", {"action": "reset"}, headers
+        )
+        assert status == 200 and (answer["status"], answer["source"]) == ("on-request", "default"), answer
+        assert access(builder, provider_query)["twin:history"]["status"] == "on-request"
+        print("Reset through the internal route that the management API will use: back to the default")
+
+        status, answer = lc.http(
+            "PATCH", f"{adapter}/internal/capabilities/twin:adjacents", {"default_policy": "auto"}, headers
+        )
+        assert status == 200, answer
+        status, answer = lc.http("GET", f"{adapter}/internal/capabilities")
+        assert status == 401, (status, answer)
+        print("Internal routes: the key can change a default, and no credential gets 401")
+        lc.http("PATCH", f"{adapter}/internal/capabilities/twin:adjacents", {"default_policy": "on-request"}, headers)
+
+    for path in ("/internal/capabilities", "/%69nternal/capabilities"):
+        status, _ = lc.http("GET", f"{owner.base}{path}", headers={**owner.headers(), "X-Internal-Key": key})
+        assert status == 404, (path, status)
+    print("Internal capability routes through the gateway: 404")
+
+
 def isolation(owner: Agent, builder: Agent, delivered_to_builder: str) -> None:
     base = owner.base
     status, _ = lc.http("GET", f"{base}/inbox/messages")
@@ -665,6 +796,7 @@ def main() -> int:
                 role_rules_at_the_receiver(owner)
                 failed_notification(owner, builder)
                 size_limits(owner)
+                capabilities(owner, builder, key)
             print("PASS")
             return 0
         finally:

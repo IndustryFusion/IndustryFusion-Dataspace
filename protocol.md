@@ -172,6 +172,8 @@ Capability policy records and reports who may access what. **It is advisory, and
 - The sending application is responsible for checking access and for filtering what it shares.
 - `grant` and `deny` messages do not change approval records. Access is changed through the capability routes in [gateway-api.md](gateway-api.md).
 
+- Connecting an application therefore means adding this check to it: read `GET /capabilities/access` before sending, and share only what it allows.
+
 Communication is still bound by the role rules and by the conversation rules above.
 
 ### Catalogue

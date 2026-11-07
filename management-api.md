@@ -104,7 +104,7 @@ External adapters can use these read routes as their `REGISTRY_URL`.
 
 ## Capabilities and policies
 
-Access is advisory. See [protocol.md](protocol.md).
+Access is advisory. See [protocol.md](protocol.md). These routes use the adapter's internal capability routes, with `ADAPTER_INTERNAL_KEY`. A decision on a resolved request gives `409`, as on the agent route: reset first, or use `POST /api/participants/{id}/approvals`, which replaces it.
 
 ### `GET /api/participants/{id}/capabilities`
 

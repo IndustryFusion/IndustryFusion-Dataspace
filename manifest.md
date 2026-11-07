@@ -25,7 +25,7 @@ The MVP shall demonstrate:
 * Agent B can receive the request through its local inbox.
 * Agent B can send a response through the same mechanism.
 * Agent A can receive the response through its local inbox.
-* Communication passes through EDC contracts, under participant role rules and conversation rules. Capability policy records who may access what; it is advisory, and the sending application checks it (see [protocol.md](protocol.md)).
+* Communication passes through EDC contracts, under participant role rules and conversation rules. Capability policy records who may access what; it is advisory, the dataspace delivers a message whatever that record says, and the sending application checks it (see [protocol.md](protocol.md)).
 * No direct cross-company API integration exists between agents.
 * The same mechanism can be reused for additional participants.
 

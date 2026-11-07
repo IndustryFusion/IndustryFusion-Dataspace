@@ -45,6 +45,8 @@ PASSWORD = os.environ.get("TEST_POSTGRES_PASSWORD", "postgres")
 pytestmark = pytest.mark.skipif(not HOST, reason="TEST_POSTGRES_HOST is not set")
 
 FO, MB = "urn:test:fo", "urn:test:mb"
+OTHER_FO = "urn:test:other-fo"
+INTERNAL_KEY = "test-internal-key"
 AUTHORIZATION = {"scope": "conversation", "expires_at": "2026-12-01T10:00:00+00:00", "constraints": {}}
 
 
@@ -121,11 +123,15 @@ class Mesh:
 def registry_answer(path: str) -> httpx.Response:
     records = {
         FO: {"participant_id": FO, "adapter_url": "http://fo.test"},
+        OTHER_FO: {"participant_id": OTHER_FO, "adapter_url": "http://other-fo.test"},
         MB: {"participant_id": MB, "adapter_url": "http://mb.test"},
     }
     if path.startswith("/participants/compatible/"):
         own = path.removeprefix("/participants/compatible/")
-        return httpx.Response(200, json=[record for name, record in records.items() if name != own])
+        compatible = [FO, OTHER_FO] if own == MB else [MB] if own in records else None
+        if compatible is None:
+            return httpx.Response(404, json={})
+        return httpx.Response(200, json=[records[name] for name in compatible])
     record = records.get(path.removeprefix("/participants/"))
     return httpx.Response(200, json=record) if record else httpx.Response(404, json={})
 
@@ -193,6 +199,8 @@ def two_sided(scenario) -> None:
             databases.append(database)
             settings = Settings(
                 participant_id=participant,
+                participant_type="factory_owner" if short == "fo" else "machine_builder",
+                adapter_internal_key=INTERNAL_KEY,
                 adapter_url=f"http://{short}.test",
                 edc_dsp_url=f"http://{short}-connector.test/dsp",
                 keycloak_url="http://keycloak.test",

@@ -218,10 +218,13 @@ Give one of the two:
 [
   {
     "capability": "twin:history", "label": "...", "description": "...",
-    "data_classification": "operational", "status": "on-request", "source": "default"
+    "data_classification": "operational", "status": "on-request", "source": "default",
+    "decision_note": null
   }
 ]
 ```
+
+`provider=` gives `403` for a provider whose role is not compatible, `404` for an unregistered one, and `503` if its adapter can't be reached. Giving neither parameter or both gives `422`.
 
 ### `POST /capabilities/requests`
 
@@ -231,17 +234,21 @@ Returns `202`.
 { "provider_participant": "...", "capability": "twin:history", "conversation_id": null, "purpose": "...", "note": "..." }
 ```
 
-`conversation_id`, `purpose` and `note` are optional.
+`conversation_id`, `purpose` and `note` are optional. The answer has the same fields as an entry in `GET /capabilities/requests`.
+
+- A provider whose role is not compatible gives `403`, the same as any other incompatible role. An unregistered provider gives `404`, and so does a capability that provider doesn't offer.
+- Asking again returns the existing request unchanged, whatever its status. After a denial, the provider has to reset access before the consumer can ask again.
+- Asking for a capability whose default is `auto` stores nothing, and returns `status: auto` with `id: null`. A provider's own decision on that capability is returned as usual.
 
 ### `GET /capabilities/requests?status=`
 
-Requests received by the caller. `status` is `pending`, `approved` or `denied`.
+Requests received by the caller. `status` is `pending`, `approved` or `denied`. A request made by another participant's agent is held by the provider, so a consumer sees none of its own requests here.
 
 ```json
 [
   {
     "id": "...", "consumer_id": "...", "capability": "twin:history", "status": "pending",
-    "conversation_id": null, "purpose": "...", "note": "...",
+    "conversation_id": null, "purpose": "...", "note": "...", "decision_note": null,
     "requested_at": "...", "resolved_at": null
   }
 ]
@@ -250,10 +257,10 @@ Requests received by the caller. `status` is `pending`, `approved` or `denied`.
 ### `PATCH /capabilities/requests/{id}`
 
 ```json
-{ "action": "approve" }
+{ "action": "approve", "note": "For this quarter" }
 ```
 
-`action` is `approve` or `deny`. Gives `409` if the request is already resolved.
+`action` is `approve` or `deny`, and `note` is optional. It is stored as `decision_note`, next to the consumer's own `note`, and returned by this route, by `GET /capabilities/requests`, by a repeated `POST /capabilities/requests`, and in the consumer's `GET /capabilities/access`. Gives `409` if the request is already resolved. To change a decision, use `POST /capabilities/policy`.
 
 ### `POST /capabilities/policy`
 
@@ -263,7 +270,7 @@ Sets access for one consumer, without a request.
 { "consumer_id": "...", "capability": "twin:history", "action": "approve" }
 ```
 
-`action` is `approve`, `deny` or `reset`, which goes back to the default.
+`action` is `approve`, `deny` or `reset`, which goes back to the default and can be repeated. Approve and deny give `403` for a consumer whose role is not compatible, and `404` for an unregistered one. Any action gives `404` for a capability the caller doesn't offer. Answers with `{consumer_id, capability, status, source}`.
 
 ## Errors
 
@@ -271,8 +278,8 @@ Sets access for one consumer, without a request.
 |---|---|---|
 | `400` | Download of a message with no files | Standard |
 | `401` | Missing or invalid token | Standard |
-| `403` | No `participant_id` claim, participant not registered, role mismatch, or a receiver whose role is not compatible | Standard |
-| `404` | Unknown message, conversation or request, or an unregistered receiver. `internal/*` paths also give `404` | Standard |
+| `403` | No `participant_id` claim, participant not registered, role mismatch, or a receiver or capability provider or consumer whose role is not compatible | Standard |
+| `404` | Unknown message, conversation or request, an unregistered receiver, or a capability the provider doesn't offer. `internal/*` paths also give `404` | Standard |
 | `409` | Message not allowed in this conversation state | See below |
 | `409` | Capability request already resolved | Standard |
 | `413` | The request is larger than `MAX_UPLOAD_BYTES` for `POST /outbox/files`, or `MAX_JSON_BYTES` for `POST /outbox/messages`. Other routes carry no message content, and the adapter limits them to 256 KiB. Also a payload over `MAX_JSON_BYTES` as stored, or an `authorization` over 200 KiB | Standard |
