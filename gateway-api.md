@@ -63,11 +63,11 @@ The participants this one may communicate with.
 | `performative` | string | no | Default `inform`. See [protocol.md](protocol.md) |
 | `capability` | string | by performative | |
 | `in_reply_to` | string | by performative | A `message_id` |
-| `authorization` | object | by performative | `{scope, expires_at, constraints}` |
+| `authorization` | object | by performative | `{scope, expires_at, constraints}`. Up to 200 KiB, as it travels in the notification |
 | `outcome` | string | by performative | |
 | `conversation_id` | string | no | Omit to start a conversation |
-| `payload` | object | no | May be empty. Not with `content_ref`. The whole request can be up to `MAX_JSON_BYTES`, by default 4 MiB, so send larger data as files |
-| `content_ref` | object | no | `{asset_id, dsp_url}`, an asset already registered with a connector. Not with `payload` |
+| `payload` | object | no | May be empty. Not with `content_ref`. The whole request can be up to `MAX_JSON_BYTES`, by default 4 MiB, so send larger data as files. So can the payload as stored, where a number such as `1e5` takes more room: over that, the answer is `413` |
+| `content_ref` | object | no | `{asset_id, dsp_url}`, an asset already registered with a connector. Not with `payload`. The asset can be up to `MAX_JSON_BYTES`, as an agent reads it in the message. A larger one gives the receiver's message status `error`. `asset_id` has up to 512 characters and `dsp_url` up to 2048 |
 | `reply_expected` | boolean | no | |
 | `expires_at` | date-time | no | The content is purged after this time |
 | `response_due_at` | date-time | no | Carried for the receiver |
@@ -78,7 +78,7 @@ Returns `202`:
 { "message_id": "...", "status": "pending", "applied": true, "conversation_state": "OPEN" }
 ```
 
-Repeating a `close`, `escalate`, `deescalate` or `reopen` whose status is `error` or `rejected` sends it again, with `applied: true`. Otherwise a repeat has `applied: false`. See "When a notification fails" in [protocol.md](protocol.md).
+Repeating a `close`, `escalate`, `deescalate` or `reopen` whose status has become `error` or `rejected`, with the same outcome, sends it to the receiver as a step, with `applied: true`. The earlier message keeps its status. Otherwise a repeat has `applied: false`. See "When the two copies differ" in [protocol.md](protocol.md).
 
 ### `POST /outbox/files`
 
@@ -122,9 +122,9 @@ A form can have up to 256 files. A file's name in the ZIP keeps only its last pa
 |---|---|
 | `pending` | Accepted, not yet registered |
 | `registered` | Registered with the connector |
-| `notified` | The receiver accepted the notification. This does not mean it has the data |
-| `error` | Final. See `error_message` |
-| `rejected` | Final. The receiver refused it |
+| `notified` | The receiver accepted the notification. This does not mean it has the data, or that an earlier message reached it |
+| `error` | Final. The notification failed, so the receiver's copy may not have moved. See `error_message` |
+| `rejected` | Final. The receiver refused it, so its copy did not move |
 
 ## Receiving
 
@@ -282,7 +282,7 @@ Sets access for one consumer, without a request.
 | `404` | Unknown message, conversation or request, an unregistered receiver, or a capability the provider doesn't offer. `internal/*` paths also give `404` | Standard |
 | `409` | Message not allowed in this conversation state | See below |
 | `409` | Capability request already resolved | Standard |
-| `413` | The request is larger than `MAX_UPLOAD_BYTES` for `POST /outbox/files`, or `MAX_JSON_BYTES` for any other route | Standard |
+| `413` | The request is larger than `MAX_UPLOAD_BYTES` for `POST /outbox/files`, or `MAX_JSON_BYTES` for `POST /outbox/messages`. Other routes carry no message content, and the adapter limits them to 256 KiB. Also a payload over `MAX_JSON_BYTES` as stored, or an `authorization` over 200 KiB | Standard |
 | `422` | Message breaks a validity rule | See below |
 | `422` | Request does not match the schema | Standard validation body, without the values sent |
 | `502` | Keycloak's signing keys are unreachable | Standard |
@@ -308,7 +308,7 @@ A state violation (`409`) and an invalid message (`422`) have these bodies. A `4
 
 ## Advice for clients
 
-- Use `GET /conversations/{id}` as the source of a conversation's state, not only the inbox.
+- Use `GET /conversations/{id}` as the source of a conversation's state, not only the inbox. It reports this side's copy, and the other side's copy can differ. See "When the two copies differ" in [protocol.md](protocol.md).
 - Take care retrying a send, as there is no idempotency key.
 - Do not rely on message order.
 - Check capability access before sending data. The dataspace will not block it.

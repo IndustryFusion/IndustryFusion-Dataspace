@@ -17,15 +17,13 @@
 
 import asyncio
 import contextlib
-import random
 
 import httpx
 import pytest
 from conftest import PEER, auth
-from test_two_sided import HOST, Mesh, Side, assert_same, settle
+from test_two_sided import FO, HOST, MB, Mesh, Side, assert_same, settle
 from test_two_sided import two_sided as two_sided_on_postgres
 
-from app import delivery as delivery_module
 from app.routes import outbox
 from app.routes.outbox import OutgoingMessage, _accept
 
@@ -74,61 +72,228 @@ async def opened(fo: Side, mb: Side) -> None:
     await settle(fo, mb)
 
 
+def row_of(conversation: dict, message_id: str) -> dict:
+    return next(item for item in conversation["messages"] if item["message_id"] == message_id)
+
+
 async def applied_of(side: Side, message_id: str) -> bool:
-    messages = (await side.conversation("c"))["messages"]
-    return next(item["applied"] for item in messages if item["message_id"] == message_id)
+    return row_of(await side.conversation("c"), message_id)["applied"]
 
 
-def test_repeating_a_step_whose_notification_failed_sends_it_again():
+def held_notifications(side: Side, mesh: Mesh) -> asyncio.Event:
+    """This side's notifications wait until the returned event is set. Its connector step has been done by then."""
+    release = asyncio.Event()
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/internal/transfer-request":
+            await release.wait()
+        return await mesh.handle(request)
+
+    side.services.http._transport = httpx.MockTransport(handle)
+    return release
+
+
+async def both_crossing(fo: Side, mb: Side, mesh: Mesh, fo_fields: dict, mb_fields: dict, ids: tuple[str, str]):
+    """Each side accepts its step before either hears of the other's, with these message ids, and then both go."""
+    fo_release, mb_release = held_notifications(fo, mesh), held_notifications(mb, mesh)
+    with message_ids(*ids):
+        first = await fo.send(**fo_fields)
+        second = await mb.send(**mb_fields)
+    fo_release.set()
+    mb_release.set()
+    await settle(fo, mb)
+    return first, second
+
+
+ORDERS = {"fo-lower": (LOW, HIGH), "mb-lower": (HIGH, LOW)}
+
+
+@pytest.mark.parametrize("order", ORDERS)
+def test_simultaneous_close_goes_to_the_lower_id(order):
+    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
+        await opened(fo, mb)
+        first, second = await both_crossing(fo, mb, mesh, close("resolved"), close("withdrawn"), ORDERS[order])
+        assert (first["applied"], second["applied"]) == (True, True), "Neither had seen the other's when it sent"
+        state, outcome = ("CLOSED_RESOLVED", "resolved") if order == "fo-lower" else ("CLOSED_WITHDRAWN", "withdrawn")
+        await assert_same(fo, mb, "c", state, outcome)
+        winner, loser = (first, second) if order == "fo-lower" else (second, first)
+        for side in (fo, mb):
+            assert await applied_of(side, winner["message_id"]) is True
+            assert await applied_of(side, loser["message_id"]) is False
+        assert (await fo.status(first["message_id"]))["status"] == "notified"
+        assert (await mb.status(second["message_id"]))["status"] == "notified"
+
+    two_sided(scenario)
+
+
+@pytest.mark.parametrize("order", ORDERS)
+def test_simultaneous_escalate_goes_to_the_lower_id(order):
+    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
+        await opened(fo, mb)
+        escalate = {"conversation_id": "c", "performative": "escalate"}
+        await both_crossing(fo, mb, mesh, escalate, escalate, ORDERS[order])
+        one, other = await fo.conversation("c"), await mb.conversation("c")
+        assert (one["state"], other["state"]) == ("ESCALATING", "ESCALATING")
+        assert one["escalated_by"] == other["escalated_by"] == (FO if order == "fo-lower" else MB)
+
+    two_sided(scenario)
+
+
+@pytest.mark.parametrize("performative", ["close", "escalate"])
+@pytest.mark.parametrize("order", ORDERS)
+def test_one_side_answered_before_the_other_step_arrives(order, performative):
+    """The answer can reach a side long before the other's notification does, and they must still agree."""
+
+    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
+        await opened(fo, mb)
+        fields = close("resolved") if performative == "close" else {"conversation_id": "c", "performative": "escalate"}
+        other = close("withdrawn") if performative == "close" else fields
+        release = held_notifications(mb, mesh)
+        with message_ids(*ORDERS[order]):
+            first = await fo.send(**fields)
+            second = await mb.send(**other)
+        try:
+            # The factory owner's notification goes through and is answered, while the machine builder's waits.
+            for _ in range(200):
+                if (await fo.status(first["message_id"]))["status"] == "notified":
+                    break
+                await asyncio.sleep(0.01)
+            assert (await fo.status(first["message_id"]))["status"] == "notified"
+            assert await applied_of(fo, first["message_id"]) is (order == "fo-lower")
+        finally:
+            release.set()
+        await settle(fo, mb)
+        one, two = await fo.conversation("c"), await mb.conversation("c")
+        assert (one["state"], one["outcome"], one["escalated_by"]) == (
+            two["state"],
+            two["outcome"],
+            two["escalated_by"],
+        )
+        winner = first if order == "fo-lower" else second
+        assert await applied_of(fo, winner["message_id"]) is True
+        assert await applied_of(mb, winner["message_id"]) is True
+
+    two_sided(scenario)
+
+
+@pytest.mark.parametrize("order", ORDERS)
+def test_a_close_crossing_an_escalate_leaves_the_copies_as_documented(order):
+    """Each refuses the other's. protocol.md gives this as its example."""
+
+    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
+        await opened(fo, mb)
+        escalate = {"conversation_id": "c", "performative": "escalate"}
+        first, second = await both_crossing(fo, mb, mesh, close("resolved"), escalate, ORDERS[order])
+        one, other = await fo.conversation("c"), await mb.conversation("c")
+        assert (one["state"], one["outcome"], one["escalated_by"]) == ("CLOSED_RESOLVED", "resolved", None)
+        assert (other["state"], other["outcome"], other["escalated_by"]) == ("ESCALATING", None, MB)
+        assert (await fo.status(first["message_id"]))["status"] == "rejected"
+        assert (await mb.status(second["message_id"]))["status"] == "rejected"
+        assert "conversation_closed" in (await mb.status(second["message_id"]))["error_message"]
+
+        # The escalator's own close: both are closed, and each keeps its own outcome.
+        for release_side in (fo, mb):
+            release_side.services.http._transport = httpx.MockTransport(mesh.handle)
+        last = await mb.send(**close("failed"))
+        await settle(fo, mb)
+        one, other = await fo.conversation("c"), await mb.conversation("c")
+        assert (one["state"], one["outcome"], one["escalated_by"]) == ("CLOSED_RESOLVED", "resolved", None)
+        assert (other["state"], other["outcome"], other["escalated_by"]) == ("CLOSED_FAILED", "failed", MB)
+        assert (await mb.status(last["message_id"]))["status"] == "notified"
+        assert (await mb.status(last["message_id"]))["applied"] is True
+        assert row_of(one, last["message_id"])["applied"] is False
+
+    two_sided(scenario)
+
+
+@pytest.mark.parametrize("order", ORDERS)
+def test_a_close_and_reopen_crossing_a_close_leaves_the_copies_as_documented(order):
+    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
+        await opened(fo, mb)
+        fo_release, mb_release = held_notifications(fo, mesh), held_notifications(mb, mesh)
+        with message_ids(*ORDERS[order]):
+            await fo.send(**close("resolved"))
+            mb_close = await mb.send(**close("withdrawn"))
+        await fo.send(conversation_id="c", performative="reopen")
+        fo_release.set()
+        mb_release.set()
+        await settle(fo, mb)
+        one, other = await fo.conversation("c"), await mb.conversation("c")
+        assert (one["state"], one["outcome"]) == ("CLOSED_WITHDRAWN", "withdrawn")
+        assert (other["state"], other["outcome"]) == ("OPEN", None)
+        assert (await mb.status(mb_close["message_id"]))["status"] == "notified"
+
+    two_sided(scenario)
+
+
+def test_a_failed_step_stays_failed_and_a_later_notified_says_nothing_about_it():
+    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
+        await opened(fo, mb)
+        failing_notifications(fo, mesh)
+        step = await fo.send(conversation_id="c", performative="escalate")
+        await settle(fo, mb)
+        assert (await fo.status(step["message_id"]))["status"] == "error"
+        assert (await fo.conversation("c"))["state"] == "ESCALATING"
+        assert (await mb.conversation("c"))["state"] == "OPEN"
+
+        later = await fo.send(conversation_id="c")
+        await settle(fo, mb)
+        assert (await fo.status(later["message_id"]))["status"] == "notified"
+        assert (await fo.status(step["message_id"]))["status"] == "error"
+        assert (await mb.conversation("c"))["state"] == "OPEN"
+
+    two_sided(scenario)
+
+
+def test_repeating_a_step_whose_notification_failed_moves_the_receiver():
     async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
         await opened(fo, mb)
         failing_notifications(fo, mesh)
         first = await fo.send(**close("superseded"))
         await settle(fo, mb)
         assert (await fo.status(first["message_id"]))["status"] == "error"
-        assert (await fo.conversation("c"))["state"] == "CLOSED_SUPERSEDED"
         assert (await mb.conversation("c"))["state"] == "OPEN"
 
         again = await fo.send(**close("superseded"))
         assert again["applied"] is True
         await assert_same(fo, mb, "c", "CLOSED_SUPERSEDED", "superseded")
         assert (await fo.status(again["message_id"]))["status"] == "notified"
-        assert await applied_of(fo, first["message_id"]) is False
-        assert await applied_of(fo, again["message_id"]) is True
         assert await applied_of(mb, again["message_id"]) is True
+        earlier = await fo.status(first["message_id"])
+        assert (earlier["status"], earlier["applied"]) == ("error", True), "The earlier row doesn't change"
 
     two_sided(scenario)
 
 
-def test_a_repeat_can_change_the_outcome_of_a_step_that_never_arrived():
+def test_a_repeat_with_another_outcome_gets_the_ordinary_rules():
     async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
         await opened(fo, mb)
         failing_notifications(fo, mesh)
         await fo.send(**close("resolved"))
         await settle(fo, mb)
-        again = await fo.send(**close("failed"))
-        assert again["conversation_state"] == "CLOSED_FAILED"
-        await assert_same(fo, mb, "c", "CLOSED_FAILED", "failed")
+        other = await fo.send(**close("failed"))
+        assert (other["applied"], other["conversation_state"]) == (False, "CLOSED_RESOLVED")
+        await settle(fo, mb)
+        assert (await mb.conversation("c"))["state"] == "OPEN"
 
     two_sided(scenario)
 
 
-def test_a_repeat_accepted_before_the_failure_replaces_the_step_when_its_turn_comes():
+def test_a_repeat_accepted_while_the_first_is_in_progress_is_a_duplicate():
     async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
         await opened(fo, mb)
         failing_notifications(fo, mesh)
         first = await fo.send(**close("resolved"))
         again = await fo.send(**close("resolved"))
         assert again["applied"] is False
-        await assert_same(fo, mb, "c", "CLOSED_RESOLVED", "resolved")
-        assert await applied_of(fo, first["message_id"]) is False
-        assert await applied_of(fo, again["message_id"]) is True
-        assert (await fo.status(again["message_id"]))["applied"] is True
+        await settle(fo, mb)
+        assert (await fo.status(first["message_id"]))["status"] == "error"
+        assert (await mb.conversation("c"))["state"] == "OPEN"
 
     two_sided(scenario)
 
 
-def test_a_repeat_after_a_lost_answer_takes_the_step_that_arrived():
+def test_a_repeat_after_only_the_answer_was_lost_changes_nothing_there():
     async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
         await opened(fo, mb)
         failing_notifications(fo, mesh, after_arrival=True)
@@ -136,47 +301,25 @@ def test_a_repeat_after_a_lost_answer_takes_the_step_that_arrived():
         await settle(fo, mb)
         assert (await fo.status(first["message_id"]))["status"] == "error"
         assert (await mb.conversation("c"))["state"] == "CLOSED_RESOLVED"
-
-        again = await fo.send(**close("failed"))
+        again = await fo.send(**close("resolved"))
         await assert_same(fo, mb, "c", "CLOSED_RESOLVED", "resolved")
-        assert (await fo.status(first["message_id"]))["status"] == "notified"
-        assert await applied_of(fo, first["message_id"]) is True
-        assert await applied_of(fo, again["message_id"]) is False
+        assert await applied_of(mb, again["message_id"]) is False
+        assert (await fo.status(first["message_id"]))["status"] == "error"
 
     two_sided(scenario)
 
 
-def test_the_other_sides_step_wins_over_a_failed_one_whatever_the_ids():
-    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
-        await opened(fo, mb)
-        failing_notifications(fo, mesh)
-        with message_ids(LOW, HIGH):
-            lost = await fo.send(**close("resolved"))
-            await settle(fo, mb)
-            won = await mb.send(**close("withdrawn"))
-        await assert_same(fo, mb, "c", "CLOSED_WITHDRAWN", "withdrawn")
-        assert await applied_of(fo, lost["message_id"]) is False
-        assert await applied_of(fo, won["message_id"]) is True
-
-    two_sided(scenario)
-
-
-def test_the_other_sides_step_wins_over_a_refused_one_whatever_the_ids(harness):
+def test_a_repeat_of_a_refused_step_goes_as_a_step_and_stays_rejected_if_refused_again(harness):
     harness.send(conversation_id="c1", payload={})
     harness.world.peer_status = 409
-    with message_ids(LOW):
-        assert (
-            harness.send(performative="close", outcome="resolved", conversation_id="c1", payload={}).status_code == 202
-        )
-    status = harness.client.get(f"/outbox/messages/{LOW}/status", headers=auth()).json()
-    assert status["status"] == "rejected"
-
-    answer = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed", based_on=None)
-    assert answer.status_code == 202
-    conversation = harness.client.get("/conversations/c1", headers=auth()).json()
-    assert conversation["state"] == "CLOSED_FAILED"
-    messages = {item["message_id"]: item["applied"] for item in conversation["messages"]}
-    assert (messages[LOW], messages[HIGH]) == (False, True)
+    close_it = {"performative": "close", "outcome": "resolved", "conversation_id": "c1", "payload": {}}
+    first = harness.send(**close_it).json()
+    again = harness.send(**close_it).json()
+    assert again["applied"] is True
+    assert harness.world.notifications[-1]["body"]["sender_applied"] is True
+    for sent in (first, again):
+        status = harness.client.get(f"/outbox/messages/{sent['message_id']}/status", headers=auth()).json()
+        assert status["status"] == "rejected"
 
 
 @contextlib.contextmanager
@@ -216,216 +359,80 @@ def own_close_in_progress(harness, message_id: str):
 
 def test_a_step_still_on_its_way_keeps_the_lower_id(harness):
     with own_close_in_progress(harness, MIDDLE):
-        higher = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed", based_on=None)
-        assert (higher.status_code, higher.json()["applied"]) == (202, False)
-        assert higher.json()["state_message_id"] == MIDDLE
+        higher = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed")
+        assert (higher.status_code, higher.json()["kept_step"]) == (202, MIDDLE)
         assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_RESOLVED"
 
-        lower = harness.notify(LOW, conversation_id="c1", performative="close", outcome="withdrawn", based_on=None)
-        assert (lower.status_code, lower.json()["applied"]) == (202, True)
+        lower = harness.notify(LOW, conversation_id="c1", performative="close", outcome="withdrawn")
+        assert (lower.status_code, lower.json()["kept_step"]) == (202, None)
         assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_WITHDRAWN"
 
 
-def test_a_step_based_on_one_that_lost_changes_nothing(harness):
-    with own_close_in_progress(harness, LOW):
-        lost = harness.notify(HIGH, conversation_id="c1", performative="close", outcome="failed", based_on=None)
-        assert lost.json()["applied"] is False
-        follow = harness.notify(HIGHEST, conversation_id="c1", performative="reopen", based_on=HIGH)
-        assert (follow.status_code, follow.json()["applied"]) == (202, False)
-        assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_RESOLVED"
-
-
-@pytest.mark.parametrize("fo_first", [True, False], ids=["fo-lower", "mb-lower"])
-def test_close_and_reopen_crossing_a_close(fo_first):
-    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
-        await opened(fo, mb)
-        ids = (LOW, MIDDLE, HIGH) if fo_first else (MIDDLE, HIGH, LOW)
-        mesh.held.clear()
-        with message_ids(*ids):
-            await fo.send(**close("resolved"))
-            await fo.send(conversation_id="c", performative="reopen")
-            await mb.send(**close("withdrawn"))
-        mesh.held.set()
-        if fo_first:
-            await assert_same(fo, mb, "c", "OPEN")
-            assert await applied_of(fo, HIGH) is False
-            assert await applied_of(mb, HIGH) is False
-        else:
-            await assert_same(fo, mb, "c", "CLOSED_WITHDRAWN", "withdrawn")
-            for side in (fo, mb):
-                assert await applied_of(side, LOW) is True
-                assert await applied_of(side, MIDDLE) is False
-                assert await applied_of(side, HIGH) is False
-
-    two_sided(scenario)
-
-
-@pytest.mark.parametrize("fo_lower", [True, False], ids=["close-lower", "escalate-lower"])
-def test_close_crossing_escalate(fo_lower):
-    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
-        await opened(fo, mb)
-        mesh.held.clear()
-        with message_ids(*((LOW, HIGH) if fo_lower else (HIGH, LOW))):
-            await fo.send(**close("resolved"))
-            await mb.send(conversation_id="c", performative="escalate")
-        mesh.held.set()
-        if fo_lower:
-            shown = await assert_same(fo, mb, "c", "CLOSED_RESOLVED", "resolved")
-            assert shown["escalated_by"] is None
-        else:
-            shown = await assert_same(fo, mb, "c", "ESCALATING")
-            assert shown["escalated_by"] == mb.participant
-        statuses = [(await fo.status(LOW if fo_lower else HIGH))["status"]]
-        statuses.append((await mb.status(HIGH if fo_lower else LOW))["status"])
-        assert statuses == ["notified", "notified"]
-
-    two_sided(scenario)
-
-
-def test_a_later_step_on_the_branch_that_lost_is_void():
-    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
-        await opened(fo, mb)
-        mesh.held.clear()
-        with message_ids(LOW, HIGH, HIGHEST):
-            await fo.send(**close("resolved"))
-            await mb.send(conversation_id="c", performative="escalate")
-            await mb.send(**close("withdrawn"))
-        mesh.held.set()
-        await assert_same(fo, mb, "c", "CLOSED_RESOLVED", "resolved")
-        for side in (fo, mb):
-            assert await applied_of(side, HIGH) is False
-            assert await applied_of(side, HIGHEST) is False
-
-    two_sided(scenario)
-
-
-def test_a_late_refusal_does_not_lose_the_settlement():
-    """The side that would have refused a step settles it instead, however late its answer gets recorded."""
-
-    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
-        await opened(fo, mb)
-        real_set = delivery_module.set_outbox
-        release = asyncio.Event()
-
-        async def slow(services, message_id, **values):
-            if values.get("status") in {"rejected", "notified"} and services is fo.services:
-                await release.wait()
-            await real_set(services, message_id, **values)
-
-        delivery_module.set_outbox = slow
-        try:
-            mesh.held.clear()
-            with message_ids(LOW, MIDDLE, HIGH):
-                await fo.send(**close("resolved"))
-                await mb.send(conversation_id="c", performative="escalate")
-                mesh.held.set()
-                await asyncio.sleep(0.2)
-                await mb.send(**close("withdrawn"))
-            await asyncio.sleep(0.2)
-        finally:
-            release.set()
-            await settle(fo, mb)
-            delivery_module.set_outbox = real_set
-        await assert_same(fo, mb, "c", "CLOSED_RESOLVED", "resolved")
-
-    two_sided(scenario)
-
-
-def test_the_winners_failed_notification_does_not_split_them():
-    """The other side already holds the winner, from the answer to its own notification."""
-
-    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
-        await opened(fo, mb)
-        release = asyncio.Event()
-        real_offer = fo.services.connector.offer
-
-        async def held_offer(asset: str, source: str) -> None:
-            if asset == LOW:
-                await release.wait()
-            await real_offer(asset, source)
-
-        fo.services.connector = type(fo.services.connector)(mesh)
-        fo.services.connector.offer = held_offer
-        failing_notifications(fo, mesh)
-        with message_ids(LOW, HIGH):
-            await fo.send(**close("resolved"))
-            await mb.send(**close("withdrawn"))
-        await mb.services.settle()
-        assert (await mb.conversation("c"))["state"] == "CLOSED_RESOLVED"
-        release.set()
-        await assert_same(fo, mb, "c", "CLOSED_RESOLVED", "resolved")
-
-    two_sided(scenario)
-
-
-STEP_CHOICES = [
-    ("inform", {}),
-    ("close", {"outcome": "resolved"}),
-    ("close", {"outcome": "failed"}),
-    ("reopen", {}),
-    ("escalate", {}),
-    ("deescalate", {}),
-]
-
-
-async def act(side: Side, chosen: random.Random, conversation: str) -> None:
-    for _ in range(chosen.randint(1, 3)):
-        performative, extra = chosen.choice(STEP_CHOICES)
-        answer = await side.post(conversation_id=conversation, performative=performative, **extra)
-        assert answer.status_code in {202, 409}, answer.text
-
-
-@pytest.mark.parametrize("seed", [7, 11])
-def test_random_crossing_steps_always_end_in_the_same_state(seed):
-    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
-        chosen = random.Random(seed)
-        mesh.varying_offers = True
-        for number in range(40):
-            conversation = f"f{number}"
-            await fo.send(conversation_id=conversation)
-            await settle(fo, mb)
-
-            await asyncio.gather(act(fo, chosen, conversation), act(mb, chosen, conversation))
-            await settle(fo, mb)
-            first, second = await fo.conversation(conversation), await mb.conversation(conversation)
-            for name in ("state", "outcome", "escalated_by"):
-                assert first[name] == second[name], (name, first, second)
-            for shown in (first, second):
-                assert not [item for item in shown["messages"] if item["status"] in {"pending", "registered"}]
-
-    two_sided(scenario)
-
-
-@pytest.mark.parametrize("based_on", [None, "unset"], ids=["names-a-base", "no-base-field"])
-def test_a_peer_cannot_rewrite_a_settled_close(harness, based_on):
+@pytest.mark.parametrize("message_id", ["0", "zzz"], ids=["lower-id", "higher-id"])
+def test_a_peer_cannot_rewrite_an_answered_close(harness, message_id):
     harness.send(conversation_id="c1", payload={})
     harness.send(conversation_id="c1", performative="close", outcome="resolved", payload={})
-    fields = {} if based_on == "unset" else {"based_on": based_on}
-    answer = harness.notify("0", conversation_id="c1", performative="close", outcome="failed", **fields)
-    assert (answer.status_code, answer.json()["applied"]) == (202, False)
+    answer = harness.notify(message_id, conversation_id="c1", performative="close", outcome="failed")
+    assert answer.status_code == 202
     conversation = harness.client.get("/conversations/c1", headers=auth()).json()
     assert (conversation["state"], conversation["outcome"]) == ("CLOSED_RESOLVED", "resolved")
-    own = next(item for item in conversation["messages"] if item["performative"] == "close")
+    assert row_of(conversation, message_id)["applied"] is False
+    own = next(
+        item for item in conversation["messages"] if item["performative"] == "close" and item["direction"] == "sent"
+    )
     assert own["applied"] is True
 
 
-def test_a_peer_cannot_rewrite_a_settled_escalation(harness):
+def test_a_peer_cannot_rewrite_an_answered_escalation(harness):
     harness.send(conversation_id="c1", performative="escalate", payload={})
-    answer = harness.notify("0", conversation_id="c1", performative="escalate", based_on=None)
-    assert (answer.status_code, answer.json()["applied"]) == (202, False)
+    answer = harness.notify("0", conversation_id="c1", performative="escalate")
+    assert answer.status_code == 409
+    assert answer.json()["reason"] == "already_escalated"
     conversation = harness.client.get("/conversations/c1", headers=auth()).json()
     assert conversation["escalated_by"] != PEER
 
 
 def test_a_peers_own_earlier_step_cannot_be_rewritten_by_itself(harness):
     assert harness.notify("m1", conversation_id="c1").status_code == 202
-    assert (
-        harness.notify("m2", conversation_id="c1", performative="close", outcome="resolved", based_on=None).status_code
-        == 202
-    )
-    answer = harness.notify("0", conversation_id="c1", performative="close", outcome="failed", based_on=None)
-    assert (answer.status_code, answer.json()["applied"], answer.json()["state_message_id"]) == (202, False, "m2")
-    assert harness.client.get("/conversations/c1", headers=auth()).json()["state"] == "CLOSED_RESOLVED"
+    assert harness.notify("m2", conversation_id="c1", performative="close", outcome="resolved").status_code == 202
+    answer = harness.notify("0", conversation_id="c1", performative="close", outcome="failed")
+    assert answer.status_code == 202
+    assert harness.client.get("/conversations/c1", headers=auth()).json()["outcome"] == "resolved"
+
+
+def test_a_duplicate_stated_as_not_applied_does_not_settle(harness):
+    with own_close_in_progress(harness, MIDDLE):
+        answer = harness.notify(LOW, conversation_id="c1", performative="close", outcome="failed", sender_applied=False)
+        assert answer.status_code == 202
+        assert harness.client.get("/conversations/c1", headers=auth()).json()["outcome"] == "resolved"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"kept_step": "zzzz"},
+        {"kept_step": 5},
+        {"kept_step": None},
+        ["not", "an", "object"],
+        {"conversation_state": "OPEN", "applied": False, "state_message_id": "0"},
+    ],
+    ids=["a-higher-id", "not-a-string", "none", "not-an-object", "a-copy"],
+)
+def test_an_answer_that_names_no_lower_step_changes_nothing(harness, answer):
+    harness.world.peer_answer = answer
+    response = harness.send(conversation_id="c1", performative="escalate", payload={})
+    assert response.status_code == 202
+    status = harness.client.get(f"/outbox/messages/{response.json()['message_id']}/status", headers=auth()).json()
+    assert (status["status"], status["applied"], status["conversation_state"]) == ("notified", True, "ESCALATING")
+
+
+def test_an_answer_can_not_set_a_state_or_touch_another_step(harness):
+    harness.send(conversation_id="c1", performative="escalate", payload={})
+    harness.world.peer_answer = {"kept_step": "0"}
+    sent = harness.send(conversation_id="c1", payload={}).json()
+    conversation = harness.client.get("/conversations/c1", headers=auth()).json()
+    assert conversation["state"] == "ESCALATING"
+    assert row_of(conversation, sent["message_id"])["applied"] is True
 
 
 def test_stating_not_applied_does_not_get_past_the_rules(harness):
@@ -508,37 +515,6 @@ def test_a_failed_fetch_can_still_recover(harness):
     harness.settle()
     assert harness.client.get("/inbox/messages/m2", headers=auth()).json()["status"] == "error"
     assert harness.client.post("/internal/inbox-receive/m2", content=b"{}").status_code == 200
-
-
-def test_a_repeat_whose_state_differs_at_the_receiver_says_so(harness):
-    harness.send(conversation_id="c1", payload={})
-    harness.send(conversation_id="c1", performative="close", outcome="resolved", payload={})
-    harness.world.peer_answer = {
-        "applied": False, "conversation_state": "OPEN", "outcome": None, "escalated_by": None,
-        "state_message_id": "other",
-    }  # fmt: skip
-    repeat = harness.send(conversation_id="c1", performative="close", outcome="resolved", payload={}).json()
-    status = harness.client.get(f"/outbox/messages/{repeat['message_id']}/status", headers=auth()).json()
-    assert status["applied"] is False
-    assert "OPEN" in status["error_message"]
-
-
-@pytest.mark.parametrize(
-    "answer",
-    [
-        {"conversation_state": "OPEN"},
-        {"state_message_id": "x", "conversation_state": "MADE_UP", "applied": False},
-        {"state_message_id": "x", "conversation_state": "CLOSED_FAILED", "outcome": "resolved", "applied": False},
-        {"state_message_id": "x", "conversation_state": "ESCALATING", "applied": False},
-        ["not", "an", "object"],
-    ],
-)
-def test_an_answer_that_makes_no_sense_changes_nothing(harness, answer):
-    harness.world.peer_answer = answer
-    response = harness.send(conversation_id="c1", performative="escalate", payload={})
-    assert response.status_code == 202
-    status = harness.client.get(f"/outbox/messages/{response.json()['message_id']}/status", headers=auth()).json()
-    assert (status["status"], status["applied"], status["conversation_state"]) == ("notified", True, "ESCALATING")
 
 
 def test_cancelling_accept_does_not_hold_up_the_queue_or_shutdown(harness):

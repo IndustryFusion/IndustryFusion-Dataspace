@@ -29,9 +29,8 @@ from sqlalchemy import update
 from app.auth import OwnToken, TokenVerifier
 from app.config import Settings
 from app.connector import Connector, ConnectorError
-from app.conversations import compare_with_answer, refresh_before_delivery
+from app.conversations import note_the_answer
 from app.db import Database, InboxMessage, OutboxMessage, now
-from app.protocol import STEPS
 from app.registry import Registry
 from app.storage import Storage
 
@@ -135,15 +134,14 @@ async def fail_outbox(services: Services, message_id: str, error: Exception) -> 
         log.error("Could not record the failed delivery of %s: %s", message_id, second)
 
 
-async def _compare(services: Services, message: dict, response: httpx.Response) -> None:
-    """See what the receiver's copy holds. It is an optional part of the answer, so its absence changes nothing."""
+async def _note_answer(services: Services, message: dict, response: httpx.Response) -> None:
+    """An optional part of the answer, so its absence changes nothing."""
     try:
         answer = response.json()
     except ValueError:
         return
-    if isinstance(answer, dict):
-        async with services.db.session() as session:
-            await compare_with_answer(session, message, answer)
+    async with services.db.session() as session:
+        await note_the_answer(session, message, answer)
 
 
 async def deliver(services: Services, message: dict, peer: dict) -> None:
@@ -163,9 +161,6 @@ async def deliver(services: Services, message: dict, peer: dict) -> None:
         target = (peer.get("peer_notify_url") or peer.get("adapter_url") or "").rstrip("/")
         if not target:
             raise ConnectorError("The receiver has no address to notify")
-        if message["performative"] in STEPS:
-            async with services.db.session() as session:
-                message = await refresh_before_delivery(session, message)
         token = await services.own_token.get()
         response = await services.http.post(
             f"{target}/internal/transfer-request",
@@ -177,7 +172,7 @@ async def deliver(services: Services, message: dict, peer: dict) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         if response.status_code < 300:
-            await _compare(services, message, response)
+            await _note_answer(services, message, response)
             await set_outbox(services, message_id, status="notified")
         elif response.status_code < 500:
             reason = f"The receiver refused it: {response.status_code} {response.text[:500]}"
