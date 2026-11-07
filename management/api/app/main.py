@@ -34,6 +34,7 @@ from app.adapters import Adapters, policy_entries
 from app.config import Settings
 from app.databases import Databases
 from app.health import component_health
+from app.ifric import CompanyDirectory
 from app.keycloak import KeycloakAdmin
 from app.kubernetes import Kubernetes, in_cluster_client
 from app.provisioning import Provisioner, Registration
@@ -98,6 +99,7 @@ class Services:
     adapters: Adapters
     databases: Databases
     provisioner: Provisioner
+    companies: CompanyDirectory
 
     def keycloak(self, token: str) -> KeycloakAdmin:
         return KeycloakAdmin(self.http, self.settings.keycloak_url, self.settings.keycloak_realm, token)
@@ -114,6 +116,7 @@ def build_services(settings: Settings, http: httpx.AsyncClient, kubernetes: Kube
         adapters=Adapters(http, settings.adapter_internal_key),
         databases=databases,
         provisioner=Provisioner(settings, databases, kubernetes, registry, Buckets(settings)),
+        companies=CompanyDirectory(settings, http),
     )
 
 
@@ -201,7 +204,7 @@ async def create_demo(services: Services = Depends(services_of), token: str = De
 
 @app.get("/api/participants")
 async def list_participants(services: Services = Depends(services_of)) -> list[dict]:
-    return await services.registry.all()
+    return await services.companies.add_details(await services.registry.all())
 
 
 @app.get("/api/participants/compatible/{participant_id:path}")
@@ -209,7 +212,7 @@ async def compatible_participants(participant_id: str, services: Services = Depe
     found = await services.registry.compatible(participant_id)
     if found is None:
         raise HTTPException(status_code=404, detail="Participant not found")
-    return found
+    return await services.companies.add_details(found)
 
 
 # Declared before the single-participant route, whose path would match all of these.
@@ -261,7 +264,7 @@ async def change_approval(
 
 @app.get("/api/participants/{participant_id:path}")
 async def read_participant(participant_id: str, services: Services = Depends(services_of)) -> dict:
-    return await participant_or_404(services, participant_id)
+    return (await services.companies.add_details([await participant_or_404(services, participant_id)]))[0]
 
 
 @app.delete("/api/participants/{participant_id:path}", status_code=204)

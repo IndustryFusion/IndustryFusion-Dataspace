@@ -100,5 +100,9 @@ app.kubernetes.io/part-of: dataspace
 - { name: RESOURCES_PARTICIPANT_MEMORY_LIMIT, value: {{ $resources.memoryLimit | quote }} }
 - { name: PROVISION_READY_SECONDS, value: {{ .Values.participants.provisionReadySeconds | quote }} }
 - { name: DEMO_PARTICIPANTS, value: {{ .Values.participants.demo | quote }} }
+- { name: IFRIC_BACKEND_URL, value: {{ .Values.ifric.backendUrl | quote }} }
+- { name: IFRIC_LOOKUP_CACHE_SECONDS, value: {{ .Values.ifric.lookupCacheSeconds | quote }} }
+{{ include "dataspace.fromSecret" (dict "name" "IFRIC_READER_CLIENT_ID" "key" "ifric-reader-client-id") }}
+{{ include "dataspace.fromSecret" (dict "name" "IFRIC_READER_CLIENT_SECRET" "key" "ifric-reader-client-secret") }}
 {{ include "dataspace.limitsEnv" . }}
 {{- end }}

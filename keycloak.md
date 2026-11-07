@@ -66,6 +66,17 @@ Any other participant id must never equal a real `company_ifric_id`, or the regi
 
 The dataspace does not check this at registration, so the administrator is responsible for it.
 
+## Sharing the realm with the IFRIC registry
+
+To show company details next to participants, as [management-api.md](management-api.md) describes:
+
+1. Use one realm for both, so that a participant's token can be matched to its company.
+2. Create the `dataspace-ifric-reader` client from "One-time setup". `scripts/setup-keycloak.py --with-ifric-reader` does this. It has no roles.
+3. Give the management service `IFRIC_BACKEND_URL`, `IFRIC_READER_CLIENT_ID` and `IFRIC_READER_CLIENT_SECRET`. With [Helm](deploy/README.md), these are `ifric.backendUrl` and, in the secrets file, `secrets.ifricReaderClientId` and `secrets.ifricReaderClientSecret`.
+4. Register a company's participant with its `company_ifric_id` as `participant_id`.
+
+If any of these is missing, or the registry can't be reached, reads just leave out the company details.
+
 ## Removal
 
 `DELETE /api/participants/{id}` removes the client and the role. See [management-api.md](management-api.md).

@@ -74,6 +74,10 @@ class Settings:
     max_json_bytes: str = field(default_factory=lambda: _env("MAX_JSON_BYTES", str(4 * 1024**2)))
     ready_seconds: float = field(default_factory=lambda: float(_env("PROVISION_READY_SECONDS", "300")))
     poll_seconds: float = field(default_factory=lambda: float(_env("PROVISION_POLL_SECONDS", "2")))
+    ifric_backend_url: str = field(default_factory=lambda: _url("IFRIC_BACKEND_URL"))
+    ifric_reader_client_id: str = field(default_factory=lambda: _env("IFRIC_READER_CLIENT_ID"))
+    ifric_reader_client_secret: str = field(default_factory=lambda: _env("IFRIC_READER_CLIENT_SECRET"))
+    ifric_lookup_cache_seconds: float = field(default_factory=lambda: float(_env("IFRIC_LOOKUP_CACHE_SECONDS", "300")))
     ui_dir: str = field(default_factory=lambda: _env("MANAGEMENT_UI_DIR", "/srv/ui"))
 
     @property
