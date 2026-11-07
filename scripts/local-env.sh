@@ -147,6 +147,7 @@ secrets:
     accessKey: "$S3_ACCESS_KEY"
     secretKey: "$S3_SECRET_KEY"
   adapterInternalKey: "$ADAPTER_INTERNAL_KEY"
+  adminClientSecret: "$(cat "$LOCAL/admin-client-secret")"
 SECRETS
   echo "$LOCAL/helm-secrets.yaml"
 }
