@@ -1143,7 +1143,7 @@ def all_of_it(run: Run, only: list[str] | None = None) -> None:
 
 # --- A proxy that changes answers, to show that the suite fails ----------------------------------------------
 def change_value(value: object, change: str) -> object:
-    """A field's name removes it. `field=<JSON>` sets it. `messages:flip` and `messages:swap` change what a view says."""
+    """A field's name removes it. `field=<JSON>` sets it. `messages:flip` and `messages:swap` change a view."""
     if isinstance(value, list):
         return [change_value(item, change) for item in value]
     if not isinstance(value, dict):
