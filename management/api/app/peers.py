@@ -39,24 +39,42 @@ class Unreadable(Exception):
     """Why an external provider's capabilities couldn't be read. Never holds a secret, a token or an address."""
 
 
-def _usable(content: object) -> dict | None:
-    """The answer, if it has the shape of an adapter's capability state."""
+NOT_A_STATE = "The participant's adapter gave an answer that isn't a capability state"
+
+# What is passed on from an external adapter's answer: the fields that must be text, and those that may be text or
+# missing or null. Anything else in the answer is left out.
+CAPABILITY_FIELDS = (("capability", "default_policy"), ("label", "description", "data_classification"))
+APPROVAL_FIELDS = (("id", "consumer_id", "capability", "status"), ("decision_note", "conversation_id"))
+
+
+def _entry(entry: object, fields: tuple[tuple[str, ...], tuple[str, ...]], kind: str) -> dict:
+    required, optional = fields
+    if not isinstance(entry, dict):
+        raise Unreadable(f"{NOT_A_STATE}: {kind} is not an object")
+    kept = {}
+    for key in required:
+        if not isinstance(entry.get(key), str):
+            raise Unreadable(f"{NOT_A_STATE}: {kind} has no text {key}")
+        kept[key] = entry[key]
+    for key in optional:
+        value = entry.get(key)
+        if value is not None and not isinstance(value, str):
+            raise Unreadable(f"{NOT_A_STATE}: {kind} has a {key} that is not text")
+        kept[key] = value
+    return kept
+
+
+def _usable(content: object) -> dict:
+    """The answer, with only the fields passed on, each checked. Raises Unreadable, naming the field, if it can't be."""
     if not isinstance(content, dict):
-        return None
+        raise Unreadable(NOT_A_STATE)
     capabilities, approvals = content.get("capabilities"), content.get("approvals")
     if not isinstance(capabilities, list) or not isinstance(approvals, list):
-        return None
-    for entry in capabilities:
-        if not isinstance(entry, dict) or not isinstance(entry.get("capability"), str):
-            return None
-        if not isinstance(entry.get("default_policy"), str):
-            return None
-    for entry in approvals:
-        if not isinstance(entry, dict) or not all(
-            isinstance(entry.get(key), str) for key in ("id", "consumer_id", "capability", "status")
-        ):
-            return None
-    return content
+        raise Unreadable(NOT_A_STATE)
+    return {
+        "capabilities": [_entry(entry, CAPABILITY_FIELDS, "a capability") for entry in capabilities],
+        "approvals": [_entry(entry, APPROVAL_FIELDS, "an approval") for entry in approvals],
+    }
 
 
 class ExternalPolicies:
@@ -104,11 +122,10 @@ class ExternalPolicies:
         if answer.status_code != 200:
             raise Unreadable(f"The participant's adapter answered {answer.status_code}")
         try:
-            content = _usable(answer.json())
+            parsed = answer.json()
         except ValueError:
-            content = None
-        if content is None:
-            raise Unreadable("The participant's adapter gave an answer that isn't a capability state")
+            raise Unreadable(NOT_A_STATE) from None
+        content = _usable(parsed)
         # Only what concerns this consumer, whatever the adapter sent.
         approvals = [entry for entry in content["approvals"] if entry["consumer_id"] == consumer_id]
         return {"capabilities": content["capabilities"], "approvals": approvals}

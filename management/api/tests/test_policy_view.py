@@ -134,6 +134,66 @@ def test_only_the_consumers_approvals_are_shown_even_if_the_adapter_sends_more(w
     assert "someone-else" not in answer.text and "secret-conv" not in answer.text
 
 
+def test_an_approval_or_capability_without_the_optional_fields_reads_as_null(world):
+    world.register(FO, "factory_owner")
+    external(world, EXT_MB, "machine_builder")
+    world.gateway.capabilities = [{"capability": "mb:confidential", "default_policy": "on-request"}]
+    bare = approval(FO, "mb:confidential", None)
+    del bare["decision_note"], bare["conversation_id"]
+    world.gateway.approvals = [bare]
+    answer = policy(world, FO, EXT_MB)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["unavailable"] == []
+    entry = by_provider(answer)[EXT_MB][0]
+    assert entry["status"] == "approved" and entry["source"] == "explicit"
+    assert entry["decision_note"] is None and entry["conversation_id"] is None
+    assert entry["label"] is None and entry["description"] is None and entry["data_classification"] is None
+
+
+@pytest.mark.parametrize(
+    ("where", "field"),
+    [
+        ("capability", "capability"),
+        ("capability", "default_policy"),
+        ("capability", "label"),
+        ("capability", "description"),
+        ("capability", "data_classification"),
+        ("approval", "id"),
+        ("approval", "consumer_id"),
+        ("approval", "capability"),
+        ("approval", "status"),
+        ("approval", "decision_note"),
+        ("approval", "conversation_id"),
+    ],
+)
+@pytest.mark.parametrize("value", [{"html": "x"}, ["x"], 3, True])
+def test_a_field_that_is_not_text_makes_the_provider_unavailable_with_the_reason(world, where, field, value):
+    world.register(FO, "factory_owner")
+    external(world, EXT_MB, "machine_builder")
+    world.gateway.leaky = True  # so an approval whose consumer_id isn't text still reaches the answer
+    world.gateway.approvals = [approval(FO, "mb:confidential", "conv-1")]
+    target = world.gateway.capabilities[0] if where == "capability" else world.gateway.approvals[0]
+    target[field] = value
+    answer = policy(world, FO, EXT_MB)
+    assert answer.status_code == 200, answer.text
+    body = answer.json()
+    assert body["unavailable"] == [EXT_MB]
+    reason = body["unavailable_reasons"][EXT_MB]
+    assert "isn't a capability state" in reason and field in reason
+    assert set(by_provider(answer)) == {FO}
+
+
+def test_fields_an_external_adapter_adds_are_not_passed_on(world):
+    world.register(FO, "factory_owner")
+    external(world, EXT_MB, "machine_builder")
+    world.gateway.capabilities[0]["injected"] = {"html": "x"}
+    world.gateway.approvals = [{**approval(FO, "mb:confidential", "conv-1"), "purpose": {"html": "y"}}]
+    answer = policy(world, FO, EXT_MB)
+    assert answer.status_code == 200 and answer.json()["unavailable"] == []
+    entry = by_provider(answer)[EXT_MB][0]
+    assert "injected" not in entry and "purpose" not in entry and entry["conversation_id"] == "conv-1"
+
+
 def failing(world, how: str) -> None:
     if how == "gateway down":
         world.gateway.up = False

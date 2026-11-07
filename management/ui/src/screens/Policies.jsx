@@ -24,6 +24,8 @@ const companyOf = (entry) =>
   typeof entry.company_name === 'string' && entry.company_name
     ? `${entry.participant_id} (${entry.company_name})`
     : entry.participant_id;
+// Text from an external adapter is shown only if it is text, so an unexpected value can't blank the screen.
+const asText = (value) => (typeof value === 'string' || typeof value === 'number' ? value : '');
 
 export default function Policies() {
   const admin = useAdmin();
@@ -152,16 +154,18 @@ export default function Policies() {
           </thead>
           <tbody>
             {view.capabilities.map((entry) => (
-              <tr key={`${entry.provider}/${entry.capability}`}>
-                <td>{entry.provider}</td>
-                <td>{entry.consumer}</td>
-                <td title={entry.description}>{entry.label || entry.capability}</td>
-                <td>{entry.default_policy}</td>
-                <td>{entry.status}</td>
-                <td>{entry.source}</td>
-                <td>{entry.decision_note}</td>
-                <td>{entry.data_classification}</td>
-                <td>{entry.conversation_id}</td>
+              <tr key={`${asText(entry.provider)}/${asText(entry.capability)}`}>
+                <td>{asText(entry.provider)}</td>
+                <td>{asText(entry.consumer)}</td>
+                <td title={asText(entry.description) || undefined}>
+                  {asText(entry.label) || asText(entry.capability)}
+                </td>
+                <td>{asText(entry.default_policy)}</td>
+                <td>{asText(entry.status)}</td>
+                <td>{asText(entry.source)}</td>
+                <td>{asText(entry.decision_note)}</td>
+                <td>{asText(entry.data_classification)}</td>
+                <td>{asText(entry.conversation_id)}</td>
                 {admin.active && !hosted.has(entry.provider) && (
                   <td className="actions">Held by its own adapter</td>
                 )}

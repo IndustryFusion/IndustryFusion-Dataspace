@@ -124,6 +124,31 @@ test('each row shows its classification and the conversation of its decision', a
   await expect(vendor.getByRole('cell').nth(8)).toHaveText('');
 });
 
+test('fields of an unexpected type do not blank the screen', async ({ page, request }) => {
+  await page.route('**/api/policy?*', async (route) => {
+    const answer = await route.fetch();
+    const body = await answer.json();
+    for (const entry of body.capabilities) {
+      entry.data_classification = {};
+      entry.decision_note = { html: 'x' };
+      entry.conversation_id = ['x'];
+      entry.description = {};
+    }
+    body.capabilities[0].label = {};
+    await route.fulfill({ response: answer, json: body });
+  });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await open(page, 'Policies');
+  await enterAdminMode(page);
+  await showPair(page);
+  await expect(rowOf(page, 'Vendor confidential')).toContainText('on-request');
+  // The first row's label is not text, so its capability id is shown in its place.
+  await expect(page.getByRole('row').nth(1).getByRole('cell').nth(2)).not.toHaveText('');
+  await expect(page.getByRole('row').nth(1).getByRole('cell').nth(7)).toHaveText('');
+  expect(errors).toEqual([]);
+});
+
 test('an error from an action is shown', async ({ page, request }) => {
   await open(page, 'Policies');
   await enterAdminMode(page);
