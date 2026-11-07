@@ -113,6 +113,7 @@ async def read_conversation(conversation_id: str, request: Request) -> dict:
             "created_at": iso(row.created_at),
             "applied": row.applied,
             "status": row.status,
+            "error_message": row.error_message,
             "has_files": getattr(row, "has_files", bool(ref and ref.endswith(".zip"))),
             "replied_at": replied.get(row.message_id),
             "payload": await _payload(services, ref),

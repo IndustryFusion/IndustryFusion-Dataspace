@@ -20,7 +20,7 @@ import contextlib
 
 import httpx
 import pytest
-from conftest import PEER, auth
+from conftest import ME, PEER, auth
 from test_two_sided import FO, HOST, MB, Mesh, Side, assert_same, settle
 from test_two_sided import two_sided as two_sided_on_postgres
 
@@ -159,7 +159,8 @@ def test_one_side_answered_before_the_other_step_arrives(order, performative):
                     break
                 await asyncio.sleep(0.01)
             assert (await fo.status(first["message_id"]))["status"] == "notified"
-            assert await applied_of(fo, first["message_id"]) is (order == "fo-lower")
+            # What the other side's answer says is only a claim, until the step it names arrives.
+            assert await applied_of(fo, first["message_id"]) is True
         finally:
             release.set()
         await settle(fo, mb)
@@ -172,6 +173,9 @@ def test_one_side_answered_before_the_other_step_arrives(order, performative):
         winner = first if order == "fo-lower" else second
         assert await applied_of(fo, winner["message_id"]) is True
         assert await applied_of(mb, winner["message_id"]) is True
+        loser = second if order == "fo-lower" else first
+        assert await applied_of(fo, loser["message_id"]) is False
+        assert await applied_of(mb, loser["message_id"]) is False
 
     two_sided(scenario)
 
@@ -552,3 +556,192 @@ def test_cancelling_accept_does_not_hold_up_the_queue_or_shutdown(harness):
 
     assert harness.run(scenario) == "settled"
     assert harness.world.notifications == []
+
+
+def conversation_of(harness) -> dict:
+    return harness.client.get("/conversations/c1", headers=auth()).json()
+
+
+def closed_with_a_claim(harness, performative: str = "close", outcome: str | None = "superseded", kept: str = "0"):
+    """This side's step is answered with a claim that a lower id is on its way."""
+    harness.send(conversation_id="c1", payload={})
+    harness.world.peer_answer = {"kept_step": kept}
+    fields = {"outcome": outcome} if outcome else {}
+    sent = harness.send(conversation_id="c1", performative=performative, payload={}, **fields).json()
+    harness.settle()
+    harness.world.peer_answer = None
+    return sent
+
+
+def test_a_claim_changes_nothing_until_the_step_arrives(harness):
+    sent = closed_with_a_claim(harness)
+    status = harness.client.get(f"/outbox/messages/{sent['message_id']}/status", headers=auth()).json()
+    assert (status["status"], status["applied"]) == ("notified", True)
+    assert conversation_of(harness)["outcome"] == "superseded"
+
+
+def test_only_the_id_that_was_named_can_take_the_step(harness):
+    closed_with_a_claim(harness, kept="1")
+    answer = harness.notify("0", conversation_id="c1", performative="close", outcome="failed")
+    assert answer.status_code == 202 and answer.json()["kept_step"] is None
+    assert conversation_of(harness)["outcome"] == "superseded"
+
+
+def test_the_id_that_was_named_takes_the_step_once(harness):
+    sent = closed_with_a_claim(harness)
+    assert harness.notify("0", conversation_id="c1", performative="close", outcome="failed").status_code == 202
+    after = conversation_of(harness)
+    assert after["outcome"] == "failed"
+    assert row_of(after, sent["message_id"])["applied"] is False
+    assert row_of(after, "0")["applied"] is True
+    assert harness.notify("00", conversation_id="c1", performative="close", outcome="rejected").status_code == 202
+    assert conversation_of(harness)["outcome"] == "failed"
+    # The same id again is a duplicate, and nothing moves.
+    again = harness.notify("0", conversation_id="c1", performative="close", outcome="rejected")
+    assert again.json()["status"] == "duplicate"
+    assert conversation_of(harness)["outcome"] == "failed"
+
+
+def test_a_named_id_with_another_performative_takes_nothing(harness):
+    closed_with_a_claim(harness, performative="escalate", outcome=None)
+    answer = harness.notify("0", conversation_id="c1", performative="close", outcome="failed")
+    assert answer.status_code == 409
+    assert conversation_of(harness)["state"] == "ESCALATING"
+
+
+def test_a_named_id_stated_as_not_applied_takes_nothing(harness):
+    closed_with_a_claim(harness)
+    answer = harness.notify("0", conversation_id="c1", performative="close", outcome="failed", sender_applied=False)
+    assert answer.status_code == 202 and answer.json()["kept_step"] is None
+    assert conversation_of(harness)["outcome"] == "superseded"
+
+
+def test_a_named_id_that_is_not_lower_takes_nothing(harness):
+    closed_with_a_claim(harness, kept="zzzz")
+    harness.notify("zzzz", conversation_id="c1", performative="close", outcome="failed")
+    assert conversation_of(harness)["outcome"] == "superseded"
+
+
+def test_a_claim_in_answer_to_a_duplicate_is_not_kept(harness):
+    harness.send(conversation_id="c1", payload={})
+    harness.send(conversation_id="c1", performative="close", outcome="resolved", payload={})
+    harness.settle()
+    harness.world.peer_answer = {"kept_step": "0"}
+    harness.send(conversation_id="c1", performative="close", outcome="resolved", payload={})
+    harness.settle()
+    harness.world.peer_answer = None
+    harness.notify("0", conversation_id="c1", performative="close", outcome="failed")
+    assert conversation_of(harness)["outcome"] == "resolved"
+
+
+def test_a_claim_is_forgotten_once_the_state_has_moved_on(harness):
+    closed_with_a_claim(harness, outcome="resolved")
+    harness.send(conversation_id="c1", performative="reopen", payload={})
+    harness.send(conversation_id="c1", performative="close", outcome="withdrawn", payload={})
+    harness.settle()
+    harness.notify("0", conversation_id="c1", performative="close", outcome="failed")
+    assert conversation_of(harness)["outcome"] == "withdrawn"
+
+
+def test_a_claim_on_a_step_that_is_no_longer_the_state_is_not_kept(harness):
+    harness.send(conversation_id="c1", payload={})
+    harness.world.peer_answer = {"kept_step": "0"}
+    harness.send(conversation_id="c1", payload={})
+    harness.settle()
+    harness.world.peer_answer = None
+    harness.send(conversation_id="c1", performative="close", outcome="resolved", payload={})
+    harness.settle()
+    harness.notify("0", conversation_id="c1", performative="close", outcome="failed")
+    assert conversation_of(harness)["outcome"] == "resolved"
+
+
+def test_a_named_step_cannot_take_over_an_escalation_by_another_id(harness):
+    closed_with_a_claim(harness, performative="escalate", outcome=None)
+    answer = harness.notify("1", conversation_id="c1", performative="escalate")
+    assert answer.status_code == 409
+    assert conversation_of(harness)["escalated_by"] == ME
+
+
+@pytest.mark.parametrize("status", [500, 503])
+def test_a_step_that_failed_leaves_no_window(harness, status):
+    harness.send(conversation_id="c1", payload={})
+    harness.world.peer_answer = {"kept_step": "0"}
+    harness.world.peer_status = status
+    harness.send(conversation_id="c1", performative="close", outcome="superseded", payload={})
+    harness.settle()
+    harness.world.peer_answer = None
+    harness.world.peer_status = 202
+    answer = harness.notify("0", conversation_id="c1", performative="close", outcome="failed")
+    assert answer.status_code == 202 and answer.json()["kept_step"] is None
+    assert conversation_of(harness)["outcome"] == "superseded"
+
+
+def test_a_failed_row_does_not_change_afterwards(harness):
+    harness.send(conversation_id="c1", payload={})
+    harness.world.peer_status = 500
+    sent = harness.send(conversation_id="c1", performative="close", outcome="resolved", payload={}).json()
+    harness.settle()
+    harness.world.peer_status = 202
+    url = f"/outbox/messages/{sent['message_id']}/status"
+    before = harness.client.get(url, headers=auth()).json()
+    harness.notify("0", conversation_id="c1", performative="close", outcome="failed")
+    assert harness.client.get(url, headers=auth()).json() == before
+
+
+def test_the_conversation_view_says_why_a_step_failed(harness):
+    harness.send(conversation_id="c1", payload={})
+    harness.world.peer_answer = {"detail": "refused"}
+    harness.world.peer_status = 409
+    sent = harness.send(conversation_id="c1", payload={}).json()
+    harness.settle()
+    harness.world.peer_answer = None
+    harness.world.peer_status = 202
+    row = row_of(conversation_of(harness), sent["message_id"])
+    assert row["status"] == "rejected" and "refused" in row["error_message"]
+
+
+def test_the_conversation_view_says_why_a_received_message_was_refused(harness):
+    harness.send(conversation_id="c1", performative="escalate", payload={})
+    harness.settle()
+    assert harness.notify("z1", conversation_id="c1", performative="deescalate").status_code == 409
+    row = row_of(conversation_of(harness), "z1")
+    assert row["status"] == "error" and "Refused" in row["error_message"]
+
+
+@pytest.mark.parametrize("repeat_id", ["0" * 8 + LOW[8:], "f" * 8 + LOW[8:]], ids=["lower", "higher"])
+def test_a_failed_close_crossing_a_close_leaves_a_documented_difference(repeat_id):
+    """Whichever id the repeat has. Both can then agree by reopening."""
+
+    async def scenario(fo: Side, mb: Side, mesh: Mesh) -> None:
+        await opened(fo, mb)
+        failing_notifications(fo, mesh)
+        with message_ids(LOW):
+            first = await fo.send(**close("resolved"))
+        await settle(fo, mb)
+        assert (await fo.status(first["message_id"]))["status"] == "error"
+        with message_ids(HIGH):
+            theirs = await mb.send(**close("withdrawn"))
+        await settle(fo, mb)
+        # FO's step failed, so it isn't on its way. MB's close stands at MB, and doesn't move FO.
+        one, two = await fo.conversation("c"), await mb.conversation("c")
+        assert (one["outcome"], two["outcome"]) == ("resolved", "withdrawn")
+        assert await applied_of(mb, theirs["message_id"]) is True
+        assert (await fo.status(first["message_id"]))["status"] == "error"
+
+        with message_ids(repeat_id):
+            again = await fo.send(**close("resolved"))
+        await settle(fo, mb)
+        state = await fo.status(again["message_id"])
+        assert (state["status"], state["applied"]) == ("notified", True)
+        one, two = await fo.conversation("c"), await mb.conversation("c")
+        assert (one["outcome"], two["outcome"]) == ("resolved", "withdrawn")
+
+        # The route to agreement: one reopens, which moves both, and closes.
+        await fo.send(performative="reopen", conversation_id="c", payload={})
+        await settle(fo, mb)
+        await fo.send(**close("resolved"))
+        await settle(fo, mb)
+        one, two = await fo.conversation("c"), await mb.conversation("c")
+        assert (one["outcome"], two["outcome"]) == ("resolved", "resolved")
+
+    two_sided(scenario)
