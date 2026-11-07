@@ -18,7 +18,7 @@ import { expect, test } from '@playwright/test';
 
 import { enterAdminMode, open, reset, rowOf, STAND_INS } from './helpers.js';
 
-test.skip(!STAND_INS, 'A separate walk through a deployment covers this');
+test.skip(!STAND_INS, 'deployment.spec.js covers this against a deployment');
 test.beforeEach(async ({ request }) => {
   await reset(request);
   await request.post('/test/pair');
