@@ -78,7 +78,7 @@ Returns `202`:
 { "message_id": "...", "status": "pending", "applied": true, "conversation_state": "OPEN" }
 ```
 
-Repeating a `close`, `escalate`, `deescalate` or `reopen` whose status is `error` or `rejected` sends it again, with `applied: true`. Otherwise a repeat has `applied: false`. See "When a notification fails" in [protocol.md](protocol.md).
+Repeating a `close`, `escalate`, `deescalate` or `reopen` whose status has become `error` or `rejected`, with the same outcome, sends it to the receiver as a step, with `applied: true`. The earlier message keeps its status. Otherwise a repeat has `applied: false`. See "When the two copies differ" in [protocol.md](protocol.md).
 
 ### `POST /outbox/files`
 
@@ -122,9 +122,9 @@ A form can have up to 256 files. A file's name in the ZIP keeps only its last pa
 |---|---|
 | `pending` | Accepted, not yet registered |
 | `registered` | Registered with the connector |
-| `notified` | The receiver accepted the notification. This does not mean it has the data |
-| `error` | Final. See `error_message` |
-| `rejected` | Final. The receiver refused it |
+| `notified` | The receiver accepted the notification. This does not mean it has the data, or that an earlier message reached it |
+| `error` | Final. The notification failed, so the receiver's copy may not have moved. See `error_message` |
+| `rejected` | Final. The receiver refused it, so its copy did not move |
 
 ## Receiving
 
@@ -301,7 +301,7 @@ A state violation (`409`) and an invalid message (`422`) have these bodies. A `4
 
 ## Advice for clients
 
-- Use `GET /conversations/{id}` as the source of a conversation's state, not only the inbox.
+- Use `GET /conversations/{id}` as the source of a conversation's state, not only the inbox. It reports this side's copy, and the other side's copy can differ. See "When the two copies differ" in [protocol.md](protocol.md).
 - Take care retrying a send, as there is no idempotency key.
 - Do not rely on message order.
 - Check capability access before sending data. The dataspace will not block it.
