@@ -17,6 +17,7 @@
 """The Kubernetes objects of a hosted participant, and the addresses derived from its id."""
 
 import hashlib
+import json
 import pathlib
 from urllib.parse import quote
 
@@ -25,6 +26,7 @@ from app.config import Settings
 PART_OF = "dataspace-management"
 SLUG_LABEL = "dataspace.industryfusion.org/slug"
 ID_ANNOTATION = "dataspace.industryfusion.org/participant-id"
+SECRET_ANNOTATION = "dataspace.industryfusion.org/secret-checksum"
 CONNECTOR_PORTS = {"default": 8080, "management": 8081, "dsp": 8082, "control": 8083, "public": 8084}
 CONNECTOR_TEMPLATE = pathlib.Path(__file__).parent / "connector.properties.template"
 
@@ -89,7 +91,13 @@ def _from_secret(env_name: str, participant_id: str, key: str) -> dict:
     return {"name": env_name, "valueFrom": {"secretKeyRef": {"name": secret_name(participant_id), "key": key}}}
 
 
-def _deployment(participant_id: str, name: str, container: dict, volumes: list[dict] | None = None) -> dict:
+def _deployment(
+    participant_id: str,
+    name: str,
+    container: dict,
+    volumes: list[dict] | None = None,
+    pod_annotations: dict[str, str] | None = None,
+) -> dict:
     metadata = _metadata(participant_id, name)
     pod_spec: dict = {"containers": [container]}
     if volumes:
@@ -100,7 +108,10 @@ def _deployment(participant_id: str, name: str, container: dict, volumes: list[d
         "metadata": metadata,
         "spec": {
             "selector": {"matchLabels": {"app": name}},
-            "template": {"metadata": {"labels": {**metadata["labels"], "app": name}}, "spec": pod_spec},
+            "template": {
+                "metadata": {"labels": {**metadata["labels"], "app": name}, "annotations": pod_annotations or {}},
+                "spec": pod_spec,
+            },
         },
     }
 
@@ -156,7 +167,7 @@ def config_map(participant_id: str, settings: Settings) -> dict:
     }
 
 
-def connector_deployment(participant_id: str, settings: Settings) -> dict:
+def connector_deployment(participant_id: str, settings: Settings, secret_checksum: str = "") -> dict:
     name = connector_name(participant_id)
     database = database_names(participant_id)[1]
     jdbc = f"jdbc:postgresql://{settings.postgres_host}:{settings.postgres_port}/{database}"
@@ -179,10 +190,14 @@ def connector_deployment(participant_id: str, settings: Settings) -> dict:
         },
         "resources": _resources(settings),
     }
-    return _deployment(participant_id, name, container, [{"name": "config", "configMap": {"name": name}}])
+    # Pods read their Secret when they start, so a changed one has to restart them.
+    annotations = {SECRET_ANNOTATION: secret_checksum}
+    return _deployment(participant_id, name, container, [{"name": "config", "configMap": {"name": name}}], annotations)
 
 
-def adapter_deployment(participant_id: str, participant_type: str, settings: Settings) -> dict:
+def adapter_deployment(
+    participant_id: str, participant_type: str, settings: Settings, secret_checksum: str = ""
+) -> dict:
     namespace = settings.participants_namespace
     adapter_url, dsp_url = hosted_addresses(participant_id, namespace)
     plain = {
@@ -216,7 +231,8 @@ def adapter_deployment(participant_id: str, participant_type: str, settings: Set
         "readinessProbe": {"httpGet": {"path": "/health", "port": 8000}, "periodSeconds": 3},
         "resources": _resources(settings),
     }
-    return _deployment(participant_id, adapter_name(participant_id), container)
+    annotations = {SECRET_ANNOTATION: secret_checksum}
+    return _deployment(participant_id, adapter_name(participant_id), container, pod_annotations=annotations)
 
 
 def connector_service(participant_id: str) -> dict:
@@ -229,12 +245,14 @@ def adapter_service(participant_id: str) -> dict:
 
 def all_objects(participant_id: str, participant_type: str, settings: Settings, client_secret: str, key: str) -> list:
     """Dependencies first: a pod that starts needs its Secret and ConfigMap to be there."""
+    held = secret(participant_id, settings, client_secret, key)
+    checksum = hashlib.sha256(json.dumps(held["stringData"], sort_keys=True).encode()).hexdigest()
     return [
-        secret(participant_id, settings, client_secret, key),
+        held,
         config_map(participant_id, settings),
-        connector_deployment(participant_id, settings),
+        connector_deployment(participant_id, settings, checksum),
         connector_service(participant_id),
-        adapter_deployment(participant_id, participant_type, settings),
+        adapter_deployment(participant_id, participant_type, settings, checksum),
         adapter_service(participant_id),
     ]
 

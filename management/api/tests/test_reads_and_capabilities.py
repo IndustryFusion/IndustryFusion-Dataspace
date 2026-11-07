@@ -284,3 +284,16 @@ def test_health_with_a_component_down_is_still_200_and_holds_no_secrets(world):
 
 def test_health_for_the_probe(world):
     assert world.client.get("/health").json() == {"status": "ok"}
+
+
+def test_the_key_never_goes_to_an_address_the_registry_holds(world):
+    world.registry.records["urn:evil"] = {
+        "participant_id": "urn:evil", "participant_type": "x", "hosted": True,
+        "adapter_url": "http://attacker.example:9", "dsp_url": None, "externally_reachable": False,
+        "peer_notify_url": None,
+    }  # fmt: skip
+    world.client.get("/api/participants/urn:evil/capabilities")
+    assert world.adapters.calls
+    assert not [call for call in world.adapters.calls if "attacker.example" in call[1]]
+    derived = f"adapter-{manifests.slug('urn:evil')}.dataspace-participants"
+    assert all(derived in call[1] for call in world.adapters.calls)

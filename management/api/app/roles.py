@@ -21,8 +21,10 @@ import re
 ONTOLOGY = "https://industryfusion.github.io/contexts/ontology/v0/dataspace#"
 FACTORY_OWNER, MACHINE_BUILDER = "factory_owner", "machine_builder"
 MAX_ID_LENGTH = 200
-# An id goes into a properties file, a role name and a client id, so it has to stay on one line.
-UNSAFE_ID = re.compile(r"[\s\x00-\x1f\x7f]")
+# An id goes into URL paths, a properties file, a role name and a client id. This is what works in all of them.
+SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
+# A route of the registry and of this service, under the same prefix as an id.
+RESERVED_IDS = {"compatible"}
 
 
 def bare_name(participant_type: str) -> str:
@@ -42,4 +44,8 @@ def compatible(first: str, second: str) -> bool:
 
 
 def id_is_safe(participant_id: str) -> bool:
-    return bool(participant_id) and len(participant_id) <= MAX_ID_LENGTH and not UNSAFE_ID.search(participant_id)
+    return (
+        len(participant_id) <= MAX_ID_LENGTH
+        and SAFE_ID.fullmatch(participant_id) is not None
+        and participant_id not in RESERVED_IDS
+    )

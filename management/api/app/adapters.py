@@ -21,21 +21,26 @@ from urllib.parse import quote
 import httpx
 from fastapi import HTTPException
 
+from app import manifests
+
 PASSED_ON = {400, 403, 404, 409, 422}
 
 
 class Adapters:
-    def __init__(self, http: httpx.AsyncClient, internal_key: str) -> None:
+    def __init__(self, http: httpx.AsyncClient, internal_key: str, namespace: str) -> None:
         self.http = http
         self.internal_key = internal_key
+        self.namespace = namespace
 
     async def call(self, record: dict, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
-        """Call the adapter of a registry record. The key is only ever sent to a hosted participant's adapter."""
+        """Call the adapter of a registry record.
+
+        The registry takes writes from any pod, so none of its addresses gets the key. It only goes to the address
+        derived from the id, where only this service can have put anything.
+        """
         if not record.get("hosted", False):
             raise HTTPException(status_code=409, detail="An external participant runs its own adapter")
-        address = (record.get("adapter_url") or "").rstrip("/")
-        if not address:
-            raise HTTPException(status_code=503, detail="This participant has no adapter address")
+        address, _ = manifests.hosted_addresses(record["participant_id"], self.namespace)
         try:
             answer = await self.http.request(
                 method,

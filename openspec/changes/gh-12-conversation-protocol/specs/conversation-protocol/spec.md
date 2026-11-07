@@ -169,6 +169,22 @@ Two participants SHALL hold the same `state` and `outcome` after each of these f
 - **WHEN** both sides send `escalate` before seeing the other's
 - **THEN** both are `ESCALATING` with the same `escalated_by`, the sender of the lower message id
 
+#### Scenario: An answer that names a step
+- **WHEN** a side's step is answered with `kept_step` naming a lower id, of the same performative
+- **THEN** its state and its message's `applied` don't change until a step with that one id arrives, which then takes its step, once
+
+#### Scenario: Another id after such an answer
+- **WHEN** a step with any other id arrives
+- **THEN** the ordinary rules decide, and the state doesn't change
+
+#### Scenario: A named step stated as not applied
+- **WHEN** the named id arrives with `sender_applied` false, or as another performative
+- **THEN** it doesn't take the step
+
+#### Scenario: A step whose notification failed
+- **WHEN** a side's step has status `error`, and a step of the other side arrives, with any id
+- **THEN** the ordinary rules decide, the answer has no `kept_step`, and the state and the row of the failed step don't change
+
 #### Scenario: Ordered on one conversation
 - **WHEN** a side sends several state-changing messages on a conversation, without waiting
 - **THEN** the receiver applies them in the order the sender accepted them, and both end in the same state
@@ -199,6 +215,10 @@ When steps cross in other ways, or a notification fails or is refused, the copie
 #### Scenario: The sender repeats the step
 - **WHEN** a step's notification failed or was refused, and the sender sends the same performative and outcome again
 - **THEN** the repeat reads `applied` true, the receiver applies it as a step and moves, and the earlier row does not change
+
+#### Scenario: A repeat after the other side has closed
+- **WHEN** a `close` failed, the other side then closed with another outcome, and the sender repeats its `close`, with any id
+- **THEN** the repeat reads `notified` and `applied` true, each keeps its own outcome, and a `reopen` followed by a `close` makes them agree
 
 #### Scenario: A repeat with another outcome
 - **WHEN** a `close` with a different outcome follows a failed `close`
@@ -245,6 +265,10 @@ The adapter SHALL offer the conversation routes in `gateway-api.md`.
 #### Scenario: Inbox fields
 - **WHEN** an agent reads an inbox message
 - **THEN** it has `conversation_id`, `performative`, `capability`, `in_reply_to`, `outcome`, `authorization`, `expires_at`, `response_due_at` and `applied`
+
+#### Scenario: Why a message in a conversation failed
+- **WHEN** a message in `GET /conversations/{id}` failed or was refused
+- **THEN** it has the reason in `error_message`, as the other routes do
 
 ### Requirement: End-to-end conversations
 The rules SHALL hold between two real adapters and connectors, through the gateway.

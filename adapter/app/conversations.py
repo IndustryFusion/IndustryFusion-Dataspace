@@ -26,7 +26,8 @@ from app.protocol import Decision, Invalid
 REFUSED = "Refused: "
 # Only these settle when both sides send one before seeing the other's.
 SIMULTANEOUS = {"close", "escalate"}
-UNANSWERED = {"pending", "registered", "error"}
+# A step of this side is on its way only while its notification hasn't been answered. One that failed isn't.
+ON_ITS_WAY = {"pending", "registered"}
 
 
 async def _lock(session: AsyncSession, conversation_id: str) -> Conversation | None:
@@ -104,15 +105,19 @@ async def settle_simultaneous(
 ) -> Decision | None:
     """Both sides sent the same step before seeing the other's. Both must reach the same answer, with no more messages.
 
-    The lower message id wins, on both sides. It can only happen until the other side has answered that it applied
-    this side's step. After that, nothing a peer states changes the state, and the ordinary rules decide.
+    The lower message id wins, on both sides. It can only happen while this side's step is on its way, or for the one
+    step the other side named in answering it. After that, nothing a peer states changes the state, and the ordinary
+    rules decide.
     """
     if performative not in SIMULTANEOUS or not conversation.state_message_id:
         return None
     ours = await session.get(OutboxMessage, conversation.state_message_id)
     if ours is None or ours.performative != performative:
         return None
-    if not (ours.status in UNANSWERED or (ours.status == "notified" and not ours.applied)):
+    if conversation.awaited_step == message_id:
+        ours.applied = False
+        return Decision(transition=performative)
+    if ours.status not in ON_ITS_WAY:
         return None
     if message_id < ours.message_id:
         ours.applied = False
@@ -121,16 +126,17 @@ async def settle_simultaneous(
 
 
 async def note_the_answer(session: AsyncSession, message: dict, answer: object) -> None:
-    """The other side kept a lower id of its own, which is on its way here. So this side's step lost."""
+    """The other side says it kept a lower id of its own, which is on its way here.
+
+    It is only a claim, so nothing changes yet. That one id, when it arrives, can take this side's step, once.
+    """
     kept = answer.get("kept_step") if isinstance(answer, dict) else None
-    if not isinstance(kept, str) or kept >= message["message_id"] or message["performative"] not in SIMULTANEOUS:
+    if not isinstance(kept, str) or kept >= message["message_id"]:
         return
     conversation = await _lock(session, message["conversation_id"])
     if conversation is not None and conversation.state_message_id == message["message_id"]:
-        row = await session.get(OutboxMessage, message["message_id"])
-        if row is not None:
-            row.applied = False
-            await session.commit()
+        conversation.awaited_step = kept
+        await session.commit()
 
 
 def is_refused(row: InboxMessage) -> bool:
@@ -161,6 +167,7 @@ def apply(conversation: Conversation, decision: Decision, message_id: str, sende
         case _:
             return
     conversation.state_message_id = message_id
+    conversation.awaited_step = None
 
 
 def invalid_answer(invalid: Invalid, performative: str) -> JSONResponse:
