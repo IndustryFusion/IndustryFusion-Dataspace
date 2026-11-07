@@ -16,6 +16,10 @@
 - [x] 1.12 Make the stored size of a JSON message agree with the arrival limit; verify tests
 - [x] 1.13 Keep a form's parts on disk, and limit their number; verify a test that measures allocated memory
 - [x] 1.14 Refuse file names with a meaning to a file system; verify tests
+- [x] 1.15 Store JSON compactly, and refuse what wouldn't fit with `413`; verify tests with a compact numeric array, and with numbers that grow
+- [x] 1.16 Refuse an `authorization` a notification can't carry; verify a test across two adapters
+- [x] 1.17 Name the field in a form's validation error, leave no trailing space after shortening a name, and limit `asset_id` and `provider_dsp_url`; verify tests
+- [x] 1.18 Set dependency floors to the versions that support the spool setting and bounded part headers; verify the file tests on those versions
 
 ## 2. Gateway
 
