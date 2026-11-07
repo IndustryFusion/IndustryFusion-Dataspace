@@ -17,6 +17,7 @@
 """API Gateway: the single public entry point for agents. Routing only, with no state beyond caches."""
 
 import posixpath
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -39,6 +40,11 @@ NOT_FORWARDED = {
 }  # fmt: skip
 # The HTTP client decodes answers, so an answer's Content-Encoding would no longer be true.
 NOT_RETURNED = NOT_FORWARDED | {"content-encoding"}
+# An adapter takes this header to mean management, so nothing from outside may carry it there.
+NOT_FOR_PEERS = {"x-internal-key"}
+TRANSFER_TOKEN_HEADER = "x-transfer-token"
+# The same form an adapter accepts for a message id. Above all, it can't be a "." or ".." segment.
+MESSAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 
 
 @dataclass(frozen=True)
@@ -210,10 +216,14 @@ def body_to_forward(request: Request, limit: int) -> AsyncIterator[bytes] | None
     return counted()
 
 
-async def forward(http: httpx.AsyncClient, request: Request, target: str, limit: int) -> Response:
-    headers = {key: value for key, value in request.headers.items() if key.lower() not in NOT_FORWARDED}
-    # With repeated headers, send on the one that was validated, which is the first.
-    headers["authorization"] = request.headers["authorization"]
+async def forward(
+    http: httpx.AsyncClient, request: Request, target: str, limit: int, leave_out: frozenset[str] = frozenset()
+) -> Response:
+    left_out = NOT_FORWARDED | leave_out
+    headers = {key: value for key, value in request.headers.items() if key.lower() not in left_out}
+    if "authorization" not in left_out and "authorization" in request.headers:
+        # With repeated headers, send on the one that was validated, which is the first.
+        headers["authorization"] = request.headers["authorization"]
     body = body_to_forward(request, limit)
     if body is not None and "content-length" in request.headers:
         headers["content-length"] = request.headers["content-length"]
@@ -294,15 +304,41 @@ def create_app(
         participant_id, _ = await caller(request)
         return JSONResponse(await directory.compatible(participant_id))
 
-    @application.post("/peer/{receiver:path}/internal/transfer-request")
-    async def peer(receiver: str, request: Request) -> Response:
-        # Any valid token will do here. The receiving adapter decides whether it accepts the sender.
+    async def to_peer(receiver: str, request: Request, path: str) -> Response:
+        # Any valid token will do here. The receiving adapter decides whether it accepts the caller.
         await tokens.claims(request.headers.get("Authorization"))
         record = await directory.lookup(receiver)
         if record is None:
             raise HTTPException(status_code=404, detail="Receiver is not registered")
-        target = f"{adapter_address(record)}/internal/transfer-request"
-        return await forward(http, request, target, settings.max_json_bytes)
+        target = f"{adapter_address(record)}/internal/{path}"
+        return await forward(http, request, target, settings.max_json_bytes, frozenset(NOT_FOR_PEERS))
+
+    @application.post("/peer/{receiver:path}/internal/transfer-request")
+    async def peer_notification(receiver: str, request: Request) -> Response:
+        return await to_peer(receiver, request, "transfer-request")
+
+    @application.get("/peer/{receiver:path}/internal/capabilities")
+    async def peer_capabilities(receiver: str, request: Request) -> Response:
+        return await to_peer(receiver, request, "capabilities")
+
+    @application.post("/peer/{receiver:path}/internal/capabilities/approvals")
+    async def peer_approvals(receiver: str, request: Request) -> Response:
+        return await to_peer(receiver, request, "capabilities/approvals")
+
+    @application.post("/peer/{receiver:path}/internal/inbox-receive/{message_id}")
+    async def peer_content(receiver: str, message_id: str, request: Request) -> Response:
+        # A connector's data plane holds no Keycloak token. It has the token for this one message, which the
+        # receiver's adapter checks.
+        if not request.headers.get(TRANSFER_TOKEN_HEADER):
+            raise HTTPException(status_code=401, detail="Missing transfer token")
+        if not MESSAGE_ID.match(message_id):
+            raise HTTPException(status_code=404, detail="Not found")
+        record = await directory.lookup(receiver)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Receiver is not registered")
+        target = f"{adapter_address(record)}/internal/inbox-receive/{quote(message_id, safe=':')}"
+        leave_out = frozenset(NOT_FOR_PEERS | {"authorization"})
+        return await forward(http, request, target, settings.max_upload_bytes, leave_out)
 
     @application.api_route("/{path:path}", methods=METHODS)
     async def catch_all(path: str, request: Request) -> Response:

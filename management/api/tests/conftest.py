@@ -347,6 +347,7 @@ class World:
             gateway_peer_url="http://gateway.test:8080",
             gateway_url="http://gateway.test:8080",
             dsp_gateway_url="http://dsp.test:8085",
+            dsp_gateway_peer_url="http://dsp-public.test:8085",
             ready_seconds=0.2,
             poll_seconds=0.01,
             **settings,

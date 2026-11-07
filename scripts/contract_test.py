@@ -24,6 +24,10 @@ allowed values. A field the document doesn't name fails too.
     contract_test.py --gateway-url U --keycloak-url U --management-url U --admin-secret S
     contract_test.py --gateway-url U --keycloak-url U --owner ID:SECRET --builder ID:SECRET
 
+External participants' flows run if there are any: with --local, those from scripts/external-demo.py, and otherwise
+those given with --external-owner and --external-builder, each as ADAPTER_URL,ID,SECRET. Their agents call their own
+adapter, and the hosted participants have to be externally reachable, which the suite arranges where it created them.
+
 --tamper 'GET /conversations/*:outcome' puts a proxy in front of the gateway that removes a field from one route's real
 answers. That run must fail, naming the field. It exits with 0 only if everything that ran passed.
 """
@@ -47,7 +51,8 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 
 from dataspace_client import Answer, ApiError, DataspaceClient
 
@@ -385,10 +390,29 @@ class Report:
         return 1 if self.failed else 0
 
 
+@dataclass
+class External:
+    """The external participants, and what is needed for the hosted ones to be reached from outside."""
+
+    owner: DataspaceClient
+    builder: DataspaceClient
+    gateway: str
+    keycloak: str
+    make_hosted_reachable: Callable[[], None]
+
+
 class Run:
-    def __init__(self, report: Report, owner: DataspaceClient, builder: DataspaceClient, other: str | None) -> None:
+    def __init__(
+        self,
+        report: Report,
+        owner: DataspaceClient,
+        builder: DataspaceClient,
+        other: str | None,
+        external: External | None = None,
+    ) -> None:
         self.report, self.owner, self.builder, self.other = report, owner, builder, other
         self.owner_id, self.builder_id = owner.client_id, builder.client_id
+        self.external = external
 
     def post(self, sender: DataspaceClient, receiver: str, **fields) -> Answer:
         return sender.request("POST", "/outbox/messages", {"receiver_participant": receiver, **fields})
@@ -919,6 +943,248 @@ def worked_scenario(run: Run, folder: str) -> None:
     owner.policy(run.builder_id, "twin:history", "reset")
 
 
+# --- External participants --------------------------------------------------------------------------------------------
+def write_files(folder: str, name: str) -> tuple[str, str]:
+    path = os.path.join(folder, name)
+    content = os.urandom(300_000)
+    with open(path, "wb") as target:
+        target.write(content)
+    return path, hashlib.sha256(content).hexdigest()
+
+
+def file_crosses(run: Run, what: str, sender: DataspaceClient, receiver: DataspaceClient, folder: str) -> None:
+    report = run.report
+    path, digest = write_files(folder, f"{uuid.uuid4().hex}.bin")
+    answer = sender.send_files_request(receiver.client_id, [path])
+    accepted = report.shape(f"{what}: POST /outbox/files", answer, 202, ACCEPTED)
+    state = sender.wait_for_status(accepted["message_id"])
+    report.that(f"{what}: it reaches notified", state["status"] == "notified", state)
+    message = receiver.wait_for_message(accepted["message_id"])
+    report.shape(
+        f"{what}: GET /inbox/messages/{{id}}",
+        receiver.request("GET", f"/inbox/messages/{accepted['message_id']}"),
+        200,
+        RECEIVED,
+    )
+    report.that(f"{what}: the message reads has_files", message["has_files"] is True, message)
+    target = os.path.join(folder, f"{uuid.uuid4().hex}.zip")
+    receiver.download(accepted["message_id"], target)
+    with zipfile.ZipFile(target) as archive:
+        names = archive.namelist()
+        same = names == [os.path.basename(path)] and hashlib.sha256(archive.read(names[0])).hexdigest() == digest
+    report.that(f"{what}: the same bytes arrive", same, names)
+    receiver.ack(accepted["message_id"])
+
+
+def message_crosses(run: Run, what: str, sender: DataspaceClient, receiver: DataspaceClient, **fields) -> dict:
+    report = run.report
+    message = run.sent_and_arrived(sender, receiver, **fields)
+    report.shape(
+        f"{what}: GET /inbox/messages/{{id}}",
+        receiver.request("GET", f"/inbox/messages/{message['message_id']}"),
+        200,
+        RECEIVED,
+    )
+    report.that(f"{what}: the content arrives", message["payload"] == fields.get("payload"), message)
+    report.that(f"{what}: the token decided the sender", message["sender_participant"] == sender.client_id, message)
+    receiver.ack(message["message_id"])
+    return message
+
+
+def capability_requested(
+    run: Run, what: str, consumer: DataspaceClient, provider: DataspaceClient, capability: str
+) -> None:
+    report = run.report
+    route = f"/capabilities/access?provider={urllib.parse.quote(provider.client_id, safe=':')}"
+    entries = report.shape(f"{what}: GET /capabilities/access", consumer.request("GET", route), 200, Each(ACCESS))
+    status_of = {entry["capability"]: entry["status"] for entry in entries}
+    report.that(f"{what}: on request at first", status_of.get(capability) == "on-request", status_of)
+
+    body = {"provider_participant": provider.client_id, "capability": capability, "purpose": "Contract test"}
+    answer = consumer.request("POST", "/capabilities/requests", body)
+    asked = report.shape(f"{what}: POST /capabilities/requests", answer, 202, ACCESS_REQUEST)
+    report.that(f"{what}: the request is pending", asked["status"] == "pending", asked)
+
+    held = provider.request("GET", "/capabilities/requests?status=pending")
+    pending = report.shape(f"{what}: the provider holds it", held, 200, Each(ACCESS_REQUEST))
+    report.that(f"{what}: it names the consumer", asked["id"] in [entry["id"] for entry in pending], pending)
+    decided = provider.request("PATCH", f"/capabilities/requests/{asked['id']}", {"action": "approve", "note": "Yes"})
+    report.shape(f"{what}: PATCH /capabilities/requests/{{id}}", decided, 200, ACCESS_REQUEST)
+
+    entries = report.shape(f"{what}: access again", consumer.request("GET", route), 200, Each(ACCESS))
+    entry = next(entry for entry in entries if entry["capability"] == capability)
+    report.that(f"{what}: now approved", (entry["status"], entry["decision_note"]) == ("approved", "Yes"), entry)
+    reset = {"consumer_id": consumer.client_id, "capability": capability, "action": "reset"}
+    report.shape(f"{what}: reset", provider.request("POST", "/capabilities/policy", reset), 200, POLICY)
+
+
+def closes_cross(run: Run, what: str, one: DataspaceClient, two: DataspaceClient) -> None:
+    """Both sides close at once, so each side's rules, sender_applied and kept_step decide. The copies must agree."""
+    report = run.report
+    opened = run.sent_and_arrived(one, two, performative="request", payload={"summary": what})
+    chat = opened["conversation_id"]
+    answers: dict[str, Answer] = {}
+
+    def close_to(client: DataspaceClient, peer: str, outcome: str) -> None:
+        answers[client.client_id] = run.post(
+            client, peer, conversation_id=chat, performative="close", outcome=outcome, payload={}
+        )
+
+    # Tokens first, so that the two calls start together.
+    one.token(), two.token()
+    threads = [
+        threading.Thread(target=close_to, args=(one, two.client_id, "resolved")),
+        threading.Thread(target=close_to, args=(two, one.client_id, "withdrawn")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    ids = {}
+    for client, peer in ((one, two), (two, one)):
+        answer = answers[client.client_id]
+        accepted = report.shape(f"{what}: each close is accepted", answer, 202, ACCEPTED)
+        ids[client.client_id] = accepted["message_id"]
+        state = client.wait_for_status(accepted["message_id"])
+        report.that(f"{what}: each close is notified", state["status"] == "notified", state)
+        peer.wait_for_message(accepted["message_id"])
+    first, second = one.conversation(chat), two.conversation(chat)
+    report.that(
+        f"{what}: both sides read the same state",
+        (first["state"], first["outcome"]) == (second["state"], second["outcome"]),
+        (first["state"], second["state"]),
+    )
+    report.that(f"{what}: closed", first["state"] in {"CLOSED_RESOLVED", "CLOSED_WITHDRAWN"}, first["state"])
+    own = {m["message_id"]: m for m in first["messages"]}
+    applied = [own[ids[one.client_id]]["applied"], own[ids[two.client_id]]["applied"]]
+    report.that(f"{what}: one close moved it, and the other didn't", sorted(applied) == [False, True], applied)
+
+
+def peer_route_keeps_its_limits(run: Run) -> None:
+    """Called as an external adapter calls the public gateway."""
+    report, external = run.report, run.external
+    builder = external.builder
+    caller = DataspaceClient(external.gateway, external.keycloak, builder.client_id, builder.client_secret)
+    owner = urllib.parse.quote(run.owner_id, safe=":")
+    route = f"/peer/{owner}/internal/capabilities"
+    state = caller.request("GET", route)
+    report.that("A peer reads the provider through the gateway", state.status == 200, state.status)
+    consumers = {entry["consumer_id"] for entry in state.body.get("approvals", [])}
+    report.that("It reads only its own approvals", consumers <= {caller.client_id}, consumers)
+    other = {"consumer_id": run.builder_id, "capability": "twin:history", "action": "request"}
+    answer = caller.request("POST", f"{route}/approvals", other)
+    report.shape("A peer can't ask for another participant: 403", answer, 403, STANDARD)
+    decide = {"consumer_id": caller.client_id, "capability": "twin:history", "action": "approve"}
+    answer = caller.request("POST", f"{route}/approvals", decide)
+    report.shape("A peer can't approve itself: 403", answer, 403, STANDARD)
+    answer = caller.request("GET", route, authenticated=False)
+    report.shape("No token on the peer route: 401", answer, 401, STANDARD)
+    answer = caller.request("POST", f"/peer/{owner}/internal/inbox-receive/x", {}, authenticated=False)
+    report.shape("Content with no transfer token: 401", answer, 401, STANDARD)
+    call = urllib.request.Request(f"{external.gateway}/peer/{owner}/internal/inbox-receive/x", b"{}", method="POST")
+    call.add_header("X-Transfer-Token", "a guess")
+    status = _status_of(call)
+    report.that("Content with a wrong transfer token: 401", status == 401, status)
+    call = urllib.request.Request(f"{external.gateway}{route}")
+    call.add_header("Authorization", f"Bearer {caller.token()}")
+    call.add_header("X-Internal-Key", "a guess")
+    status = _status_of(call)
+    report.that("A wrong internal key isn't seen by the adapter: it answers as for a peer", status == 200, status)
+
+
+def _status_of(call: urllib.request.Request) -> int:
+    try:
+        with urllib.request.urlopen(call, timeout=30) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def burst_crosses(run: Run, what: str, sender: DataspaceClient, receiver: DataspaceClient, count: int = 8) -> None:
+    """Sent at once, so an ordering or a loss under load shows. Each has to arrive exactly once, with its own content."""
+    report = run.report
+    answers: dict[int, Answer] = {}
+
+    def send(index: int) -> None:
+        answers[index] = run.post(sender, receiver.client_id, performative="inform", payload={"index": index})
+
+    sender.token()
+    threads = [threading.Thread(target=send, args=(index,)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    accepted = {index: answer.body["message_id"] for index, answer in answers.items() if answer.status == 202}
+    report.that(f"{what}: each is accepted", len(accepted) == count, {i: a.status for i, a in answers.items()})
+    arrived = {index: receiver.wait_for_message(message_id)["payload"] for index, message_id in accepted.items()}
+    report.that(f"{what}: each arrives with its content", all(arrived[i] == {"index": i} for i in arrived), arrived)
+    ids = [entry["message_id"] for entry in receiver.inbox("received") if entry["message_id"] in accepted.values()]
+    report.that(f"{what}: exactly once", sorted(ids) == sorted(accepted.values()), len(ids))
+    for message_id in accepted.values():
+        receiver.ack(message_id)
+
+
+def unreachable_peer(run: Run) -> None:
+    """A failure has to be reported, with nothing left in progress."""
+    report, sender = run.report, run.external.builder
+    accepted = report.shape(
+        "A peer that can't be reached: POST /outbox/messages",
+        run.post(sender, run.other, performative="inform", payload={}),
+        202,
+        ACCEPTED,
+    )
+    state = sender.wait_for_status(accepted["message_id"], wanted=("error", "rejected", "notified"))
+    report.that("A peer that can't be reached: status error", state["status"] == "error", state)
+    report.that("It says so", bool(state["error_message"]), state)
+
+
+def external_flows(run: Run, folder: str) -> None:
+    """architecture.md, "Request Flow — External participant ↔ hosted participant"."""
+    external = run.external
+    external.make_hosted_reachable()
+    ext_owner, ext_builder = external.owner, external.builder
+
+    opened = message_crosses(
+        run, "External to hosted", ext_builder, run.owner, performative="request", payload={"summary": "From outside"}
+    )
+    message_crosses(
+        run,
+        "Hosted to external",
+        run.owner,
+        ext_builder,
+        performative="inform",
+        conversation_id=opened["conversation_id"],
+        in_reply_to=opened["message_id"],
+        payload={"answer": "From the hub"},
+    )
+    chat = opened["conversation_id"]
+    mine, theirs = ext_builder.conversation(chat), run.owner.conversation(chat)
+    report = run.report
+    report.that(
+        "Both sides read the same two messages",
+        sorted(m["message_id"] for m in mine["messages"]) == sorted(m["message_id"] for m in theirs["messages"])
+        and len(mine["messages"]) == 2,
+    )
+    report.that(
+        "The request is answered on both sides",
+        mine["outstanding_requests"] == [] and theirs["outstanding_requests"] == [],
+    )
+    file_crosses(run, "File, external to hosted", ext_builder, run.owner, folder)
+    file_crosses(run, "File, hosted to external", run.owner, ext_builder, folder)
+
+    capability_requested(run, "Capability, external asks hosted", ext_builder, run.owner, "twin:history")
+    capability_requested(run, "Capability, hosted asks external", run.builder, ext_owner, "twin:history")
+    closes_cross(run, "Crossing closes, external and hosted", ext_builder, run.owner)
+    peer_route_keeps_its_limits(run)
+    burst_crosses(run, "At once, external to hosted", ext_builder, run.owner)
+    burst_crosses(run, "At once, hosted to external", run.owner, ext_builder)
+    if run.other:
+        unreachable_peer(run)
+
+    message_crosses(run, "External to external", ext_owner, ext_builder, performative="inform", payload={"a": 1})
+    file_crosses(run, "File, external to external", ext_builder, ext_owner, folder)
+
+
 def all_of_it(run: Run) -> None:
     report = run.report
     with tempfile.TemporaryDirectory(prefix="contract-") as folder:
@@ -934,6 +1200,8 @@ def all_of_it(run: Run) -> None:
             ("flow.md, reopening", lambda: flow_reopening(run)),
             ("the worked scenario", lambda: worked_scenario(run, folder)),
         ]
+        if run.external:
+            sections.append(("architecture.md, external participants", lambda: external_flows(run, folder)))
         for name, section in sections:
             print(f"\n--- {name}")
             try:
@@ -941,7 +1209,11 @@ def all_of_it(run: Run) -> None:
             except Exception as error:  # the report goes on to the next section, and counts this
                 report.note(f"Section {name} stopped", [f"{type(error).__name__}: {error}"[:600]])
                 traceback.print_exc(limit=3)
-    report.not_run.append("flow.md, external participants: needs #18")
+    if not run.external:
+        report.not_run.append(
+            "flow.md, external participants: none here. With a local environment, run scripts/external-demo.py up. "
+            "Otherwise give --external-owner and --external-builder"
+        )
 
 
 # --- A proxy that changes answers, to show that the suite fails ----------------------------------------------
@@ -1012,12 +1284,17 @@ def json_call(method: str, url: str, body: object = None, token: str | None = No
 @contextlib.contextmanager
 def own_participants(management: str, admin_secret: str, keycloak: str, gateway: str) -> Iterator[tuple]:
     """Create the participants this run uses, through the management API, and remove them whatever happens."""
-    status, answer = json_call(
-        "POST", f"{management}/api/admin/token", {"client_id": "dataspace-admin-cli", "client_secret": admin_secret}
-    )
-    if status != 200:
-        raise SystemExit(f"No admin token: {status} {answer}")
-    token = answer["access_token"]
+
+    def admin_token() -> str:
+        # A long run can outlast a token.
+        status, answer = json_call(
+            "POST", f"{management}/api/admin/token", {"client_id": "dataspace-admin-cli", "client_secret": admin_secret}
+        )
+        if status != 200:
+            raise SystemExit(f"No admin token: {status} {answer}")
+        return answer["access_token"]
+
+    token = admin_token()
     tag = uuid.uuid4().hex[:8]
     owner_id, builder_id, other_id = (f"urn:contract:{tag}:{name}" for name in ("owner", "builder", "other"))
     made = []
@@ -1050,23 +1327,36 @@ def own_participants(management: str, admin_secret: str, keycloak: str, gateway:
         if status != 200:
             raise SystemExit(f"Could not register {other_id}: {status} {record}")
         made.append(other_id)
-        yield clients[0], clients[1], other_id
+
+        def make_reachable() -> None:
+            for participant, kind in ((owner_id, "factory_owner"), (builder_id, "machine_builder")):
+                body = {"participant_id": participant, "participant_type": kind, "externally_reachable": True}
+                status, record = json_call("POST", f"{management}/api/participants", body, admin_token())
+                if status != 200 or not record["peer_notify_url"]:
+                    raise AssertionError(f"Could not make {participant} reachable: {status} {record}")
+
+        yield clients[0], clients[1], other_id, make_reachable
     finally:
-        # A long run can outlast the token.
-        status, answer = json_call(
-            "POST", f"{management}/api/admin/token", {"client_id": "dataspace-admin-cli", "client_secret": admin_secret}
-        )
-        token = answer["access_token"] if status == 200 else token
+        token = admin_token()
         for participant in made:
             quoted = urllib.parse.quote(participant, safe=":")
             status, answer = json_call("DELETE", f"{management}/api/participants/{quoted}", None, token)
             print(f"Removed {participant}: {status}")
 
 
-def run_suite(owner: DataspaceClient, builder: DataspaceClient, other: str | None) -> int:
+def run_suite(
+    owner: DataspaceClient, builder: DataspaceClient, other: str | None, external: External | None = None
+) -> int:
     report = Report()
-    all_of_it(Run(report, owner, builder, other))
+    all_of_it(Run(report, owner, builder, other, external))
     return report.finish()
+
+
+def external_client(given: str, keycloak: str) -> DataspaceClient:
+    """From ADAPTER_URL,ID,SECRET. An external agent calls its own adapter, not the gateway."""
+    url, _, rest = given.partition(",")
+    participant, _, secret = rest.rpartition(",")
+    return DataspaceClient(url, keycloak, participant, secret)
 
 
 def main() -> int:
@@ -1079,6 +1369,8 @@ def main() -> int:
     top.add_argument("--admin-secret", default=os.environ.get("DATASPACE_ADMIN_SECRET"))
     top.add_argument("--owner", help="id:secret of a factory owner. The secret comes after the last colon")
     top.add_argument("--builder", help="id:secret of a machine builder")
+    top.add_argument("--external-owner", help="adapter_url,id,secret of an external factory owner")
+    top.add_argument("--external-builder", help="adapter_url,id,secret of an external machine builder")
     top.add_argument(
         "--tamper", help="METHOD /path/*:field. Remove a field from a route's answers, so the run must fail"
     )
@@ -1087,40 +1379,72 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    def against(gateway: str, keycloak: str, management: str | None, secret: str | None) -> int:
+    def against(
+        gateway: str, keycloak: str, management: str | None, secret: str | None, externals: tuple | None = None
+    ) -> int:
         if args.tamper:
             with tamper_proxy(gateway, args.tamper) as proxied:
-                return against_this(proxied, keycloak, management, secret)
-        return against_this(gateway, keycloak, management, secret)
+                return against_this(proxied, keycloak, management, secret, externals)
+        return against_this(gateway, keycloak, management, secret, externals)
 
-    def against_this(gateway: str, keycloak: str, management: str | None, secret: str | None) -> int:
+    def against_this(
+        gateway: str, keycloak: str, management: str | None, secret: str | None, externals: tuple | None
+    ) -> int:
+        def external(make_reachable: Callable[[], None]) -> External | None:
+            if externals is None:
+                return None
+            return External(externals[0], externals[1], gateway, keycloak, make_reachable)
+
         if management:
-            with own_participants(management, secret, keycloak, gateway) as (owner, builder, other):
-                return run_suite(owner, builder, other)
+            with own_participants(management, secret, keycloak, gateway) as (owner, builder, other, make_reachable):
+                return run_suite(owner, builder, other, external(make_reachable))
         owner_id, _, owner_secret = args.owner.rpartition(":")
         builder_id, _, builder_secret = args.builder.rpartition(":")
         owner = DataspaceClient(gateway, keycloak, owner_id, owner_secret)
         builder = DataspaceClient(gateway, keycloak, builder_id, builder_secret)
-        return run_suite(owner, builder, None)
+        # Existing participants are as they are. They have to be externally reachable already.
+        return run_suite(owner, builder, None, external(lambda: None))
 
     if args.local:
         import local_cluster as lc
 
         secret = (lc.LOCAL / "admin-client-secret").read_text().strip()
+        state_file = lc.LOCAL / "external-demo.json"
+        demo = json.loads(state_file.read_text()) if state_file.exists() else None
         with (
             lc.port_forward("dataspace", "gateway", 8080) as gateway,
             lc.port_forward("dataspace", "management", 3000) as management,
             lc.port_forward("iff", "keycloak-service", 8080) as keycloak,
         ):
-            return against(gateway, f"{keycloak}/auth", management, secret)
+            if demo is None:
+                return against(gateway, f"{keycloak}/auth", management, secret)
+            own, build = demo["external-factory-owner"], demo["external-machine-builder"]
+            with (
+                lc.port_forward("external-factory-owner", "adapter", 8000) as owner_adapter,
+                lc.port_forward("external-machine-builder", "adapter", 8000) as builder_adapter,
+            ):
+                realm = f"{keycloak}/auth"
+                externals = (
+                    DataspaceClient(owner_adapter, realm, own["participant_id"], own["client_secret"]),
+                    DataspaceClient(builder_adapter, realm, build["participant_id"], build["client_secret"]),
+                )
+                return against(gateway, realm, management, secret, externals)
 
     if not (args.gateway_url and args.keycloak_url):
         top.error("Give --self-test, --local, or --gateway-url and --keycloak-url")
+    if bool(args.external_owner) != bool(args.external_builder):
+        top.error("Give both --external-owner and --external-builder, or neither")
+    externals = None
+    if args.external_owner:
+        externals = (
+            external_client(args.external_owner, args.keycloak_url),
+            external_client(args.external_builder, args.keycloak_url),
+        )
     if args.management_url:
-        return against(args.gateway_url, args.keycloak_url, args.management_url, args.admin_secret)
+        return against(args.gateway_url, args.keycloak_url, args.management_url, args.admin_secret, externals)
     if not (args.owner and args.builder):
         top.error("Give --management-url with --admin-secret, or --owner and --builder")
-    return against(args.gateway_url, args.keycloak_url, None, None)
+    return against(args.gateway_url, args.keycloak_url, None, None, externals)
 
 
 if __name__ == "__main__":

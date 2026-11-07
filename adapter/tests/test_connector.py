@@ -119,10 +119,10 @@ def test_push_requests_an_http_push_to_the_destination():
         seen.update(json.loads(request.content))
         return httpx.Response(200, json={"@id": "t1"})
 
-    assert run(connector_with(handler).push("agreement", "http://dsp", "http://me/in")) == "t1"
+    assert run(connector_with(handler).push("agreement", "http://dsp", "http://me/in", ("X-T", "v"))) == "t1"
     assert seen["transferType"] == "HttpData-PUSH"
     assert seen["contractId"] == "agreement"
-    assert seen["dataDestination"] == {"type": "HttpData", "baseUrl": "http://me/in"}
+    assert seen["dataDestination"] == {"type": "HttpData", "baseUrl": "http://me/in", "authKey": "X-T", "authCode": "v"}
 
 
 def test_transfer_waits_for_completed():

@@ -35,6 +35,8 @@ jobs:
         run: scripts/local-env.sh up
       - name: Build and deploy the services
         run: scripts/local-env.sh services
+      - name: Bring up the external participants
+        run: python scripts/external-demo.py up
       - name: Run the suite
         run: python scripts/contract_test.py --local
       - name: Show what ran, if it failed

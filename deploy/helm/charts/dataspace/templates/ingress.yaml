@@ -14,18 +14,26 @@
 # limitations under the License.
 #
 
-{{- if and .Values.ingress.enabled (has .Values.component (list "gateway" "management")) }}
+{{- $dspEnabled := and (eq .Values.component "dsp-gateway") .Values.ingress.dspGateway.enabled }}
+{{- if and .Values.ingress.enabled (or (has .Values.component (list "gateway" "management")) $dspEnabled) }}
 {{- $isGateway := eq .Values.component "gateway" -}}
-{{- $settings := ternary .Values.ingress.gateway .Values.ingress.management $isGateway -}}
-{{- $port := ternary 8080 3000 $isGateway -}}
+{{- $isDsp := eq .Values.component "dsp-gateway" -}}
+{{- $settings := ternary .Values.ingress.dspGateway (ternary .Values.ingress.gateway .Values.ingress.management $isGateway) $isDsp -}}
+{{- $port := ternary 8085 (ternary 8080 3000 $isGateway) $isDsp -}}
 {{- $tls := .Values.ingress.tls }}
+{{- $secret := ternary $tls.dspGatewaySecretName (ternary $tls.gatewaySecretName $tls.managementSecretName $isGateway) $isDsp }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Values.component }}
   labels: {{- include "dataspace.labels" . | nindent 4 }}
   annotations:
-    {{- if $isGateway }}
+    {{- if $isDsp }}
+    # Connectors exchange small messages here, and content goes to the gateway. The connectors authorize it.
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ int64 .Values.limits.maxUploadBytes | quote }}
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    {{- else if $isGateway }}
     # Exactly the service's limit for its largest request, so an upload at the limit gets through. Smaller limits
     # are enforced by the gateway, which answers with the contract's error body.
     nginx.ingress.kubernetes.io/proxy-body-size: {{ int64 .Values.limits.maxUploadBytes | quote }}
@@ -53,7 +61,7 @@ spec:
   {{- if $tls.enabled }}
   tls:
     - hosts: [{{ required "the Ingress needs a host" $settings.host | quote }}]
-      secretName: {{ ternary $tls.gatewaySecretName $tls.managementSecretName $isGateway }}
+      secretName: {{ $secret }}
   {{- end }}
   rules:
     - host: {{ required "the Ingress needs a host" $settings.host | quote }}

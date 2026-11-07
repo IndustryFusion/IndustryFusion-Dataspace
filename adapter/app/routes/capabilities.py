@@ -63,8 +63,8 @@ UNUSABLE = HTTPException(status_code=503, detail="The provider's adapter is unav
 
 
 async def _call_provider(services, provider: dict, method: str, path: str, **arguments) -> dict:
-    """Call a provider's adapter directly. Going through the gateway's peer route belongs with #18."""
-    address = (provider.get("adapter_url") or "").rstrip("/")
+    """Call a provider's adapter, through the gateway's peer route if it has one."""
+    address = (provider.get("peer_notify_url") or provider.get("adapter_url") or "").rstrip("/")
     if not address:
         raise HTTPException(status_code=503, detail="The provider's adapter has no address")
     try:

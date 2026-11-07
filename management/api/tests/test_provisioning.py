@@ -129,10 +129,75 @@ def test_addresses_given_for_a_hosted_participant_are_replaced(world):
     assert "evil" not in json.dumps(body)
 
 
+def pod_template(world, name: str) -> dict:
+    return world.kubernetes.objects[("Deployment", name)]["spec"]["template"]
+
+
+def adapter_env(world) -> dict:
+    return {e["name"]: e.get("value") for e in pod_template(world, f"adapter-{NAME}")["spec"]["containers"][0]["env"]}
+
+
+def connector_text(world) -> str:
+    return world.kubernetes.objects[("ConfigMap", f"connector-{NAME}")]["data"]["connector.properties"]
+
+
 def test_an_externally_reachable_hosted_participant_gets_the_peer_route(world):
     body = world.register(externally_reachable=True).json()
     assert body["peer_notify_url"] == f"http://gateway.test:8080/peer/{ID}"
+    assert body["dsp_url"] == f"http://dsp-public.test:8085/{NAME}/api/v1/dsp"
     assert body["adapter_url"] == f"http://adapter-{NAME}.dataspace-participants:8000"
+
+
+def test_a_reachable_participant_announces_the_public_addresses(world):
+    world.register(externally_reachable=True)
+    env = adapter_env(world)
+    assert env["EDC_DSP_URL"] == f"http://dsp-public.test:8085/{NAME}/api/v1/dsp"
+    assert env["PEER_NOTIFY_URL"] == f"http://gateway.test:8080/peer/{ID}"
+    assert env["ADAPTER_URL"] == f"http://adapter-{NAME}.dataspace-participants:8000"
+    text = connector_text(world)
+    assert f"edc.dsp.callback.address=http://dsp-public.test:8085/{NAME}/api/v1/dsp" in text
+    assert f"edc.dataplane.api.public.baseurl=http://dsp-public.test:8085/{NAME}/api/v1/public/v2" in text
+    assert f"edc.control.endpoint=http://connector-{NAME}.dataspace-participants:8083/control" in text
+
+
+def test_a_participant_that_is_not_reachable_announces_its_own_addresses(world):
+    body = world.register().json()
+    assert body["peer_notify_url"] is None
+    assert body["dsp_url"] == f"http://connector-{NAME}.dataspace-participants:8082/api/v1/dsp"
+    env = adapter_env(world)
+    assert env["EDC_DSP_URL"] == body["dsp_url"]
+    assert env["PEER_NOTIFY_URL"] == ""
+    assert f"edc.dsp.callback.address={body['dsp_url']}" in connector_text(world)
+
+
+def test_changing_reachability_changes_the_pods_so_they_restart(world):
+    world.register()
+    connector, adapter = pod_template(world, f"connector-{NAME}"), pod_template(world, f"adapter-{NAME}")
+    world.register(externally_reachable=True)
+    assert pod_template(world, f"connector-{NAME}") != connector
+    assert pod_template(world, f"adapter-{NAME}") != adapter
+    reachable = pod_template(world, f"connector-{NAME}")
+    world.register(externally_reachable=True)
+    assert pod_template(world, f"connector-{NAME}") == reachable
+
+
+@pytest.mark.parametrize("missing", ["gateway_peer_url", "dsp_gateway_peer_url"])
+def test_reachable_needs_the_public_addresses(world, missing):
+    world.services.provisioner.settings = dataclasses.replace(world.settings, **{missing: ""})
+    assert world.register(externally_reachable=True).status_code == 422
+    world.nothing_of(ID)
+    assert world.register().status_code == 200
+    before = snapshot(world)
+    assert world.register(externally_reachable=True).status_code == 422
+    assert snapshot(world) == before
+
+
+def test_reachable_says_nothing_about_an_external_participant(world):
+    world.services.provisioner.settings = dataclasses.replace(world.settings, gateway_peer_url="")
+    answer = world.register(hosted=False, adapter_url="http://a.example", dsp_url="http://d.example",
+                            externally_reachable=True)  # fmt: skip
+    assert answer.status_code == 200
+    assert answer.json()["dsp_url"] == "http://d.example"
 
 
 @pytest.mark.parametrize(

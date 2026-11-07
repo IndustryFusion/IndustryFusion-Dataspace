@@ -106,6 +106,8 @@ spec:
           image: dataspace/dsp-gateway:dev
           imagePullPolicy: Never
           ports: [{ containerPort: 8085 }]
+          env:
+            - { name: PARTICIPANTS_NAMESPACE, value: dataspace-participants }
           readinessProbe:
             httpGet: { path: /health, port: 8085 }
             periodSeconds: 3
@@ -190,6 +192,7 @@ spec:
             - { name: GATEWAY_URL, value: "http://gateway.dataspace:8080" }
             - { name: GATEWAY_PEER_URL, value: "http://gateway.dataspace:8080" }
             - { name: DSP_GATEWAY_URL, value: "http://dsp-gateway.dataspace:8085" }
+            - { name: DSP_GATEWAY_PEER_URL, value: "http://dsp-gateway.dataspace:8085" }
             - name: ADAPTER_INTERNAL_KEY
               valueFrom: { secretKeyRef: { name: service-credentials, key: adapter-internal-key } }
             - { name: PARTICIPANTS_NAMESPACE, value: dataspace-participants }

@@ -142,7 +142,7 @@ class Connector:
         answer = await self._wait(f"contractnegotiations/{negotiation_id}", "FINALIZED", deadline, "The negotiation")
         return answer["contractAgreementId"]
 
-    async def push(self, agreement_id: str, provider_dsp: str, destination_url: str) -> str:
+    async def push(self, agreement_id: str, provider_dsp: str, destination_url: str, header: tuple[str, str]) -> str:
         answer = await self._post(
             "transferprocesses",
             {
@@ -151,7 +151,12 @@ class Connector:
                 "contractId": agreement_id,
                 "protocol": PROTOCOL,
                 "transferType": "HttpData-PUSH",
-                "dataDestination": {"type": "HttpData", "baseUrl": destination_url},
+                "dataDestination": {
+                    "type": "HttpData",
+                    "baseUrl": destination_url,
+                    "authKey": header[0],
+                    "authCode": header[1],
+                },
             },
         )
         return answer["@id"]

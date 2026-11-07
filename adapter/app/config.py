@@ -29,6 +29,7 @@ class Settings:
     participant_id: str = field(default_factory=lambda: _env("PARTICIPANT_ID"))
     participant_type: str = field(default_factory=lambda: _env("PARTICIPANT_TYPE"))
     adapter_url: str = field(default_factory=lambda: _env("ADAPTER_URL").rstrip("/"))
+    peer_notify_url: str = field(default_factory=lambda: _env("PEER_NOTIFY_URL").rstrip("/"))
     database_url: str = field(default_factory=lambda: _env("DATABASE_URL"))
     edc_management_url: str = field(default_factory=lambda: _env("EDC_MANAGEMENT_URL").rstrip("/"))
     edc_api_key: str = field(default_factory=lambda: _env("EDC_API_KEY"))

@@ -90,13 +90,25 @@ def drop_database(name: str) -> None:
     )
 
 
+def connector_properties(participant_id: str, url: str) -> str:
+    """Fill in the connector's template, for a connector other connectors reach at its own address."""
+    text = (ROOT / "connector" / "connector.properties.template").read_text()
+    for name, value in (
+        ("PARTICIPANT_ID", participant_id),
+        ("CONNECTOR_URL", url),
+        ("DSP_ADDRESS", f"{url}:8082/api/v1/dsp"),
+        ("PUBLIC_ADDRESS", f"{url}:8084/api/v1/public"),
+    ):
+        text = text.replace("${" + name + "}", value)
+    return text
+
+
 def deploy_connector(participant_id: str, api_key: str) -> str:
     """Deploy one participant's connector, and return its Service name."""
     name = slug(participant_id)
     ensure_database(f"edc_{name}")
     url = f"http://connector-{name}.{PARTICIPANTS}"
-    properties = (ROOT / "connector" / "connector.properties.template").read_text()
-    properties = properties.replace("${PARTICIPANT_ID}", participant_id).replace("${CONNECTOR_URL}", url)
+    properties = connector_properties(participant_id, url)
     secrets = credentials()
     apply(
         render(

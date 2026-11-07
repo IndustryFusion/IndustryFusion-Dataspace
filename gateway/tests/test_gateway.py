@@ -284,11 +284,119 @@ def test_peer_route_needs_a_token(client, world):
     assert world.forwarded == []
 
 
-def test_peer_route_only_covers_transfer_requests(client, world):
-    response = client.get(f"/peer/{BUILDER}/internal/payload/1", headers=auth(OWNER))
-    assert world.forwarded == [] or world.forwarded[0].url.host == "owner.test"
-    assert response.status_code in {201, 404}
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "internal/payload/1"),
+        ("POST", "internal/inbox-receive"),
+        ("GET", "internal/inbox-receive/1"),
+        ("PATCH", "internal/capabilities/approvals/1"),
+        ("PATCH", "internal/capabilities/twin:history"),
+        ("POST", "internal/capabilities"),
+        ("GET", "internal/capabilities/approvals"),
+        ("GET", "internal/transfer-request"),
+    ],
+)
+def test_peer_route_covers_only_its_own_calls(client, world, method, path):
+    response = client.request(method, f"/peer/{BUILDER}/{path}", headers=auth(OWNER))
+    assert response.status_code in {201, 404, 405}
     assert all(request.url.host != "builder.test" for request in world.forwarded)
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("GET", "capabilities"), ("POST", "capabilities/approvals"), ("POST", "transfer-request")],
+)
+def test_peer_calls_reach_the_named_receiver(client, world, method, path):
+    response = client.request(method, f"/peer/{BUILDER}/internal/{path}", headers=auth(OWNER))
+    assert response.status_code == 201
+    assert str(world.forwarded[0].url) == f"http://builder.test/internal/{path}"
+    assert world.forwarded[0].headers["authorization"].startswith("Bearer ")
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("GET", "capabilities"), ("POST", "capabilities/approvals"), ("POST", "transfer-request")],
+)
+def test_peer_calls_need_a_token(client, world, method, path):
+    assert client.request(method, f"/peer/{BUILDER}/internal/{path}").status_code == 401
+    assert world.forwarded == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "headers"),
+    [
+        ("GET", "capabilities", {}),
+        ("POST", "capabilities/approvals", {}),
+        ("POST", "transfer-request", {}),
+        ("POST", "inbox-receive/m1", {"X-Transfer-Token": "t"}),
+    ],
+)
+@pytest.mark.parametrize("name", ["X-Internal-Key", "x-internal-key", "X-INTERNAL-KEY"])
+def test_the_internal_key_never_passes_a_peer_route(client, world, method, path, headers, name):
+    sent = {**auth(OWNER), **headers, name: "a-guess"}
+    assert client.request(method, f"/peer/{BUILDER}/internal/{path}", headers=sent).status_code == 201
+    assert "x-internal-key" not in world.forwarded[0].headers
+
+
+def test_fields_between_adapters_pass_through_unchanged(client, world):
+    world.answer = httpx.Response(202, json={"message_id": "m", "status": "transferring", "kept_step": "m0"})
+    body = {"message_id": "m", "sender_applied": False}
+    answer = client.post(f"/peer/{BUILDER}/internal/transfer-request", json=body, headers=auth(OWNER))
+    assert json.loads(world.forwarded[0].content) == body
+    assert answer.json()["kept_step"] == "m0"
+
+
+def test_a_peer_refusal_comes_back_as_it_is(client, world):
+    world.answer = httpx.Response(403, json={"detail": "A peer may only ask for access for itself"})
+    answer = client.post(f"/peer/{BUILDER}/internal/capabilities/approvals", json={}, headers=auth(OWNER))
+    assert answer.status_code == 403
+    assert answer.json()["detail"] == "A peer may only ask for access for itself"
+
+
+def test_content_is_forwarded_with_its_header_and_no_bearer_token(client, world):
+    sent = {"X-Transfer-Token": "t", "Authorization": "Bearer anything"}
+    answer = client.post(f"/peer/{BUILDER}/internal/inbox-receive/m:1", content=b"the bytes", headers=sent)
+    assert answer.status_code == 201
+    forwarded = world.forwarded[0]
+    assert str(forwarded.url) == "http://builder.test/internal/inbox-receive/m:1"
+    assert forwarded.content == b"the bytes"
+    assert forwarded.headers["x-transfer-token"] == "t"
+    assert "authorization" not in forwarded.headers
+
+
+def test_content_without_its_header_is_refused(client, world):
+    answer = client.post(f"/peer/{BUILDER}/internal/inbox-receive/m1", content=b"x", headers=auth(OWNER))
+    assert answer.status_code == 401
+    assert world.forwarded == []
+
+
+def test_content_for_an_unknown_receiver(client, world):
+    sent = {"X-Transfer-Token": "t"}
+    assert client.post("/peer/urn:none/internal/inbox-receive/m1", content=b"x", headers=sent).status_code == 404
+    assert world.forwarded == []
+
+
+@pytest.mark.parametrize("message_id", ["..", ".", "%2e%2e", "..%2fpayload", "-x", "a b"])
+def test_content_route_refuses_what_is_not_a_message_id(client, world, message_id):
+    sent = {"X-Transfer-Token": "t", **auth(OWNER)}
+    client.post(f"/peer/{BUILDER}/internal/inbox-receive/{message_id}", content=b"x", headers=sent)
+    assert all(request.url.host != "builder.test" for request in world.forwarded)
+
+
+def test_content_is_limited_by_the_upload_limit_not_the_json_one(world):
+    settings = Settings(
+        keycloak_url="http://keycloak.test",
+        registry_url="http://registry.test",
+        max_upload_bytes=100,
+        max_json_bytes=10,
+    )
+    http = httpx.AsyncClient(transport=httpx.MockTransport(world.handle))
+    limited = TestClient(create_app(settings, http))
+    sent = {"X-Transfer-Token": "t"}
+    route = f"/peer/{BUILDER}/internal/inbox-receive/m1"
+    assert limited.post(route, content=b"x" * 100, headers=sent).status_code == 201
+    assert limited.post(route, content=b"x" * 101, headers=sent).status_code == 413
 
 
 def test_compatible_answers_for_the_caller(client, world):
