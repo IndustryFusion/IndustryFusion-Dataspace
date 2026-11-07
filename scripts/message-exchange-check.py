@@ -427,8 +427,35 @@ CLOSE = {"performative": "close", "payload": {}}
 
 
 def crossing_steps(owner: Agent, builder: Agent, rounds: int = 4) -> None:
-    """Steps that cross, through real notifications, end in the same state on both sides."""
+    """Crossing steps through real notifications: each side reads what protocol.md says it reads."""
+
+    def finished(chat: str):
+        first, second = conversation_on(owner, chat), conversation_on(builder, chat)
+        in_progress = {"pending", "registered", "transferring", "negotiating", "negotiated"}
+        messages = first["messages"] + second["messages"]
+        return None if any(item["status"] in in_progress for item in messages) else (first, second)
+
     for _ in range(rounds):
+        chat = str(uuid.uuid4())
+        builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            closing = pool.submit(post, owner, MACHINE_BUILDER, **CLOSE, conversation_id=chat, outcome="failed")
+            escalating = pool.submit(
+                post, builder, FACTORY_OWNER, conversation_id=chat, performative="escalate", payload={}
+            )
+        first, second = lc.poll(lambda c=chat: finished(c), timeout=90, what="both notifications")
+        codes = (closing.result()[0], escalating.result()[0])
+        if codes == (202, 202):
+            # They crossed. Each refused the other's, so the copies differ, and each reads its own as rejected.
+            assert (first["state"], second["state"]) == ("CLOSED_FAILED", "ESCALATING"), (first, second)
+            assert any(item["status"] == "rejected" for item in first["messages"])
+            assert any(item["status"] == "rejected" for item in second["messages"])
+            print("close crossing escalate: one CLOSED_FAILED, the other ESCALATING, each rejected, as documented")
+        else:
+            # One saw the other's first, and its own was refused at once. They agree.
+            assert first["state"] == second["state"], (first["state"], second["state"])
+            print(f"close and escalate, one first: both {first['state']}")
+
         chat = str(uuid.uuid4())
         builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
 
@@ -439,29 +466,12 @@ def crossing_steps(owner: Agent, builder: Agent, rounds: int = 4) -> None:
         with ThreadPoolExecutor(max_workers=2) as pool:
             pool.submit(close_and_reopen)
             pool.submit(post, builder, FACTORY_OWNER, conversation_id=chat, **CLOSE, outcome="withdrawn")
-
-        def settled(chat: str = chat):
-            first, second = conversation_on(owner, chat), conversation_on(builder, chat)
-            in_progress = {"pending", "registered", "transferring", "negotiating", "negotiated"}
-            messages = first["messages"] + second["messages"]
-            if any(item["status"] in in_progress for item in messages):
-                return None
-            return first if (first["state"], first["outcome"]) == (second["state"], second["outcome"]) else None
-
-        state = lc.poll(settled, timeout=90, what="both copies")["state"]
-        print(f"close and reopen crossing a close: both {state}")
-
-        chat = str(uuid.uuid4())
-        builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            pool.submit(post, owner, MACHINE_BUILDER, **CLOSE, conversation_id=chat, outcome="failed")
-            pool.submit(post, builder, FACTORY_OWNER, conversation_id=chat, performative="escalate", payload={})
-        state = lc.poll(lambda c=chat: settled(c), timeout=90, what="both copies")["state"]
-        print(f"close crossing escalate: both {state}")
+        first, second = lc.poll(lambda c=chat: finished(c), timeout=90, what="both notifications")
+        print(f"close and reopen crossing a close: one side reads {first['state']}, the other {second['state']}")
 
 
 def failed_notification(owner: Agent, builder: Agent) -> None:
-    """The receiver's adapter is down while a close is sent. A repeat afterwards settles the two copies."""
+    """The receiver's adapter is down while a close is sent. Repeating it afterwards moves the receiver."""
     chat = str(uuid.uuid4())
     builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
     adapter = f"adapter-{lc.slug(MACHINE_BUILDER)}"

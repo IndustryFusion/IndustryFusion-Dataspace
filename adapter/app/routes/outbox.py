@@ -35,10 +35,17 @@ from starlette.formparsers import MultiPartParser
 
 from app.auth import require_participant
 from app.bundle import write_bundle
-from app.conversations import apply, decide_to_send, invalid_answer, refusal_text, refused_answer
+from app.conversations import (
+    apply,
+    invalid_answer,
+    locked_decision,
+    refusal_text,
+    refused_answer,
+    repeats_a_failed_step,
+)
 from app.db import Conversation, OutboxMessage, iso
 from app.delivery import deliver
-from app.protocol import check_validity
+from app.protocol import Decision, check_validity
 
 log = logging.getLogger("adapter")
 
@@ -202,9 +209,15 @@ async def _accept(
     gate = None
     try:
         async with services.db.session() as session:
-            conversation, decision, based_on = await decide_to_send(
+            conversation, decision = await locked_decision(
                 session, conversation_id, body.receiver_participant, body.performative, own_id, body.outcome
             )
+            # Goes to the peer as a step, as the earlier one never reached it. The earlier row stays as it is.
+            same_counterpart = decision.reason != "counterpart_mismatch"
+            if same_counterpart and await repeats_a_failed_step(
+                session, conversation, body.performative, body.outcome
+            ):
+                decision = Decision(transition=body.performative)
             if decision.refused:
                 session.add(
                     OutboxMessage(
@@ -231,7 +244,6 @@ async def _accept(
                     response_due_at=body.response_due_at,
                     status="pending",
                     applied=decision.applied,
-                    based_on=based_on,
                 )
             )
             state = conversation.state
@@ -242,7 +254,6 @@ async def _accept(
                 "content_ref": content_ref,
                 "has_files": has_files,
                 "sender_applied": decision.applied,
-                "based_on": based_on,
             }
             gate = services.deliver_in_order(conversation_id, deliver(services, notification, peer))
             await session.commit()
