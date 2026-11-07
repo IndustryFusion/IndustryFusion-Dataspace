@@ -715,6 +715,12 @@ def test_a_too_long_form_field_is_named(harness):
     assert response.json()["detail"] == "capability is too long"
 
 
+def test_a_long_field_of_no_use_is_refused_before_it_fills_memory(harness):
+    form = {"receiver_participant": PEER, "other": "x" * 100_000}
+    answer = harness.client.post("/outbox/files", data=form, files=[("files", ("a", b"x"))], headers=auth())
+    assert 400 <= answer.status_code < 500
+
+
 def test_a_missing_form_field_is_named(harness):
     response = harness.client.post("/outbox/files", data={}, files={"files": ("a.txt", b"x")}, headers=auth())
     assert response.status_code == 422
