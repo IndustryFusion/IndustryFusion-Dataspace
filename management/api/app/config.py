@@ -33,14 +33,6 @@ def _url(name: str) -> str:
 
 
 DEMO_SETTING = "DEMO_PARTICIPANTS"
-DEFAULT_DEMO = (
-    '[{"participant_id": "urn:ifric:ifx-eur-com-own-42ced491-b35d-41f7-9949-fcbb5fa4dcd9",'
-    ' "participant_type": "factory_owner"},'
-    ' {"participant_id": "urn:ifric:ifx-eur-com-nap-37eb511d-49c0-4700-ba17-dee8248f0fb5",'
-    ' "participant_type": "machine_builder"},'
-    ' {"participant_id": "urn:ifric:ifx-eur-com-nap-2150a82e-ccbb-47d7-be5a-8059906bc253",'
-    ' "participant_type": "machine_builder"}]'
-)
 DEMO_KEYS = {"participant_id", "participant_type", "externally_reachable"}
 IFRIC_READER_DEFAULT = "dataspace-ifric-reader"
 
@@ -54,6 +46,14 @@ class DemoParticipant(NamedTuple):
     participant_type: str
     # None means the registration default.
     externally_reachable: bool | None = None
+
+
+# The demo companies, by their IFRIC ids: a participant's id is its company's company_ifric_id.
+DEFAULT_DEMO = [
+    DemoParticipant("urn:ifric:ifx-eur-com-own-42ced491-b35d-41f7-9949-fcbb5fa4dcd9", "factory_owner"),
+    DemoParticipant("urn:ifric:ifx-eur-com-nap-37eb511d-49c0-4700-ba17-dee8248f0fb5", "machine_builder"),
+    DemoParticipant("urn:ifric:ifx-eur-com-nap-2150a82e-ccbb-47d7-be5a-8059906bc253", "machine_builder"),
+]
 
 
 def _demo_entries(value: str) -> list[DemoParticipant]:
@@ -92,7 +92,7 @@ def _demo_entries(value: str) -> list[DemoParticipant]:
 
 def parse_demo_participants(value: str) -> list[DemoParticipant]:
     """A JSON list of participants, or `<id>=<type>` entries separated by commas. Empty means the default."""
-    entries = _demo_entries(value if value.strip() else DEFAULT_DEMO)
+    entries = _demo_entries(value) if value.strip() else list(DEFAULT_DEMO)
     seen: set[str] = set()
     for entry in entries:
         if not roles.id_is_safe(entry.participant_id):
