@@ -54,6 +54,8 @@ spec:
             - { name: EDC_MANAGEMENT_URL, value: "http://connector-${SLUG}.dataspace-participants:8081/management" }
             - { name: EDC_DSP_URL, value: "http://connector-${SLUG}.dataspace-participants:8082/api/v1/dsp" }
             - { name: REGISTRY_URL, value: "http://registry.dataspace:19000" }
+            - { name: MAX_UPLOAD_BYTES, value: "1073741824" }
+            - { name: MAX_JSON_BYTES, value: "4194304" }
             - { name: KEYCLOAK_URL, value: "http://keycloak-service.iff:8080/auth" }
             - { name: KEYCLOAK_REALM, value: dataspace }
             - { name: SEAWEEDFS_ENDPOINT, value: "http://seaweedfs.iff:80" }
@@ -70,6 +72,8 @@ spec:
               valueFrom: { secretKeyRef: { name: adapter-${SLUG}, key: s3-secret-key } }
             - name: ADAPTER_INTERNAL_KEY
               valueFrom: { secretKeyRef: { name: adapter-${SLUG}, key: internal-key } }
+          resources:
+            limits: { memory: 1Gi }
           readinessProbe:
             httpGet: { path: /health, port: 8000 }
             periodSeconds: 3

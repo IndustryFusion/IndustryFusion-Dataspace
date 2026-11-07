@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, OperationalError
 
@@ -31,6 +32,7 @@ from app.config import Settings
 from app.connector import Connector
 from app.db import Database
 from app.delivery import Services
+from app.limits import BodyLimit
 from app.registry import Registry
 from app.retention import retention_loop, schema_loop
 from app.routes import inbox, internal, outbox
@@ -69,6 +71,7 @@ def create_app(services: Services | None = None) -> FastAPI:
         await built.db.close()
 
     application = FastAPI(title="Dataspace Adapter", lifespan=lifespan)
+    application.add_middleware(BodyLimit)
 
     @application.exception_handler(OperationalError)
     @application.exception_handler(DBAPIError)
@@ -77,6 +80,15 @@ def create_app(services: Services | None = None) -> FastAPI:
     @application.exception_handler(ClientError)
     async def unavailable(_: Request, __: Exception) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": "A dependency is unavailable"})
+
+    @application.exception_handler(RequestValidationError)
+    async def invalid_request(_: Request, error: RequestValidationError) -> JSONResponse:
+        # The usual answer repeats what was sent, which can be far larger than the error.
+        fields = ("loc", "msg", "type")
+        return JSONResponse(
+            status_code=422,
+            content={"detail": [{name: item[name] for name in fields if name in item} for item in error.errors()]},
+        )
 
     @application.get("/health")
     def health() -> dict[str, str]:

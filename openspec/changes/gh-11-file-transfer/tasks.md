@@ -1,0 +1,44 @@
+# Tasks
+
+## 1. Adapter
+
+- [x] 1.1 Add `POST /outbox/files`, reading the form after authentication; verify tests for several files, no files, no receiver, an incompatible and an unregistered receiver, and no token
+- [x] 1.2 Bundle files with safe names; verify tests for a path in a name, a repeated name and an empty name
+- [x] 1.3 Store and read content as streams, and serve the payload route as a stream; verify a test that the connector's read gets the same bytes
+- [x] 1.4 Store received content by kind, and mark `has_files`; verify tests that a ZIP arrives at `files/{id}.zip` and reads with `payload` `{"_bundle": true}`
+- [x] 1.5 Add `GET /inbox/messages/{id}/download`; verify tests for the same bytes, no files, not arrived, purged and another participant's message
+- [x] 1.6 Enforce `MAX_UPLOAD_BYTES` at the outbox and on arrival; verify tests with a stated length, with no stated length, and that nothing is stored
+- [x] 1.7 Confirm retention removes file content; verify a test
+- [x] 1.8 Confirm a storage failure leaves no message and no temporary file; verify a test
+- [x] 1.9 Show concurrent uploads each keep their own bytes; verify a test on PostgreSQL
+- [x] 1.10 Give every other route a small limit, enforced while reading; verify tests with and without a stated length that count what was read
+- [x] 1.11 Don't repeat the input in validation errors; verify a test
+- [x] 1.12 Make the stored size of a JSON message agree with the arrival limit; verify tests
+- [x] 1.13 Keep a form's parts on disk, and limit their number; verify a test that measures allocated memory
+- [x] 1.14 Refuse file names with a meaning to a file system; verify tests
+- [x] 1.15 Store JSON compactly, and refuse what wouldn't fit with `413`; verify tests with a compact numeric array, and with numbers that grow
+- [x] 1.16 Refuse an `authorization` a notification can't carry; verify a test across two adapters
+- [x] 1.17 Name the field in a form's validation error, leave no trailing space after shortening a name, and limit `asset_id` and `provider_dsp_url`; verify tests
+- [x] 1.18 Set dependency floors to the versions that support the spool setting and bounded part headers; verify the file tests on those versions
+
+## 2. Gateway
+
+- [x] 2.1 Stream request and answer bodies; verify existing forwarding tests still pass, and a new test with a body that arrives in parts
+- [x] 2.2 Enforce the limit; verify tests with a stated length over the limit and a shorter body, and with no stated length
+- [x] 2.3 Show an answer is passed on before the adapter has finished; verify a test
+
+## 3. Documents and deployment
+
+- [x] 3.1 Update `gateway-api.md` with the limit and `413`, and `architecture.md` with the setting; verify by reading against the delta specs
+- [x] 3.2 Set `MAX_UPLOAD_BYTES`, `MAX_JSON_BYTES` and a memory limit in the local deployment; verify on the local cluster that a file at the limit still passes
+
+## 4. End to end
+
+- [x] 4.1 Extend `scripts/message-exchange-check.py` to transfer several files and compare bytes, with a reply link; verify on the local cluster
+- [x] 4.2 Transfer a file near the limit through the gateway, and record the gateway's peak memory; verify on the local cluster
+- [ ] 4.3 Verify a file through an Ingress at the configured body size. This needs #15
+- [x] 4.4 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
+
+## Workflow follow-up
+
+- After merge, archive in a follow-up Pull Request with `Closes #11`.

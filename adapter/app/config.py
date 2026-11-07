@@ -51,6 +51,8 @@ class Settings:
     )
     schema_check_seconds: float = field(default_factory=lambda: float(_env("SCHEMA_CHECK_SECONDS", "15")))
     transfer_budget_seconds: float = field(default_factory=lambda: float(_env("TRANSFER_BUDGET_SECONDS", "120")))
+    max_upload_bytes: int = field(default_factory=lambda: int(_env("MAX_UPLOAD_BYTES", str(1024**3))))
+    max_json_bytes: int = field(default_factory=lambda: int(_env("MAX_JSON_BYTES", str(4 * 1024**2))))
 
     @property
     def issuer(self) -> str:

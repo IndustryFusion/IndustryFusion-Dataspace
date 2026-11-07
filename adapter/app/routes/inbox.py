@@ -21,6 +21,7 @@ import logging
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, update
 
 from app.auth import require_participant
@@ -32,10 +33,10 @@ router = APIRouter(dependencies=[Depends(require_participant)])
 
 
 async def _payload(services, row: InboxMessage) -> dict | None:
-    if row.has_files:
-        return {"_bundle": True}
     if not row.payload_ref:
         return None
+    if row.has_files:
+        return {"_bundle": True}
     content = await services.storage.get(row.payload_ref)
     if content is None:
         return None
@@ -96,6 +97,28 @@ async def read_message(message_id: str, request: Request) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found")
     return await _view(services, row)
+
+
+@router.get("/inbox/messages/{message_id}/download")
+async def download(message_id: str, request: Request) -> StreamingResponse:
+    services = request.app.state.services
+    async with services.db.session() as session:
+        row = await session.get(InboxMessage, message_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if not row.has_files:
+        raise HTTPException(status_code=400, detail="This message has no files")
+    content = await services.storage.read_stream(row.payload_ref) if row.payload_ref else None
+    if content is None:
+        raise HTTPException(status_code=404, detail="The files have not arrived, or have been removed")
+    return StreamingResponse(
+        content.chunks,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{message_id}.zip"',
+            "Content-Length": str(content.size),
+        },
+    )
 
 
 @router.post("/inbox/messages/{message_id}/ack", status_code=204)

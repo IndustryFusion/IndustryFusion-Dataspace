@@ -63,11 +63,11 @@ The participants this one may communicate with.
 | `performative` | string | no | Default `inform`. See [protocol.md](protocol.md) |
 | `capability` | string | by performative | |
 | `in_reply_to` | string | by performative | A `message_id` |
-| `authorization` | object | by performative | `{scope, expires_at, constraints}` |
+| `authorization` | object | by performative | `{scope, expires_at, constraints}`. Up to 200 KiB, as it travels in the notification |
 | `outcome` | string | by performative | |
 | `conversation_id` | string | no | Omit to start a conversation |
-| `payload` | object | no | May be empty. Not with `content_ref` |
-| `content_ref` | object | no | `{asset_id, dsp_url}`, an asset already registered with a connector. Not with `payload` |
+| `payload` | object | no | May be empty. Not with `content_ref`. The whole request can be up to `MAX_JSON_BYTES`, by default 4 MiB, so send larger data as files. So can the payload as stored, where a number such as `1e5` takes more room: over that, the answer is `413` |
+| `content_ref` | object | no | `{asset_id, dsp_url}`, an asset already registered with a connector. Not with `payload`. The asset can be up to `MAX_JSON_BYTES`, as an agent reads it in the message. A larger one gives the receiver's message status `error`. `asset_id` has up to 512 characters and `dsp_url` up to 2048 |
 | `reply_expected` | boolean | no | |
 | `expires_at` | date-time | no | The content is purged after this time |
 | `response_due_at` | date-time | no | Carried for the receiver |
@@ -91,7 +91,9 @@ Multipart form. Returns `202` with the same body as `POST /outbox/messages`. The
 | `conversation_id` | no | |
 | `in_reply_to` | no | Marks the file as a reply |
 
-The largest accepted upload is set by the deployment and documented with it.
+The whole request, including its multipart framing, can be up to `MAX_UPLOAD_BYTES`, which each deployment sets on the gateway and adapters. The default is 1 GiB. Over that, the answer is `413`. An Ingress in front of the gateway must allow at least the same body size.
+
+A form can have up to 256 files. A file's name in the ZIP keeps only its last part, where `/`, `\\` and `:` all separate parts, without trailing dots or spaces. A name reserved on Windows, such as `CON`, gets a leading `_`. A repeated name gets a number, as in `data-2.csv`, and an empty one becomes `file-<n>`. Files are stored in the ZIP uncompressed.
 
 ### `GET /outbox/messages/{id}`
 
@@ -160,7 +162,7 @@ Returns `204`, and is safe to repeat. Content of a message that is not acknowled
 
 ### `GET /inbox/messages/{id}/download`
 
-Returns the message's files as a ZIP. Gives `400` if it has none.
+Returns the message's files as a ZIP, with the same bytes that were sent. Gives `400` if it has none, and `404` if they have not arrived yet, or have been removed by retention.
 
 ## Conversations
 
@@ -270,8 +272,9 @@ Sets access for one consumer, without a request.
 | `404` | Unknown message, conversation or request, or an unregistered receiver. `internal/*` paths also give `404` | Standard |
 | `409` | Message not allowed in this conversation state | See below |
 | `409` | Capability request already resolved | Standard |
+| `413` | The request is larger than `MAX_UPLOAD_BYTES` for `POST /outbox/files`, or `MAX_JSON_BYTES` for `POST /outbox/messages`. Other routes carry no message content, and the adapter limits them to 256 KiB. Also a payload over `MAX_JSON_BYTES` as stored, or an `authorization` over 200 KiB | Standard |
 | `422` | Message breaks a validity rule | See below |
-| `422` | Request does not match the schema | Standard validation body |
+| `422` | Request does not match the schema | Standard validation body, without the values sent |
 | `502` | Keycloak's signing keys are unreachable | Standard |
 | `503` | Adapter or registry unavailable | Standard |
 | `504` | Adapter did not answer within 120 seconds | Standard |

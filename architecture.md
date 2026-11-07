@@ -247,6 +247,8 @@ Adapter: validates the same JWT again (defense-in-depth: checks participant role
 
 The gateway does not know about participant types, contract negotiation, or EDC. It only routes.
 
+Bodies are streamed in both directions, not held in memory. `MAX_UPLOAD_BYTES` (default 1 GiB) limits `POST /outbox/files`, and `MAX_JSON_BYTES` (default 4 MiB) limits every other request. The gateway and adapters enforce them with `413`, and an adapter gives routes that carry no message content 256 KiB. An Ingress in front of the gateway must allow the larger body size.
+
 ### Participant Registry
 
 FastAPI service. Source of truth for which participants are active and where their adapters live. Participants are registered by the management API (`POST /api/participants` or `POST /api/demo`), not by the adapter itself — an adapter never calls the registry; it only ever reads it (to resolve a peer's `adapter_url`/`dsp_url` before sending).
