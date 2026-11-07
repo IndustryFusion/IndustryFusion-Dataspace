@@ -15,7 +15,9 @@
 #
 #
 # Template for /config/connector.properties. Whatever provisions a connector
-# replaces ${PARTICIPANT_ID} and ${CONNECTOR_URL}. The API key and database
+# replaces ${PARTICIPANT_ID}, ${CONNECTOR_URL}, ${DSP_ADDRESS} and ${PUBLIC_ADDRESS}.
+# The last two are what other connectors use, through the DSP gateway if this
+# connector is reached from outside. The API key and database
 # connection come from EDC_API_AUTH_KEY and EDC_DATASOURCE_DEFAULT_*.
 
 edc.participant.id=${PARTICIPANT_ID}
@@ -33,9 +35,9 @@ web.http.public.port=8084
 web.http.public.path=/api/v1/public
 
 # What other participants and this connector's own data plane use to reach it
-edc.dsp.callback.address=${CONNECTOR_URL}:8082/api/v1/dsp
+edc.dsp.callback.address=${DSP_ADDRESS}
 edc.control.endpoint=${CONNECTOR_URL}:8083/control
-edc.dataplane.api.public.baseurl=${CONNECTOR_URL}:8084/api/v1/public/v2
+edc.dataplane.api.public.baseurl=${PUBLIC_ADDRESS}/v2
 
 edc.transfer.proxy.token.signer.privatekey.alias=data-plane-signing-key
 edc.transfer.proxy.token.verifier.publickey.alias=data-plane-verification-key

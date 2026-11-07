@@ -50,9 +50,10 @@ participants:
   # How long a whole registration may take. An undo can add up to 50 seconds, and the Ingress allows for that.
   provisionReadySeconds: 300
   demo: ""
-  # The gateway's address for peers outside the cluster, which reachable participants announce. It has to work from
-  # inside the cluster too. Empty means its address inside the cluster, which only suits peers in this cluster.
+  # What an externally reachable participant announces, so they must work from outside the cluster and inside it.
+  # Empty means the services' addresses inside the cluster, which is enough only for peers in this cluster.
   gatewayPeerUrl: ""
+  dspGatewayPeerUrl: ""
   resources:
     cpuRequest: ""
     cpuLimit: ""
@@ -72,12 +73,17 @@ ingress:
     host: ""
     # Addresses allowed to reach it, comma-separated. Empty leaves it open to whoever reaches the Ingress.
     allowFrom: ""
+  # For external participants. Hosted-only installations leave this off.
+  dspGateway:
+    enabled: false
+    host: ""
   tls:
     enabled: false
     # Name of a cert-manager ClusterIssuer. Empty means the Secrets below already exist.
     certManagerClusterIssuer: ""
     gatewaySecretName: dataspace-gateway-tls
     managementSecretName: dataspace-management-tls
+    dspGatewaySecretName: dataspace-dsp-gateway-tls
 
 # How a service's own containers are sized. Empty leaves it to the cluster.
 resources: {}

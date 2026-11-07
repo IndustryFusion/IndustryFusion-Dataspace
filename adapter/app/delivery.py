@@ -26,7 +26,7 @@ from urllib.parse import quote
 import httpx
 from sqlalchemy import update
 
-from app.auth import OwnToken, TokenVerifier
+from app.auth import TRANSFER_TOKEN_HEADER, OwnToken, TokenVerifier, transfer_token
 from app.config import Settings
 from app.connector import Connector, ConnectorError
 from app.conversations import note_the_answer
@@ -196,8 +196,11 @@ async def fetch(services: Services, message_id: str, sender: str, asset_id: str,
         agreement = await connector.wait_for_agreement(negotiation, deadline)
         await set_inbox_in_transfer(services, message_id, status="negotiated")
         await set_inbox_in_transfer(services, message_id, status="transferring")
-        destination = f"{settings.adapter_url}/internal/inbox-receive/{quote(message_id, safe='')}"
-        transfer = await connector.push(agreement, provider_dsp, destination)
+        # The provider's connector makes this call, and it may be outside this adapter's network.
+        own_address = settings.peer_notify_url or settings.adapter_url
+        destination = f"{own_address}/internal/inbox-receive/{quote(message_id, safe='')}"
+        header = (TRANSFER_TOKEN_HEADER, transfer_token(settings, message_id))
+        transfer = await connector.push(agreement, provider_dsp, destination, header)
         await connector.wait_for_transfer(transfer, deadline)
     except Exception as error:  # a background task has nobody to report to, so the row must say what happened
         log.warning("Fetching %s failed: %s", message_id, reason_for(error))

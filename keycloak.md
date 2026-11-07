@@ -52,7 +52,24 @@ A user login is not a substitute. A user's token can be given a `participant_id`
 
 An adapter authenticates to a peer's adapter with its own token, on notifications and capability calls, and the audience isn't checked. So a peer that keeps such a token can use it at the sender's own adapter, as the sender, until it expires. For example, a machine builder could use a factory owner's token at that factory owner's `POST /capabilities/policy`, and approve itself.
 
-Inside the hub the operator runs every adapter, and the traffic stays in the cluster. It matters most for an `adapter_url` or `peer_notify_url` outside the hub, which #18 introduces. Changing this affects tokens across the platform, so it is recorded here as an open decision.
+Inside the hub the operator runs every adapter, and the traffic stays in the cluster. It matters most for an `adapter_url` or `peer_notify_url` outside the hub. Changing this affects tokens across the platform, so it is recorded here as an open decision.
+
+### External participants
+
+A hosted adapter sends its token to an external participant's adapter on every notification and capability call. So every external participant holds the token of each hosted participant that talks to it, and can use it **from anywhere, at the public gateway**, which routes a token to the adapter of the participant it names. Until the token expires, that reaches the hosted participant's whole agent API:
+
+- Reading its inbox, its sent messages and its conversations, with any participant, and downloading their files.
+- Sending messages in its name, to any participant its role allows.
+- Changing its capability access, including approving itself.
+
+Tokens last as long as the realm says, five minutes unless changed, and an adapter sends a fresh one when its last has expired. So while the two keep talking, this is continuous.
+
+The same holds in the other direction, and between external participants:
+
+- An external adapter's token reaches a hosted adapter through the hub's gateway, so the hub's operator can see and use it. An operator could anyway, as it holds the realm.
+- Two external participants hold each other's tokens. Each could use the other's at its adapter, if it can reach that, and at the gateway's peer routes.
+
+Nothing in the dataspace limits this. **Registering an external participant is a decision to trust it with the tokens of everyone it talks to**, so register only those you would trust with that. Client credentials themselves aren't exposed, and rotating a client's secret doesn't end a token already issued.
 
 ## The issuer must match
 

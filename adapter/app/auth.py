@@ -16,6 +16,8 @@
 
 """Checking incoming tokens, and getting this adapter's own token."""
 
+import hashlib
+import hmac
 import time
 
 import httpx
@@ -23,6 +25,18 @@ import jwt
 from fastapi import HTTPException, Request
 
 from app.config import Settings, role_for
+
+TRANSFER_TOKEN_HEADER = "X-Transfer-Token"
+
+
+def transfer_token(settings: Settings, message_id: str) -> str:
+    """Lets its holder deliver one message's content here. It is given to the provider's connector."""
+    material = f"inbox-receive:{message_id}".encode()
+    return hmac.new(settings.keycloak_client_secret.encode(), material, hashlib.sha256).hexdigest()
+
+
+def transfer_token_is_right(settings: Settings, message_id: str, given: str) -> bool:
+    return hmac.compare_digest(transfer_token(settings, message_id).encode(), given.encode())
 
 
 class TokenVerifier:

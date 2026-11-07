@@ -160,7 +160,7 @@ different databases entirely, just hosted on the same cluster.
 | Registry | No | Cluster-internal |
 | Adapters | No | Cluster-internal; only reachable via gateway |
 | EDC connectors | No | Cluster-internal. Hosted connectors are never exposed directly; external participants reach them only through the DSP gateway |
-| DSP gateway | Optional (via Ingress) | Enabled when external participants are in use; never exposes a connector's control port |
+| DSP gateway | Optional (via Ingress) | Enabled when external participants are in use; never exposes a connector's control or management port |
 | Keycloak | Yes | Agents need to fetch tokens; standard OIDC endpoint |
 | S3 storage / PostgreSQL | No | Managed / cluster-internal |
 
@@ -204,26 +204,39 @@ offsetting needed, since each gets its own Pod IP and Service.
 
 Thin FastAPI proxy. No business logic — routing only. Besides `GET /health`
 and `GET /participants/compatible`, which the registry answers, it exposes
-**two** forwarding routes, checked in this order (the first is registered
-before the catch-all, so it wins the match when both could apply):
+**two** kinds of forwarding route, checked in this order (the first are
+registered before the catch-all, so they win the match when both could apply):
 
-**1. `POST /peer/{receiver_participant}/internal/transfer-request`** — the
-one deliberate exception to "block `internal/*`" below, and the mechanism
-behind door #1 in "Request Flow — External participant ↔ hosted
-participant" above. Unlike the catch-all, it resolves the adapter for a
-*named other* participant (the URL parameter), not the caller's own — this
-is what lets an external, self-hosted participant reach into a hosted
-one's adapter at all, since a hosted adapter has no other public
-reachability. It still requires a valid JWT (proving the caller is *some*
-real registered participant), but does **not** itself check which
-participant may notify which other — that authorization is left entirely
-to the receiving adapter's own `verify_peer_token`, which confirms the
-caller's token identity matches the notification body's
-`sender_participant`. This route needs no adapter-side code changes to
-work: every adapter's send workflow already POSTs to
-`{adapter_url}/internal/transfer-request` with zero gateway awareness, so
-registering a hosted participant's `peer_notify_url` as this route's own
-base URL makes that same string concatenation land here.
+**1. The peer routes** — exactly these exceptions to "block `internal/*`"
+below, and the mechanism behind door #1 in "Request Flow — External
+participant ↔ hosted participant" below:
+
+| Route | What it carries | Needs |
+|---|---|---|
+| `POST /peer/{receiver}/internal/transfer-request` | A notification | A valid JWT |
+| `GET /peer/{receiver}/internal/capabilities` | A capability read | A valid JWT |
+| `POST /peer/{receiver}/internal/capabilities/approvals` | A capability request | A valid JWT |
+| `POST /peer/{receiver}/internal/inbox-receive/{id}` | Content a connector pushes | A transfer token |
+
+Unlike the catch-all, these resolve the adapter for a *named other*
+participant, not the caller's own — this is what lets an external, self-hosted
+participant reach a hosted one's adapter at all, since a hosted adapter has no
+other public reachability. A valid JWT proves the caller is *some* real
+participant, and the gateway does **not** check which may call which. That is
+left to the receiving adapter, which confirms the token's identity against the
+notification's `sender_participant`, gives a peer only its own approvals, and
+lets it ask only for itself. Every peer route removes `X-Internal-Key`, which
+an adapter takes to mean management. Management's own `PATCH` routes aren't
+carried.
+
+A connector's data plane holds no Keycloak token, so the content route takes
+instead a token that is good for one message, which the receiver gave the
+provider's connector when it asked for the transfer. The gateway needs it to be
+present, and the adapter checks its value.
+
+These routes need no adapter-side awareness of the gateway. An adapter concatenates
+`/internal/...` onto a peer's address, so registering a hosted participant's
+`peer_notify_url` as `/peer/{id}` on the gateway makes it land here.
 
 **2. The catch-all `/{path:path}`** — everything else:
 
@@ -233,7 +246,7 @@ Request in:
   2. Extract participant_id from token claim
   3. Look up adapter_url from registry (30 s TTL cache)
   4. Block if path starts with "internal/" (404) — no exceptions here;
-     route 1 above is the only door into an adapter's /internal/* space
+     the peer routes above are the only door into an adapter's /internal/* space
   5. Proxy request verbatim to adapter_url
   6. Return response
 
@@ -323,7 +336,7 @@ Hosted EDC connectors communicate with each other over DSP **inside the cluster*
 
 Stateless path router for DSP traffic from external participants. It maps `/{slug}/api/v1/dsp/{path}` to a hosted connector's port 8082 and `/{slug}/api/v1/public/{path}` to its port 8084, where the slug is `sha256(participant_id)[:8]`. It never exposes the control port, and does no authentication of its own: DSP traffic is authorized by the connectors. See "Request Flow — External participant ↔ hosted participant".
 
-Hosted-only installations do not need to expose it.
+Hosted-only installations do not need to expose it, and the Ingress for it is off by default. It keeps no state, so it can't tell whether a slug's participant is `externally_reachable`: exposing it makes the DSP and public ports of every hosted connector reachable, and until #20 connectors use a mock identity and permit-all policies.
 
 ### Management GUI
 
@@ -484,7 +497,8 @@ Agent MB         Adapter MB       EDC MB           gateway          EDC FO      
 3. MB's adapter mints its own Keycloak token and `POST`s the transfer
    notification to `gateway.dataspace/peer/{FO}/internal/transfer-request`
    — **this is the first public door**: the only way to reach into a
-   hosted participant's protocol layer from outside.
+   hosted participant's protocol layer from outside. Capability calls take
+   the same door.
 4. `gateway` validates the JWT, resolves FO's real (otherwise internal-
    only) adapter address, and proxies the notification through.
 5. FO's adapter verifies the token really is MB (`verify_peer_token`),
@@ -494,10 +508,15 @@ Agent MB         Adapter MB       EDC MB           gateway          EDC FO      
    own EDC connector's real DSP address — MB is self-hosted, so its DSP
    endpoint is already genuinely reachable; no `dsp-gateway` hop needed
    in this direction.
-7. FO's adapter stores the received content in its own S3 storage; FO's agent
-   polls its own inbox as usual, through `gateway` (FO is hosted).
+7. MB's connector pushes the content to the destination FO's adapter named, which
+   is the same door: `POST .../peer/{FO}/internal/inbox-receive/{id}`, with the
+   transfer token for that message. FO's adapter stores the received content in
+   its own S3 storage; FO's agent polls its own inbox as usual, through `gateway`
+   (FO is hosted).
 
-Step 6 crosses the external/hosted boundary just as much as anything in
+The negotiation in step 6 needs no relay. The content in step 7 does, because the
+provider's connector makes that call, and a hosted adapter can't be reached from
+outside any other way. Step 6 crosses the external/hosted boundary just as much as anything in
 Direction 2 does — the reason it doesn't need `dsp-gateway` isn't "external
 ↔ internal always needs a relay," it's narrower than that: `dsp-gateway`
 exists specifically because IFF chooses not to expose `dataspace-
@@ -628,7 +647,7 @@ Each adapter records which capabilities its participant shares with whom, in `ca
 
 "Governed" in this document means the role rules and the conversation rules, which the dataspace does enforce, plus a shared record of who has agreed to what. It does not mean the dataspace stops data it was told not to share.
 
-The provider's adapter holds the record, and hosted adapters call each other's internal capability routes directly at `adapter_url`. External participants aren't covered yet: carrying these calls through the gateway's peer route belongs to #18.
+The provider's adapter holds the record. An adapter calls a provider's internal capability routes at its `peer_notify_url` where it has one, which is the gateway's peer route, and otherwise at its `adapter_url`.
 
 ---
 
@@ -727,6 +746,6 @@ pods — no orphaned Deployments left behind.
 
 No existing participants need to be reconfigured. The registry and gateway handle discovery automatically.
 
-An external participant runs its own adapter and connector, so registering one creates only its Keycloak client and registry entry. See [management-api.md](management-api.md).
+An external participant runs its own adapter and connector, so registering one creates only its Keycloak client and registry entry. See "External participants" in [management-api.md](management-api.md), which also says what registering one trusts it with.
 
 A participant onboarded from the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss) has a `participant_id` equal to its `company_ifric_id`, with no mapping table. So the management API can add its company details to reads, and the two can share a realm. Any other participant id must never equal a real `company_ifric_id`, as it would be taken for that company. See [keycloak.md](keycloak.md).

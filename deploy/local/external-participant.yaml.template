@@ -1,0 +1,322 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+#
+# One self-hosted participant for the local environment, in its own namespace, with everything it runs itself.
+# Placeholders are filled in by scripts/external-demo.py.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+  labels:
+    dataspace.industryfusion.org/external-demo: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: credentials
+  namespace: ${NAMESPACE}
+stringData:
+  postgres-password: "${POSTGRES_PASSWORD}"
+  database-url: "postgresql+asyncpg://participant:${POSTGRES_PASSWORD}@postgres:5432/adapter"
+  edc-api-key: "${EDC_API_KEY}"
+  client-secret: "${CLIENT_SECRET}"
+  s3-access-key: "${S3_ACCESS_KEY}"
+  s3-secret-key: "${S3_SECRET_KEY}"
+  internal-key: "${INTERNAL_KEY}"
+  s3-config: |
+    {"identities": [{"name": "participant",
+      "credentials": [{"accessKey": "${S3_ACCESS_KEY}", "secretKey": "${S3_SECRET_KEY}"}],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: ${NAMESPACE}
+data:
+  connector-database.sql: |
+    CREATE DATABASE connector;
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: connector
+  namespace: ${NAMESPACE}
+data:
+  connector.properties: |
+${CONNECTOR_PROPERTIES}
+---
+# Only the public routes, and what this participant runs itself. A NetworkPolicy works on addresses and ports,
+# so the management API's whole port is open from here. Its admin routes check a token.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: public-routes-only
+  namespace: ${NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+    # Hosted connectors reach this connector's DSP port and push to this adapter, and so does the other demo
+    # participant. Its connector's management and control ports stay closed.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ${PARTICIPANTS_NAMESPACE} }
+        - namespaceSelector:
+            matchLabels: { dataspace.industryfusion.org/external-demo: "true" }
+      ports:
+        - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 8082 }
+        - { protocol: TCP, port: 8084 }
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # By their labels from deploy/local/services.yaml, or from the Helm chart.
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dataspace }
+          podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [gateway, dsp-gateway, management] }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dataspace }
+          podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [gateway, dsp-gateway, management] }
+      ports:
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8085 }
+        - { protocol: TCP, port: 3000 }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: iff }
+          podSelector:
+            matchLabels: { app: keycloak }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - to:
+        - namespaceSelector:
+            matchLabels: { dataspace.industryfusion.org/external-demo: "true" }
+      ports:
+        - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 8082 }
+        - { protocol: TCP, port: 8084 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports: [{ containerPort: 5432 }]
+          env:
+            - { name: POSTGRES_USER, value: participant }
+            - { name: POSTGRES_DB, value: adapter }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: credentials, key: postgres-password } }
+          volumeMounts:
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "participant", "-d", "connector"] }
+            periodSeconds: 3
+      volumes:
+        - name: init
+          configMap: { name: postgres-init }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ${NAMESPACE}
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storage
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    matchLabels: { app: storage }
+  template:
+    metadata:
+      labels: { app: storage }
+    spec:
+      containers:
+        - name: storage
+          image: chrislusf/seaweedfs:3.80
+          args: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/config/s3.json"]
+          ports: [{ containerPort: 8333 }]
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /config }
+          readinessProbe:
+            tcpSocket: { port: 8333 }
+            periodSeconds: 3
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          secret:
+            secretName: credentials
+            items: [{ key: s3-config, path: s3.json }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storage
+  namespace: ${NAMESPACE}
+spec:
+  selector: { app: storage }
+  ports: [{ port: 80, targetPort: 8333 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connector
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    matchLabels: { app: connector }
+  template:
+    metadata:
+      labels: { app: connector }
+    spec:
+      # kind's NetworkPolicy enforcement loses one of the two lookups a resolver sends at once, so names fail.
+      dnsConfig:
+        options: [{ name: single-request }]
+      containers:
+        - name: connector
+          image: dataspace/connector:${IMAGE_VERSION}
+          imagePullPolicy: Never
+          ports:
+            - { containerPort: 8080 }
+            - { containerPort: 8081 }
+            - { containerPort: 8082 }
+            - { containerPort: 8083 }
+            - { containerPort: 8084 }
+          env:
+            - name: EDC_API_AUTH_KEY
+              valueFrom: { secretKeyRef: { name: credentials, key: edc-api-key } }
+            - { name: EDC_DATASOURCE_DEFAULT_URL, value: "jdbc:postgresql://postgres:5432/connector" }
+            - { name: EDC_DATASOURCE_DEFAULT_USER, value: participant }
+            - name: EDC_DATASOURCE_DEFAULT_PASSWORD
+              valueFrom: { secretKeyRef: { name: credentials, key: postgres-password } }
+          volumeMounts:
+            - { name: config, mountPath: /config }
+          readinessProbe:
+            httpGet: { path: /api/check/readiness, port: 8080 }
+            periodSeconds: 3
+            failureThreshold: 60
+      volumes:
+        - name: config
+          configMap: { name: connector }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: connector
+  namespace: ${NAMESPACE}
+spec:
+  selector: { app: connector }
+  ports:
+    - { name: default, port: 8080 }
+    - { name: management, port: 8081 }
+    - { name: dsp, port: 8082 }
+    - { name: control, port: 8083 }
+    - { name: public, port: 8084 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adapter
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    matchLabels: { app: adapter }
+  template:
+    metadata:
+      labels: { app: adapter }
+    spec:
+      # kind's NetworkPolicy enforcement loses one of the two lookups a resolver sends at once, so names fail.
+      dnsConfig:
+        options: [{ name: single-request }]
+      containers:
+        - name: adapter
+          image: dataspace/adapter:${IMAGE_VERSION}
+          imagePullPolicy: Never
+          ports: [{ containerPort: 8000 }]
+          env:
+            - { name: PARTICIPANT_ID, value: "${PARTICIPANT_ID}" }
+            - { name: PARTICIPANT_TYPE, value: "${PARTICIPANT_TYPE}" }
+            # Its real address. It is reachable, so peers need no other.
+            - { name: ADAPTER_URL, value: "http://adapter.${NAMESPACE}:8000" }
+            - { name: EDC_MANAGEMENT_URL, value: "http://connector:8081/management" }
+            - { name: EDC_DSP_URL, value: "http://connector.${NAMESPACE}:8082/api/v1/dsp" }
+            # The management API's read routes, as the registry itself isn't public.
+            - { name: REGISTRY_URL, value: "http://management.dataspace:3000/api" }
+            - { name: MAX_UPLOAD_BYTES, value: "1073741824" }
+            - { name: MAX_JSON_BYTES, value: "4194304" }
+            - { name: KEYCLOAK_URL, value: "http://keycloak-service.iff:8080/auth" }
+            - { name: KEYCLOAK_REALM, value: dataspace }
+            - { name: SEAWEEDFS_ENDPOINT, value: "http://storage:80" }
+            - { name: SEAWEEDFS_BUCKET, value: participant }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: credentials, key: database-url } }
+            - name: EDC_API_KEY
+              valueFrom: { secretKeyRef: { name: credentials, key: edc-api-key } }
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: credentials, key: client-secret } }
+            - name: SEAWEEDFS_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: credentials, key: s3-access-key } }
+            - name: SEAWEEDFS_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: credentials, key: s3-secret-key } }
+            - name: ADAPTER_INTERNAL_KEY
+              valueFrom: { secretKeyRef: { name: credentials, key: internal-key } }
+          resources:
+            limits: { memory: 1Gi }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adapter
+  namespace: ${NAMESPACE}
+spec:
+  selector: { app: adapter }
+  ports: [{ port: 8000 }]

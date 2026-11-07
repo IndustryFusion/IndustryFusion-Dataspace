@@ -26,6 +26,7 @@ from app.config import Settings
 PART_OF = "dataspace-management"
 SLUG_LABEL = "dataspace.industryfusion.org/slug"
 ID_ANNOTATION = "dataspace.industryfusion.org/participant-id"
+ANNOUNCED_ANNOTATION = "dataspace.industryfusion.org/announced-dsp-address"
 SECRET_ANNOTATION = "dataspace.industryfusion.org/secret-checksum"
 CONNECTOR_PORTS = {"default": 8080, "management": 8081, "dsp": 8082, "control": 8083, "public": 8084}
 CONNECTOR_TEMPLATE = pathlib.Path(__file__).parent / "connector.properties.template"
@@ -67,6 +68,17 @@ def hosted_addresses(participant_id: str, namespace: str) -> tuple[str, str]:
 
 def peer_route(gateway_peer_url: str, participant_id: str) -> str:
     return f"{gateway_peer_url}/peer/{quote(participant_id, safe=':')}"
+
+
+def dsp_gateway_address(settings: Settings, participant_id: str, kind: str) -> str:
+    return f"{settings.dsp_gateway_peer_url}/{slug(participant_id)}/api/v1/{kind}"
+
+
+def announced_dsp(participant_id: str, settings: Settings, reachable: bool) -> str:
+    """The address other connectors use. Only the DSP gateway's works from outside the cluster."""
+    if reachable:
+        return dsp_gateway_address(settings, participant_id, "dsp")
+    return hosted_addresses(participant_id, settings.participants_namespace)[1]
 
 
 def _metadata(participant_id: str, name: str) -> dict:
@@ -128,10 +140,13 @@ def _service(participant_id: str, name: str, ports: dict[str, int]) -> dict:
     }
 
 
-def connector_properties(participant_id: str, namespace: str) -> str:
+def connector_properties(participant_id: str, settings: Settings, reachable: bool) -> str:
     """Fill in the connector's template. The id goes last, so nothing in it is taken for a placeholder."""
-    url = f"http://{connector_name(participant_id)}.{namespace}"
+    url = f"http://{connector_name(participant_id)}.{settings.participants_namespace}"
+    public = dsp_gateway_address(settings, participant_id, "public") if reachable else f"{url}:8084/api/v1/public"
     text = CONNECTOR_TEMPLATE.read_text().replace("${CONNECTOR_URL}", url)
+    text = text.replace("${DSP_ADDRESS}", announced_dsp(participant_id, settings, reachable))
+    text = text.replace("${PUBLIC_ADDRESS}", public)
     return text.replace("${PARTICIPANT_ID}", participant_id.replace("\\", "\\\\"))
 
 
@@ -158,16 +173,16 @@ def secret(participant_id: str, settings: Settings, client_secret: str, edc_api_
     }
 
 
-def config_map(participant_id: str, settings: Settings) -> dict:
+def config_map(participant_id: str, settings: Settings, reachable: bool) -> dict:
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": _metadata(participant_id, connector_name(participant_id)),
-        "data": {"connector.properties": connector_properties(participant_id, settings.participants_namespace)},
+        "data": {"connector.properties": connector_properties(participant_id, settings, reachable)},
     }
 
 
-def connector_deployment(participant_id: str, settings: Settings, secret_checksum: str = "") -> dict:
+def connector_deployment(participant_id: str, settings: Settings, reachable: bool, secret_checksum: str = "") -> dict:
     name = connector_name(participant_id)
     database = database_names(participant_id)[1]
     jdbc = f"jdbc:postgresql://{settings.postgres_host}:{settings.postgres_port}/{database}"
@@ -190,22 +205,26 @@ def connector_deployment(participant_id: str, settings: Settings, secret_checksu
         },
         "resources": _resources(settings),
     }
-    # Pods read their Secret when they start, so a changed one has to restart them.
-    annotations = {SECRET_ANNOTATION: secret_checksum}
+    # Pods read their Secret when they start, and a connector its addresses, so a change of either restarts them.
+    annotations = {
+        SECRET_ANNOTATION: secret_checksum,
+        ANNOUNCED_ANNOTATION: announced_dsp(participant_id, settings, reachable),
+    }
     return _deployment(participant_id, name, container, [{"name": "config", "configMap": {"name": name}}], annotations)
 
 
 def adapter_deployment(
-    participant_id: str, participant_type: str, settings: Settings, secret_checksum: str = ""
+    participant_id: str, participant_type: str, settings: Settings, reachable: bool, secret_checksum: str = ""
 ) -> dict:
     namespace = settings.participants_namespace
-    adapter_url, dsp_url = hosted_addresses(participant_id, namespace)
+    adapter_url, _ = hosted_addresses(participant_id, namespace)
     plain = {
         "PARTICIPANT_ID": participant_id,
         "PARTICIPANT_TYPE": participant_type,
         "ADAPTER_URL": adapter_url,
         "EDC_MANAGEMENT_URL": f"http://{connector_name(participant_id)}.{namespace}:8081/management",
-        "EDC_DSP_URL": dsp_url,
+        "EDC_DSP_URL": announced_dsp(participant_id, settings, reachable),
+        "PEER_NOTIFY_URL": peer_route(settings.gateway_peer_url, participant_id) if reachable else "",
         "REGISTRY_URL": settings.registry_url,
         "MAX_UPLOAD_BYTES": settings.max_upload_bytes,
         "MAX_JSON_BYTES": settings.max_json_bytes,
@@ -243,16 +262,18 @@ def adapter_service(participant_id: str) -> dict:
     return _service(participant_id, adapter_name(participant_id), {"http": 8000})
 
 
-def all_objects(participant_id: str, participant_type: str, settings: Settings, client_secret: str, key: str) -> list:
+def all_objects(
+    participant_id: str, participant_type: str, settings: Settings, client_secret: str, key: str, reachable: bool
+) -> list:
     """Dependencies first: a pod that starts needs its Secret and ConfigMap to be there."""
     held = secret(participant_id, settings, client_secret, key)
     checksum = hashlib.sha256(json.dumps(held["stringData"], sort_keys=True).encode()).hexdigest()
     return [
         held,
-        config_map(participant_id, settings),
-        connector_deployment(participant_id, settings, checksum),
+        config_map(participant_id, settings, reachable),
+        connector_deployment(participant_id, settings, reachable, checksum),
         connector_service(participant_id),
-        adapter_deployment(participant_id, participant_type, settings, checksum),
+        adapter_deployment(participant_id, participant_type, settings, reachable, checksum),
         adapter_service(participant_id),
     ]
 

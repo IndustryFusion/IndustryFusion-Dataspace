@@ -65,7 +65,11 @@ A registration waits for the participant's pods, so it can take a few minutes.
 | `limits.maxUploadBytes`, `limits.maxJsonBytes` | The one place these are set. The gateway, management and, through management, every new adapter read them. The gateway Ingress allows exactly `maxUploadBytes`, and the management Ingress `maxJsonBytes`. A participant that already exists gets a new value when it is registered again |
 | `dependencies.keycloak.url` | Used by every service, and compared exactly with a token's issuer. Keycloak has to be reachable at this address from inside the cluster, and tokens have to be minted through it. No addresses are fixed: use a name your cluster resolves |
 | `ingress.management.allowFrom` | Restrict who reaches management. See "What is and is not publicly reachable" in [architecture.md](../architecture.md) |
+| `ingress.dspGateway.enabled`, `ingress.dspGateway.host` | Exposes the DSP gateway, for external participants. Off by default, and hosted-only installations leave it off. It routes to every hosted connector's DSP and public ports. See "DSP Gateway" in [architecture.md](../architecture.md) |
+| `participants.gatewayPeerUrl`, `participants.dspGatewayPeerUrl` | What an `externally_reachable` participant announces, such as `https://<gateway host>`. Empty means the addresses inside the cluster, which work only for peers in this cluster. They have to work from inside the cluster too |
 | `ingress.tls.certManagerClusterIssuer` | With `ingress.tls.enabled`, adds the cert-manager annotation. Without it, the named TLS Secrets have to exist |
+
+With external participants, connectors push content through the gateway, and through the DSP gateway's addresses. A connector's HTTP client reuses a connection for up to 5 minutes, and a push on a connection the other end has dropped fails the transfer. The services keep idle connections for longer. So must anything in front of them: with ingress-nginx, set `keep-alive` above 300 in its ConfigMap, as its default is 75 seconds.
 
 A body over the limit is refused by the Ingress with `413`, with the Ingress's own body. A smaller request over `MAX_JSON_BYTES` is refused by the gateway, with the contract's error.
 

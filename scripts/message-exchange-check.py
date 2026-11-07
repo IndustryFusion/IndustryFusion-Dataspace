@@ -739,7 +739,9 @@ def isolation(owner: Agent, builder: Agent, delivered_to_builder: str) -> None:
     print("No token: 401")
 
     status, peers = lc.http("GET", f"{base}/participants/compatible", headers=owner.headers())
-    assert status == 200 and [peer["participant_id"] for peer in peers] == [MACHINE_BUILDER], peers
+    # Others can be registered too, such as the external demo's.
+    ids = [peer["participant_id"] for peer in peers]
+    assert status == 200 and MACHINE_BUILDER in ids and FACTORY_OWNER not in ids, peers
     print("Compatible participants: the machine builder")
 
     status, _ = lc.http("GET", f"{builder.base}/inbox/messages/{delivered_to_builder}", headers=builder.headers())

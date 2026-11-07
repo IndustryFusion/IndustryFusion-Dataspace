@@ -147,6 +147,8 @@ It uses only its own kubeconfig, `.local/kubeconfig`, so your other clusters are
 
 With the services deployed, `scripts/message-exchange-check.py` runs two agents exchanging messages through the gateway, `scripts/connector-transfer-check.py` tests two connectors on their own, `scripts/management-check.py` onboards and removes participants through the management API, with real failures at each step, and `scripts/ifric-check.py` checks company details with real Keycloak tokens and a stand-in for the IFRIC registry.
 
+`scripts/external-demo.py up` deploys two self-hosted participants, each in its own namespace with its own PostgreSQL, S3 storage, adapter and connector, and a NetworkPolicy limiting it to the public routes. `down` removes them. See "External participants" in [management-api.md](management-api.md).
+
 To try the Helm install from [deploy/README.md](deploy/README.md) instead of `services`, run `scripts/local-env.sh images`, install an Ingress controller, and use `-e local` with the file that `scripts/local-env.sh helm-secrets` writes as `DATASPACE_SECRETS_FILE`. `scripts/ingress-check.py` then checks the install through the Ingress, including an upload at the limit.
 
 ### Contract tests
@@ -165,7 +167,9 @@ python3 scripts/contract_test.py --gateway-url <url> --keycloak-url <url> \
   --management-url <url> --admin-secret <dataspace-admin-cli secret>
 ```
 
-Or use existing participants, with `--owner <id>:<secret>` and `--builder <id>:<secret>`. External participants' flows are listed as not run, until #18.
+Or use existing participants, with `--owner <id>:<secret>` and `--builder <id>:<secret>`.
+
+External participants' flows run with `--local` once `scripts/external-demo.py up` has run. Against another deployment, give `--external-owner <adapter url>,<id>,<secret>` and `--external-builder` the same way. Without any, they are listed as not run.
 
 `--self-test` needs no deployment and runs in CI. It shows that each shape refuses a wrong answer. `--tamper 'GET /conversations/*:outcome'` removes a field from a route's real answers, and the run must then fail. A change can also set a value, as in `:outcome="nonsense"`, or be `messages:flip` or `messages:swap`, and a rule that matches no route fails the run. `--only` limits a run to named sections, and `--max-json-bytes` and `--max-upload-bytes` give a deployment's own limits. A maintainer can run the suite in CI with the `Contract tests` workflow, from the Actions tab.
 

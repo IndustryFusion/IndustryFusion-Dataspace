@@ -158,6 +158,10 @@ Its `202` answer can add `kept_step`: this side kept its own step, with this low
 
 A refusal uses the same bodies as the agent routes, in [gateway-api.md](gateway-api.md).
 
+An external participant's adapter has to send `sender_applied` and read `kept_step`, as the two copies otherwise can't settle. The gateway's peer route passes both unchanged. See "API Gateway" in [architecture.md](architecture.md).
+
+The connector's push to `POST /internal/inbox-receive/{id}` carries `X-Transfer-Token`. It is good for that one message, and the receiver gives it to the provider's connector with the transfer's destination. It can't be used for anything else, and a wrong one gives `401`.
+
 ## Delivery
 
 - Delivery to agents is by polling. See `GET /inbox/messages` in [gateway-api.md](gateway-api.md).
@@ -212,4 +216,5 @@ These behaviours are deliberately not provided at this stage:
 - **Content without files is limited to `MAX_JSON_BYTES` on arrival,** including a `content_ref` asset, as it is read into memory when an agent reads the message. A larger asset gives the message status `error`. The push itself is streamed to storage, but the message has no files to download, so an agent could only read it in memory.
 - **Every message runs a full connector cycle,** including messages with an empty payload.
 - **Connector policies permit everything,** and DSP identity is mocked. Tracked in #20.
-- **The connector's calls to internal adapter routes are unauthenticated.** Tracked in #20.
+- **The connector's calls to internal adapter routes are unauthenticated inside the cluster.** A push through the gateway needs its transfer token, and one inside the cluster without the header is still accepted. `GET /internal/payload/{id}` has no check. Tracked in #20.
+- **An adapter's token can be replayed by a peer.** For a peer outside the hub, this reaches the sender's whole agent API at the public gateway. See "External participants" in [keycloak.md](keycloak.md). It is a decision for the maintainers.

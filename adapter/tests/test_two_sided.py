@@ -76,11 +76,13 @@ class PairedConnector:
     async def wait_for_agreement(self, negotiation_id: str, deadline: float) -> str:
         return negotiation_id
 
-    async def push(self, agreement_id: str, provider_dsp: str, destination_url: str) -> str:
+    async def push(self, agreement_id: str, provider_dsp: str, destination_url: str, header: tuple[str, str]) -> str:
         provider, asset = agreement_id.split("|")
         source = await self.mesh.client_at(provider).get(f"/internal/payload/{asset}")
         target = urlparse(destination_url)
-        answer = await self.mesh.clients[target.hostname].post(target.path, content=source.content)
+        answer = await self.mesh.clients[target.hostname].post(
+            target.path, content=source.content, headers=dict([header])
+        )
         assert answer.status_code == 200, answer.text
         return "transfer"
 

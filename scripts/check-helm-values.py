@@ -93,6 +93,21 @@ def check(environment: pathlib.Path, secrets: str) -> list[str]:
         if size != wanted:
             problems.append(f"{name}: Ingress body size {size} isn't the limit {wanted}")
 
+    without = render("dsp-gateway", environment, secrets, "--set", "ingress.enabled=true")
+    if any(o["kind"] == "Ingress" for o in without):
+        problems.append("dsp-gateway: an Ingress is rendered though it isn't enabled")
+    with_ingress = render(
+        "dsp-gateway", environment, secrets, "--set", "ingress.enabled=true",
+        "--set", "ingress.dspGateway.enabled=true", "--set", "ingress.dspGateway.host=d.example",
+    )  # fmt: skip
+    ingress = next((o for o in with_ingress if o["kind"] == "Ingress"), None)
+    if ingress is None or ingress["spec"]["rules"][0]["host"] != "d.example":
+        problems.append("dsp-gateway: enabling its Ingress doesn't route its host")
+    elif ingress["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]["port"]["number"] != 8085:
+        problems.append("dsp-gateway: its Ingress doesn't go to its port")
+    if "PARTICIPANTS_NAMESPACE" not in env_of(with_ingress):
+        problems.append("dsp-gateway: it doesn't know the participants' namespace")
+
     gateway_env, management_env = env_of(gateway), env_of(management)
     for key in ("MAX_UPLOAD_BYTES", "MAX_JSON_BYTES"):
         if gateway_env[key]["value"] != management_env[key]["value"]:

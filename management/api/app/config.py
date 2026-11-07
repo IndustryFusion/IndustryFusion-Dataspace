@@ -58,6 +58,7 @@ class Settings:
     gateway_url: str = field(default_factory=lambda: _url("GATEWAY_URL"))
     gateway_peer_url: str = field(default_factory=lambda: _url("GATEWAY_PEER_URL"))
     dsp_gateway_url: str = field(default_factory=lambda: _url("DSP_GATEWAY_URL"))
+    dsp_gateway_peer_url: str = field(default_factory=lambda: _url("DSP_GATEWAY_PEER_URL"))
     adapter_internal_key: str = field(default_factory=lambda: _env("ADAPTER_INTERNAL_KEY"))
     participants_namespace: str = field(
         default_factory=lambda: _env("PARTICIPANTS_NAMESPACE", "dataspace-participants")

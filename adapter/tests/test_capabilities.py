@@ -172,24 +172,36 @@ def test_provider_answering_with_a_failure_is_unavailable(harness):
     assert answer.status_code == 503
 
 
-def test_provider_with_no_adapter_address_is_unavailable(harness):
-    harness.world.registered[PEER] = {"participant_id": PEER, "peer_notify_url": "http://gateway.test/peer/mb"}
+def test_provider_with_no_address_is_unavailable(harness):
+    harness.world.registered[PEER] = {"participant_id": PEER}
     answer = harness.client.get("/capabilities/access", params={"provider": PEER}, headers=auth())
     assert answer.status_code == 503
 
 
-def test_provider_is_called_at_its_adapter_even_with_a_peer_address(harness):
-    harness.world.registered[PEER] = {
-        "participant_id": PEER,
-        "adapter_url": "http://peer.test",
-        "peer_notify_url": "http://gateway.test/peer/mb",
-    }
+def test_provider_with_only_a_peer_address_is_called_there(harness):
+    harness.world.registered[PEER] = {"participant_id": PEER, "peer_notify_url": "http://peer.test/peer/mb"}
     harness.world.peer_status = 200
     harness.world.peer_body = {"capabilities": [], "approvals": []}
     answer = harness.client.get("/capabilities/access", params={"provider": PEER}, headers=auth())
     assert answer.status_code == 200
-    assert harness.world.calls_to_peer[0].url.host == "peer.test"
-    assert harness.world.calls_to_peer[0].url.path == "/internal/capabilities"
+    assert harness.world.calls_to_peer[0].url.path == "/peer/mb/internal/capabilities"
+
+
+def test_a_peer_address_comes_before_the_adapter_address(harness):
+    harness.world.registered[PEER] = {
+        "participant_id": PEER,
+        "adapter_url": "http://nowhere.test",
+        "peer_notify_url": "http://peer.test/peer/mb/",
+    }
+    harness.world.peer_status = 202
+    harness.world.peer_body = {"id": "r1", "status": "pending"}
+    body = {"provider_participant": PEER, "capability": "twin:history"}
+    answer = harness.client.post("/capabilities/requests", json=body, headers=auth())
+    assert answer.status_code == 202
+    call = harness.world.calls_to_peer[0]
+    assert call.url.path == "/peer/mb/internal/capabilities/approvals"
+    assert call.headers["Authorization"].startswith("Bearer ")
+    assert "X-Internal-Key" not in call.headers
 
 
 def test_policy_on_this_adapter(harness):

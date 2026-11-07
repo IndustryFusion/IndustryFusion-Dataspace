@@ -86,7 +86,8 @@ class FakeConnector:
     async def wait_for_agreement(self, negotiation_id: str, deadline: float) -> str:
         return "agreement"
 
-    async def push(self, agreement_id: str, provider_dsp: str, destination_url: str) -> str:
+    async def push(self, agreement_id: str, provider_dsp: str, destination_url: str, header: tuple[str, str]) -> str:
+        self.push_header = header
         if self.on_push:
             await self.on_push(destination_url)
         return "transfer"

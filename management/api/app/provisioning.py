@@ -116,13 +116,14 @@ class Provisioner:
 
     def _record(self, request: Registration) -> dict:
         if request.hosted:
-            adapter_url, dsp_url = manifests.hosted_addresses(
-                request.participant_id, self.settings.participants_namespace
-            )
-            if request.externally_reachable and not self.settings.gateway_peer_url:
-                detail = "externally_reachable needs GATEWAY_PEER_URL on this service"
-                raise HTTPException(status_code=422, detail=detail)
             reachable = request.externally_reachable
+            if reachable and not (self.settings.gateway_peer_url and self.settings.dsp_gateway_peer_url):
+                raise HTTPException(
+                    status_code=422,
+                    detail="externally_reachable needs GATEWAY_PEER_URL and DSP_GATEWAY_PEER_URL on this service",
+                )
+            adapter_url, _ = manifests.hosted_addresses(request.participant_id, self.settings.participants_namespace)
+            dsp_url = manifests.announced_dsp(request.participant_id, self.settings, reachable)
             notify = manifests.peer_route(self.settings.gateway_peer_url, request.participant_id) if reachable else None
         else:
             adapter_url, dsp_url, notify = request.adapter_url, request.dsp_url, request.peer_notify_url
@@ -171,7 +172,10 @@ class Provisioner:
         else:
             key = base64.b64decode(existing_secret["data"]["edc-api-key"]).decode()
         bare_type = roles.bare_name(request.participant_type)
-        for manifest in manifests.all_objects(participant_id, bare_type, self.settings, client_secret, key):
+        objects = manifests.all_objects(
+            participant_id, bare_type, self.settings, client_secret, key, request.externally_reachable
+        )
+        for manifest in objects:
             previous = await self.kubernetes.apply(manifest)
             kind, name = manifest["kind"], manifest["metadata"]["name"]
             if previous is None:

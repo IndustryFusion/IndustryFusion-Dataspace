@@ -242,7 +242,9 @@ def main() -> int:
                     print("PASS adding a participant changes nothing of an existing one")
 
                     status, compatible = lc.http("GET", f"{management}/api/participants/compatible/{quoted(OWNER)}")
-                    assert [c["participant_id"] for c in compatible] == [BUILDER], compatible
+                    # Others can be registered too, such as the external demo's.
+                    ids = [c["participant_id"] for c in compatible]
+                    assert BUILDER in ids and OWNER not in ids, compatible
                     print("PASS the new participant is found through the registry")
 
                     exchange(check, owner["client_secret"], builder["client_secret"])

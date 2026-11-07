@@ -73,7 +73,7 @@ app.kubernetes.io/part-of: dataspace
 {{- end }}
 
 {{- define "dataspace.env.dsp-gateway" -}}
-[]
+- { name: PARTICIPANTS_NAMESPACE, value: {{ .Values.namespaces.participants | quote }} }
 {{- end }}
 
 {{- define "dataspace.env.management" -}}
@@ -91,6 +91,7 @@ app.kubernetes.io/part-of: dataspace
 - { name: GATEWAY_URL, value: "http://gateway.{{ $services }}:8080" }
 - { name: GATEWAY_PEER_URL, value: {{ .Values.participants.gatewayPeerUrl | default (printf "http://gateway.%s:8080" $services) | quote }} }
 - { name: DSP_GATEWAY_URL, value: "http://dsp-gateway.{{ $services }}:8085" }
+- { name: DSP_GATEWAY_PEER_URL, value: {{ .Values.participants.dspGatewayPeerUrl | default (printf "http://dsp-gateway.%s:8085" $services) | quote }} }
 - { name: PARTICIPANTS_NAMESPACE, value: {{ .Values.namespaces.participants | quote }} }
 - { name: MAIN_REGISTRY, value: {{ .Values.images.registry | quote }} }
 - { name: MAIN_REPO, value: {{ .Values.images.repo | quote }} }
