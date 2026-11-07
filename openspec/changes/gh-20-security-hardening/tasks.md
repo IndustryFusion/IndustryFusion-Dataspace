@@ -26,9 +26,9 @@
 
 ## 5. End to end
 
-- [ ] 5.1 The end-to-end message and external participant tests pass with all of this active; verify the contract suite on a local cluster
-- [ ] 5.2 Add `scripts/security-check.py` with the negative tests; verify on a local cluster, and that each check fails when its protection is removed
-- [ ] 5.3 Run against a Helm install; verify a run on a local cluster, through the gateway's Service
+- [x] 5.1 The end-to-end message and external participant tests pass with all of this active; verify the contract suite on a local cluster
+- [x] 5.2 Add `scripts/security-check.py` with the negative tests; verify on a local cluster, and that each check fails when its protection is removed
+- [x] 5.3 Run against a Helm install; verify a run on a local cluster, through the gateway's Service
 
 ## 6. Documents
 
@@ -36,4 +36,4 @@
 
 ## 7. Report
 
-- [ ] 7.1 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 7.1 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
