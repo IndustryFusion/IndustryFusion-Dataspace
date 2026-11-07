@@ -1057,7 +1057,7 @@ def flow_other_steps(run: Run) -> None:
     else:
         report.not_run.append("A status of error: there is no receiver known not to answer with --owner")
     report.not_run.append(
-        "An inbox message with status error: it needs a transfer to fail, or copies that differ, which only a race gives"
+        "An inbox message with status error: it needs a transfer to fail, or copies that differ, which needs a race"
     )
 
 
