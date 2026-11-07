@@ -24,7 +24,7 @@ from conftest import PEER, auth
 from sqlalchemy import delete, inspect, text, update
 from test_retention import age, purge
 
-from app.db import Conversation, InboxMessage, OutboxMessage, now
+from app.db import Conversation, InboxMessage, OutboxMessage, mark_replied, now
 
 OLD = now() - timedelta(days=31)
 
@@ -157,6 +157,29 @@ def test_another_participant_cannot_mark_a_request(harness):
     harness.notify("intruder", sender=other, in_reply_to=request)
     harness.settle()
     assert stored(harness, OutboxMessage, request) is None
+
+
+def test_a_matching_conversation_with_another_pair_marks_nothing(harness):
+    """The pair condition on its own: same message id and conversation, but not the two participants of the row."""
+    me = harness.services.settings.participant_id
+    other = "urn:test:other-mb"
+    sent = sent_request(harness)
+    received = received_request(harness)
+
+    def mark(message_id: str, between: tuple[str, str]) -> None:
+        async def run():
+            async with harness.services.db.session() as session:
+                await mark_replied(session, message_id, "c1", between)
+                await session.commit()
+
+        harness.run(run)
+
+    for message_id, model in ((sent, OutboxMessage), (received, InboxMessage)):
+        for between in ((other, PEER), (me, other), (other, me), (PEER, PEER)):
+            mark(message_id, between)
+            assert stored(harness, model, message_id) is None, (model.__name__, between)
+        mark(message_id, (PEER, me))
+        assert stored(harness, model, message_id) is not None, model.__name__
 
 
 def test_concurrent_replies_store_one_time(harness):
