@@ -11,6 +11,7 @@
 - [x] 2.1 Register a hosted participant left without the flag as reachable, and an external one as not; verify with tests, including a repeated registration without the flag
 - [x] 2.2 Register as not reachable where a peer address is missing, with `warnings` in the answer and in each `POST /api/demo` record, and none on reads; verify with tests for each missing setting, explicit `true`, the default and the demo
 - [x] 2.3 Start the UI form's reachability box ticked; verify with a browser test that the request carries `true`, and `false` once unticked
+- [ ] 2.4 Show the `warnings` of registering, "Make reachable" and the demo participants on the Participants screen, as text only; verify with browser tests where the answer has a warning, has none, or has one that isn't text
 
 ## 3. IFRIC reader
 

@@ -59,6 +59,8 @@ Alternatives:
 
 The registration form's "Reachable" box starts ticked, so the UI registers what the API does by default. The form still sends the value, so an administrator can untick it.
 
+The screen also shows the `warnings` of an answer to registering, to "Make reachable" and to creating the demo participants, each with its participant's id, so an administrator sees when a participant couldn't be made reachable. This was added after approval and approved by the maintainer. Warnings are shown as text only: anything that isn't text is left out.
+
 ### The IFRIC reader's client id
 
 `IFRIC_READER_CLIENT_ID` unset or empty means `dataspace-ifric-reader`, the client `keycloak.md` names. Empty means the default because the chart passes an empty string from the Secret when it isn't set. IFRIC now counts as configured with `IFRIC_BACKEND_URL` and `IFRIC_READER_CLIENT_SECRET`, and nothing is called without them.
