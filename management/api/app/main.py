@@ -60,7 +60,9 @@ class ParticipantRequest(BaseModel):
     @classmethod
     def id_is_safe(cls, value: str) -> str:
         if not roles.id_is_safe(value):
-            raise ValueError("participant_id must be 1 to 200 characters, with no whitespace or control characters")
+            raise ValueError(
+                "participant_id must be up to 200 ASCII letters, digits, '.', '_', ':' or '-', from a letter or digit"
+            )
         return value
 
     @field_validator("participant_type")
@@ -111,7 +113,7 @@ def build_services(settings: Settings, http: httpx.AsyncClient, kubernetes: Kube
         http=http,
         tokens=AdminTokens(settings.issuer, http),
         registry=registry,
-        adapters=Adapters(http, settings.adapter_internal_key),
+        adapters=Adapters(http, settings.adapter_internal_key, settings.participants_namespace),
         databases=databases,
         provisioner=Provisioner(settings, databases, kubernetes, registry, Buckets(settings)),
     )
@@ -153,7 +155,7 @@ async def admin_token(
 
 
 async def participant_or_404(services: Services, participant_id: str) -> dict:
-    record = await services.registry.get(participant_id)
+    record = await services.registry.get(participant_id) if roles.id_is_safe(participant_id) else None
     if record is None:
         raise HTTPException(status_code=404, detail="Participant not found")
     return record
@@ -206,7 +208,7 @@ async def list_participants(services: Services = Depends(services_of)) -> list[d
 
 @app.get("/api/participants/compatible/{participant_id:path}")
 async def compatible_participants(participant_id: str, services: Services = Depends(services_of)) -> list[dict]:
-    found = await services.registry.compatible(participant_id)
+    found = await services.registry.compatible(participant_id) if roles.id_is_safe(participant_id) else None
     if found is None:
         raise HTTPException(status_code=404, detail="Participant not found")
     return found
@@ -268,6 +270,8 @@ async def read_participant(participant_id: str, services: Services = Depends(ser
 async def delete_participant(
     participant_id: str, services: Services = Depends(services_of), token: str = Depends(admin_token)
 ) -> Response:
+    if not roles.id_is_safe(participant_id):
+        raise HTTPException(status_code=404, detail="Participant not found")
     await services.provisioner.remove(participant_id, services.keycloak(token))
     return Response(status_code=204)
 
@@ -301,7 +305,7 @@ async def read_policy(
 @app.get("/{path:path}", include_in_schema=False)
 async def user_interface(path: str, services: Services = Depends(services_of)) -> FileResponse:
     """The built UI. A path it doesn't have gets its page, as the page has the screens. Declared last."""
-    if path == "api" or path.startswith("api/"):
+    if path == "api" or path.startswith("api/") or "\x00" in path:
         raise HTTPException(status_code=404, detail="Not found")
     root = pathlib.Path(services.settings.ui_dir).resolve()
     wanted = (root / path).resolve()

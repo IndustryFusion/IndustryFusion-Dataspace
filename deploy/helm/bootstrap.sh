@@ -76,6 +76,8 @@ down() {
     -l app.kubernetes.io/managed-by=dataspace-management --ignore-not-found --wait=true >/dev/null 2>&1 || true
   kubectl delete namespace "$PARTICIPANTS_NAMESPACE" "$SERVICES_NAMESPACE" --ignore-not-found --wait=true
   echo "The dataspace is removed from this cluster."
+  echo "What stays, as it is outside these namespaces: the registry database with its entries, participants' databases,"
+  echo "buckets and Keycloak clients, the realm, and PostgreSQL, S3 storage and Keycloak themselves."
 }
 
 case "${1:-}" in

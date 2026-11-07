@@ -62,6 +62,13 @@ class FakeKeycloak:
         self.refuse_admin = False
         self.up = True
         self.token_seconds = 300
+        # How far its clock is ahead, so that a test can have a token really expire.
+        self.seconds_ahead = 0
+
+    def _token_is_live(self, request: httpx.Request) -> bool:
+        token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        expires = jwt.decode(token, options={"verify_signature": False}).get("exp", 0)
+        return expires > time.time() + self.seconds_ahead
 
     def add_foreign_client(self, client_id: str) -> None:
         self.clients["foreign"] = {"id": "foreign", "clientId": client_id, "attributes": {}, "protocolMappers": []}
@@ -79,12 +86,15 @@ class FakeKeycloak:
         if path == "/auth/realms/dataspace/protocol/openid-connect/token":
             form = parse_qs(request.content.decode())
             if form.get("client_secret") == ["right"]:
-                answer = {"access_token": make_token(), "expires_in": self.token_seconds, "token_type": "Bearer"}
+                token = make_token(expires_in=300 + self.seconds_ahead)
+                answer = {"access_token": token, "expires_in": self.token_seconds, "token_type": "Bearer"}
                 return json_response(200, answer)
             return json_response(401, {"error": "unauthorized_client"})
         if path == "/auth/realms/dataspace":
             return json_response(200, {"realm": "dataspace"})
         self.seen_tokens.append(request.headers.get("Authorization", ""))
+        if not self._token_is_live(request):
+            return json_response(401, {"error": "token expired"})
         if self.refuse_admin:
             return json_response(403, {"error": "forbidden"})
         if self.fail and self.fail.search(f"{request.method} {path}"):
@@ -239,6 +249,8 @@ class FakeRegistry:
             others = (r for r in self.records.values() if r["participant_type"] != me["participant_type"])
             return json_response(200, list(others))
         participant_id = path.removeprefix("/participants/")
+        if request.method == "DELETE" and getattr(self, "delete_status", None):
+            return json_response(self.delete_status, {})
         if request.method == "DELETE":
             return json_response(204) if self.records.pop(participant_id, None) else json_response(404, {})
         found = self.records.get(participant_id)
@@ -326,6 +338,7 @@ class World:
             s3_access_key="s3-access",
             s3_secret_key="hidden-s3-value",
             adapter_internal_key="the-internal-key",
+            management_client_secret="right",
             gateway_peer_url="http://gateway.test:8080",
             gateway_url="http://gateway.test:8080",
             dsp_gateway_url="http://dsp.test:8085",

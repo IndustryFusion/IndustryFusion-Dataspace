@@ -81,6 +81,7 @@ app.kubernetes.io/part-of: dataspace
 {{- $resources := .Values.participants.resources -}}
 {{ include "dataspace.postgresEnv" . }}
 {{ include "dataspace.keycloakEnv" . }}
+{{ include "dataspace.fromSecret" (dict "name" "MANAGEMENT_CLIENT_SECRET" "key" "admin-client-secret") }}
 - { name: KEYCLOAK_HEALTH_URL, value: {{ .Values.dependencies.keycloak.healthUrl | quote }} }
 - { name: SEAWEEDFS_ENDPOINT, value: {{ .Values.dependencies.s3.endpoint | quote }} }
 {{ include "dataspace.fromSecret" (dict "name" "SEAWEEDFS_ACCESS_KEY" "key" "s3-access-key") }}
@@ -88,7 +89,7 @@ app.kubernetes.io/part-of: dataspace
 {{ include "dataspace.fromSecret" (dict "name" "ADAPTER_INTERNAL_KEY" "key" "adapter-internal-key") }}
 - { name: REGISTRY_URL, value: "http://registry.{{ $services }}:19000" }
 - { name: GATEWAY_URL, value: "http://gateway.{{ $services }}:8080" }
-- { name: GATEWAY_PEER_URL, value: "http://gateway.{{ $services }}:8080" }
+- { name: GATEWAY_PEER_URL, value: {{ .Values.participants.gatewayPeerUrl | default (printf "http://gateway.%s:8080" $services) | quote }} }
 - { name: DSP_GATEWAY_URL, value: "http://dsp-gateway.{{ $services }}:8085" }
 - { name: PARTICIPANTS_NAMESPACE, value: {{ .Values.namespaces.participants | quote }} }
 - { name: MAIN_REGISTRY, value: {{ .Values.images.registry | quote }} }

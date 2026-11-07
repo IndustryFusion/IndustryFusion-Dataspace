@@ -311,3 +311,20 @@ def test_unknown_api_paths_are_not_given_the_page(world, tmp_path, monkeypatch):
 def test_without_a_built_ui(world):
     answer = world.client.get("/")
     assert answer.status_code == 404
+
+
+def test_the_key_never_goes_to_an_address_the_registry_holds(world):
+    world.registry.records["urn:evil"] = {
+        "participant_id": "urn:evil", "participant_type": "x", "hosted": True,
+        "adapter_url": "http://attacker.example:9", "dsp_url": None, "externally_reachable": False,
+        "peer_notify_url": None,
+    }  # fmt: skip
+    world.client.get("/api/participants/urn:evil/capabilities")
+    assert world.adapters.calls
+    assert not [call for call in world.adapters.calls if "attacker.example" in call[1]]
+    derived = f"adapter-{manifests.slug('urn:evil')}.dataspace-participants"
+    assert all(derived in call[1] for call in world.adapters.calls)
+
+
+def test_a_nul_in_a_path_is_not_found(world):
+    assert world.client.get("/%00").status_code == 404

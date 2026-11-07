@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-"""A participant's objects in Keycloak, reached with the calling administrator's token."""
+"""A participant's objects in Keycloak, reached with the calling administrator's token, or the service's own."""
 
 from urllib.parse import quote
 
@@ -62,6 +62,9 @@ class KeycloakAdmin:
     def __init__(self, http: httpx.AsyncClient, base_url: str, realm: str, token: str) -> None:
         self.http = http
         self.base = f"{base_url}/admin/realms/{realm}"
+        self.use_token(token)
+
+    def use_token(self, token: str) -> None:
         self.headers = {"Authorization": f"Bearer {token}"}
 
     async def _call(self, method: str, path: str, body: object = None, allow: tuple[int, ...] = ()) -> httpx.Response:

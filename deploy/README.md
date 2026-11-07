@@ -69,7 +69,17 @@ A registration waits for the participant's pods, so it can take a few minutes.
 
 A body over the limit is refused by the Ingress with `413`, with the Ingress's own body. A smaller request over `MAX_JSON_BYTES` is refused by the gateway, with the contract's error.
 
-Changing a value in the secrets file updates the Secret, but pods read it when they start: `kubectl -n dataspace rollout restart deploy/<name>`. Run one replica of management, as [management-api.md](../management-api.md) describes.
+Run one replica of management, as [management-api.md](../management-api.md) describes.
+
+## Changing a secret
+
+The services read the secrets file's values when they start, and each participant's pods read a copy from their own Secret. To change a value:
+
+1. Change it in the secrets file, and run `helmfile -e <name> sync`.
+2. Restart the services that use it: `kubectl -n dataspace rollout restart deploy/<name>`, for `registry`, `gateway` and `management`.
+3. Register each hosted participant again, with `POST /api/participants` and the same fields. Its Secret takes the new value, and its pods restart. A participant whose Secret doesn't change isn't restarted. Until this is done, management can't reach an adapter it hasn't reached with the new key: it answers `502` saying the adapter refused the internal key.
+
+To change the PostgreSQL password or the S3 keys, change them in those services first.
 
 ## Uninstall
 
@@ -79,4 +89,4 @@ To remove participants' databases, buckets and Keycloak clients too, delete each
 DATASPACE_ENVIRONMENT=<name> ./bootstrap.sh down
 ```
 
-This removes the releases, every participant object, and the two namespaces. The dependencies and the realm stay.
+This removes the releases, every participant object, and the two namespaces. The dependencies and the realm stay, and so does the `registry` database with its entries, so a later install finds those participants registered, with no pods. To start clean, delete participants first, and then drop that database.

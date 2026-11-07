@@ -63,6 +63,8 @@ Alternative: a Helm pre-delete hook that calls the API. It would need an admin c
 
 The acceptance checks run on the local cluster with `deploy/helm/values/environments/local.yaml`, using ingress-nginx and the local stand-ins for the dependencies. This environment isn't a real cloud: it has no real domain, certificate or load balancer.
 
+**A changed Secret reaches participants by registering them again.** A participant's Secret holds a copy of what the secrets file gives it, and its pods restart when the content changes. A repeat with no change restarts nothing. So rotating a value means changing the file, syncing, and registering each participant again, which `deploy/README.md` sets out. Alternative: a controller that watches Secrets, which is a new component.
+
 ## Risks
 
 - The chart's cert-manager and TLS settings render, and aren't run against a certificate authority here.

@@ -34,9 +34,14 @@ from app.keycloak import KeycloakAdmin
 from app.kubernetes import Kubernetes
 from app.registry import Registry
 from app.storage import Buckets
+from app.tokens import fetch_admin_token
 
 log = logging.getLogger("management.provisioning")
 
+# What an undo may add to a registration's deadline, and how much of that may go on waiting for pods to go. Whatever
+# sits in front of this service allows for the deadline and a little more. See deploy/README.md.
+UNDO_SECONDS = 50
+UNDO_PODS_SECONDS = 30
 
 
 @dataclass
@@ -60,10 +65,13 @@ class Undo:
         self.steps.append((what, action))
 
     async def run(self) -> list[str]:
+        """What couldn't be undone, including what there was no time left for."""
         failed = []
+        deadline = asyncio.get_running_loop().time() + UNDO_SECONDS
         for what, action in reversed(self.steps):
             try:
-                await action()
+                async with asyncio.timeout_at(deadline):
+                    await action()
             except Exception:
                 log.exception("Could not undo: %s", what)
                 failed.append(what)
@@ -111,7 +119,10 @@ class Provisioner:
             adapter_url, dsp_url = manifests.hosted_addresses(
                 request.participant_id, self.settings.participants_namespace
             )
-            reachable = request.externally_reachable and self.settings.gateway_peer_url
+            if request.externally_reachable and not self.settings.gateway_peer_url:
+                detail = "externally_reachable needs GATEWAY_PEER_URL on this service"
+                raise HTTPException(status_code=422, detail=detail)
+            reachable = request.externally_reachable
             notify = manifests.peer_route(self.settings.gateway_peer_url, request.participant_id) if reachable else None
         else:
             adapter_url, dsp_url, notify = request.adapter_url, request.dsp_url, request.peer_notify_url
@@ -156,7 +167,7 @@ class Provisioner:
             key = token_source.token_hex(24)
             # An adapter that started may have made its bucket.
             undo.add("bucket", lambda: self.buckets.remove(manifests.bucket_name(participant_id)))
-            undo.add("pods", lambda: self._wait_gone(participant_id))
+            undo.add("pods", lambda: self._wait_gone(participant_id, UNDO_PODS_SECONDS))
         else:
             key = base64.b64decode(existing_secret["data"]["edc-api-key"]).decode()
         bare_type = roles.bare_name(request.participant_type)
@@ -170,17 +181,33 @@ class Provisioner:
         for name in (manifests.connector_name(participant_id), manifests.adapter_name(participant_id)):
             await self.kubernetes.wait_available(name, self.settings.ready_seconds)
 
-    async def _wait_gone(self, participant_id: str) -> None:
+    async def _wait_gone(self, participant_id: str, most_seconds: float | None = None) -> None:
         await self.kubernetes.wait_gone(
             [manifests.adapter_name(participant_id), manifests.connector_name(participant_id)],
             manifests.selector_of(participant_id),
-            self.settings.ready_seconds,
+            min(self.settings.ready_seconds, most_seconds or self.settings.ready_seconds),
         )
+
+    async def _use_own_token(self, keycloak: KeycloakAdmin) -> None:
+        """The caller's token can have expired during a wait. Without a credential of its own, it is all there is."""
+        if not self.settings.management_client_secret:
+            return
+        try:
+            answer = await fetch_admin_token(
+                keycloak.http,
+                self.settings.issuer,
+                self.settings.management_client_id,
+                self.settings.management_client_secret,
+            )
+            keycloak.use_token(answer["access_token"])
+        except (HTTPException, KeyError, TypeError) as error:
+            log.warning("Could not get this service's own token: %s", type(error).__name__)
 
     async def register(self, request: Registration, keycloak: KeycloakAdmin) -> dict:
         participant_id = request.participant_id
         async with self._one_at_a_time(participant_id):
             record = self._record(request)
+            deadline = asyncio.get_running_loop().time() + self.settings.ready_seconds
             # Before anything is changed: is this token allowed, and is the client free to use?
             if await keycloak.client_exists_unowned(participant_id):
                 raise HTTPException(status_code=409, detail="A client with this id exists, and isn't a participant's")
@@ -195,14 +222,16 @@ class Provisioner:
 
             undo = Undo()
             try:
-                if request.hosted:
-                    await self._databases_step(participant_id, undo)
-                client_secret = await self._keycloak_step(participant_id, keycloak, undo)
-                if request.hosted:
-                    await self._kubernetes_step(request, client_secret, existing_secret, undo)
-                saved = await self.registry.save(record)
+                async with asyncio.timeout_at(deadline):
+                    if request.hosted:
+                        await self._databases_step(participant_id, undo)
+                    client_secret = await self._keycloak_step(participant_id, keycloak, undo)
+                    if request.hosted:
+                        await self._kubernetes_step(request, client_secret, existing_secret, undo)
+                    saved = await self.registry.save(record)
             except Exception as error:
                 status, detail = _answer_for(error)
+                await self._use_own_token(keycloak)
                 remaining = await undo.run()
                 if remaining:
                     detail = f"{detail}. Some of it could not be undone, so DELETE it: {', '.join(remaining)}"
@@ -232,6 +261,7 @@ class Provisioner:
                     await self._remove_hosted_parts(participant_id, step)
                 except HTTPException:
                     failures.append("Kubernetes objects")
+            await self._use_own_token(keycloak)
             await step("client", lambda: keycloak.delete_owned_client(participant_id))
             await step("realm role", lambda: keycloak.delete_role(participant_id))
 
