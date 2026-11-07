@@ -8,7 +8,8 @@ A fresh installation can't create its demo participants without extra settings. 
 
 ## What Changes
 
-- `DEMO_PARTICIPANTS` has a default: a demo factory owner, a demo machine builder and a second demo machine builder. Unset or empty means that default, and `[]` means none.
+- `DEMO_PARTICIPANTS` has a default: the IFRIC company URNs of the demo factory owner, the demo machine builder and a second demo machine builder. Unset or empty means that default, and `[]` means none.
+- `keycloak.md`, `architecture.md` and the IFRIC spec say that a participant's id is its company's IFRIC URN, its `company_ifric_id`, correcting the statement that other ids must never equal one.
 - `DEMO_PARTICIPANTS` also accepts a JSON list of participants, besides `<id>=<type>,...`. A value that can't be used stops the service at start, with a message naming the setting and the problem.
 - A hosted participant registered without `externally_reachable` is registered as reachable.
 - Where `GATEWAY_PEER_URL` or `DSP_GATEWAY_PEER_URL` isn't set, a hosted participant that asks for reachability, or gets it by default, is registered as not reachable, and the answer says so and why. It is no longer refused.
@@ -26,7 +27,7 @@ None.
 
 - `management-api`: demo participants, the reachability default, and registration where the peer addresses are missing.
 - `external-participants`: what a hosted participant registered without the flag announces, and registration where the peer addresses are missing.
-- `ifric-company-details`: when IFRIC counts as configured.
+- `ifric-company-details`: when IFRIC counts as configured, and the documented identifier rule.
 - `management-ui`: the registration form's starting value.
 
 ## Out of Scope
@@ -35,12 +36,14 @@ None.
 - Making existing participants reachable. A participant changes only when it is registered again.
 - Migrating data, and keeping a Helm upgrade from an earlier release unchanged.
 - Exposing the gateway or DSP gateway outside the cluster. That stays a deployment choice, through the existing Ingress settings.
-- Company details for the demo participants. Their ids are not IFRIC company ids.
+- Checking at registration that a participant id is a `company_ifric_id`.
 
 ## Impact
 
 - `manifest.md`: none affected.
 - `architecture.md`: "Adding a Participant" and "Request Flow — External participant ↔ hosted participant", where a hosted participant is now reachable unless registered otherwise.
 - `management-api.md`: `POST /api/participants`, `POST /api/demo` and "Configuration".
-- `keycloak.md`: the IFRIC reader's client id no longer has to be given.
+- `keycloak.md`: the IFRIC reader's client id no longer has to be given, and "Participant identifiers" states the rule that a participant's id is its company's `company_ifric_id`.
+- `architecture.md`, "Adding a Participant": the same rule.
+- `ifric-company-details`: the documented identifier rule.
 - `deploy/README.md`, `deploy/local/services.yaml` and the Helm values for the local environment: the demo default.

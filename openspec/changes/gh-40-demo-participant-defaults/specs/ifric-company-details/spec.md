@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The IFRIC reader's client id has a default.
+The IFRIC reader's client id has a default, and the documents state that a participant's id is its company's `company_ifric_id`.
 
 ## MODIFIED Requirements
 
@@ -29,3 +29,15 @@ If IFRIC is unreachable, refuses or is not configured, the fields SHALL be left 
 #### Scenario: An answer that isn't a list of companies
 - **WHEN** IFRIC answers with something else, or with entries lacking an id
 - **THEN** reads return `200`, with the details of whatever entries were usable
+
+### Requirement: Identifiers and the shared realm are documented
+
+`keycloak.md` and `architecture.md` SHALL say that a participant's `participant_id` is its company's `company_ifric_id`, with no mapping table, because the IFRIC registry's access control matches participant ids to `company_ifric_id`. `keycloak.md` SHALL describe the setup of the shared realm.
+
+#### Scenario: Reading the documents
+- **WHEN** an administrator sets up a shared realm from `keycloak.md`
+- **THEN** it says which client to create, how to give the service its credentials, and that each participant is registered with its company's `company_ifric_id` as `participant_id`
+
+#### Scenario: No statement of the opposite
+- **WHEN** the documents are read
+- **THEN** none says that a participant id must differ from a `company_ifric_id`
