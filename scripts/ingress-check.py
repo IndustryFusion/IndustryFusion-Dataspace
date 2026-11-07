@@ -39,10 +39,13 @@ OWNER, BUILDER = "urn:ingress-check:factory-owner", "urn:ingress-check:machine-b
 ADMIN_CLIENT = "dataspace-admin-cli"
 
 
-def curl(*args: str) -> tuple[int, str]:
-    """Run curl and return the status, and the body it wrote to a file if any is asked for."""
+def curl(*args: str, stdin: str | None = None) -> tuple[int, str]:
+    """Run curl and return the status, and what it wrote to its output."""
     answer = subprocess.run(
-        ["curl", "-sS", "--max-time", "1800", "-w", "\n%{http_code}", *args], capture_output=True, text=True
+        ["curl", "-sS", "--max-time", "1800", "-w", "\n%{http_code}", *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
     )
     if answer.returncode:
         raise RuntimeError(f"curl failed: {answer.stderr}")
@@ -62,9 +65,12 @@ class Through:
 
     def json(self, method: str, path: str, body: object = None) -> tuple[int, object]:
         args = ["-X", method, *self.headers()]
+        content = None
         if body is not None:
-            args += ["-H", "Content-Type: application/json", "--data-binary", json.dumps(body)]
-        status, text = curl(*args, f"{self.ingress}{path}")
+            # On standard input, as a large body doesn't fit in an argument.
+            args += ["-H", "Content-Type: application/json", "-H", "Expect:", "--data-binary", "@-"]
+            content = json.dumps(body)
+        status, text = curl(*args, f"{self.ingress}{path}", stdin=content)
         try:
             return status, json.loads(text) if text else None
         except ValueError:
