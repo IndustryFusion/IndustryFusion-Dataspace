@@ -149,8 +149,9 @@ it owns none of its own.
 Every one of these is a **separate database** on the same shared Postgres
 cluster (`acid-cluster.iff`) — not a shared schema, and each participant has
 its own PostgreSQL user, which owns its two databases and can't connect to
-anyone else's. Each also has its own S3 identity, limited to its own bucket, if
-the storage's identities can be managed: see `deploy/README.md`.
+anyone else's. Each also has its own S3 identity, for reading, writing and listing
+its own bucket only, if the storage's identities can be managed. That doesn't stop
+a copy out of another's bucket: see `deploy/README.md`.
 
 ### What is and is not publicly reachable
 
@@ -329,7 +330,7 @@ Eclipse Dataspace Components 0.9.0 — one instance per participant. Handles the
 | DSP endpoint (`:8082`) | Protocol endpoint — used only by other EDC connectors |
 | Management API (`:8081`) | Used only by the local adapter |
 
-A connector proves who it is on the DSP layer with a token from its participant's own Keycloak client, and checks the one it receives: signature, issuer, expiry, a `participant_id` claim and that participant's role. It compares the result with the participant a negotiation names, so a connector claiming to be another participant is refused. Connector policies still permit any authenticated participant. See [keycloak.md](keycloak.md).
+A connector proves who it is on the DSP layer with a token from its participant's own Keycloak client, and checks the one it receives: signature, issuer, expiry, a `participant_id` claim and that participant's role. An agreement has to come from the identity it names, and match the offer, which names the expected participant, so a real connector named as another participant's doesn't reach agreement. Connector policies still permit any authenticated participant. See [keycloak.md](keycloak.md).
 
 Hosted EDC connectors communicate with each other over DSP **inside the cluster**, and their DSP endpoints are never exposed directly. External participants reach a hosted connector only through the DSP gateway.
 

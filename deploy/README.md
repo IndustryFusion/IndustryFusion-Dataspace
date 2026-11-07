@@ -84,6 +84,8 @@ To separate them, the storage has to keep its identities in its own list, and ma
 - Set `dependencies.s3.iamUrl` to its IAM API's address.
 - Allow only management to reach the IAM port, and nothing to reach the filer's port but the storage itself. In the version used here, the IAM API didn't refuse a wrong signature, and the filer serves every identity's keys in plain text.
 
+**Even then, the separation isn't complete.** In the version used here, SeaweedFS 3.80, a copy is only checked against its destination. So with one participant's keys, a direct read, write or list of another's bucket is refused, and `CopyObject` or `UploadPartCopy` of an object it can name, into its own bucket, succeeds. Listing stays refused, so it has to know the key, which holds a message's id. No policy or setting closed this. `scripts/security-check.py` reports it as a known gap, and exits with 2. See "A known gap" in the design of `gh-20-security-hardening`, for the alternatives and the decision it waits on.
+
 **Don't set this on a storage started with `-s3.config`,** which includes the [DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack's. SeaweedFS uses its filer's list instead of its static one once that exists, so that stack's other identities would stop working, and the participants' would go at its next restart. Move that storage's identities to the filer's list first, or give the dataspace its own storage.
 
 A body over the limit is refused by the Ingress with `413`, with the Ingress's own body. A smaller request over `MAX_JSON_BYTES` is refused by the gateway, with the contract's error.

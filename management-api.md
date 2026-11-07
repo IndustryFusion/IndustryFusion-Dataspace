@@ -68,7 +68,7 @@ Returns the participant record with `client_id` and `client_secret`.
 
 1. Create its PostgreSQL user, and the adapter and connector databases, which that user owns and no other can connect to.
 2. Create the Keycloak role `participant:<id>`, a client-credentials client named after the participant, a `participant_id` claim mapper, and the role assignment.
-3. Create its bucket and an S3 identity limited to it, if `SEAWEEDFS_IAM_URL` is set. Otherwise it uses the configured identity, shared with every other participant, and its adapter creates the bucket. See [deploy/README.md](deploy/README.md).
+3. Create its bucket and an S3 identity for it, if `SEAWEEDFS_IAM_URL` is set. That identity can't directly read, write or list another's bucket, though it can copy from one: see [deploy/README.md](deploy/README.md). Otherwise it uses the configured identity, shared with every other participant, and its adapter creates the bucket. See [deploy/README.md](deploy/README.md).
 4. Create the Secret, ConfigMap, and connector and adapter Deployments and Services in `dataspace-participants`. The Secret holds what only this participant has: its database password, S3 keys, internal key and connector API key. They are generated once.
 5. Write the registry entry.
 

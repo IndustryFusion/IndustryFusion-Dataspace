@@ -17,7 +17,8 @@
 """Negative tests of what protects participants from each other, from real pods on the local environment.
 
 Registers three participants through the management API, and removes them. Each check says what was tried, and from
-where. It needs scripts/local-env.sh up and services. It exits with 0 only if everything was refused that should be.
+where. It needs scripts/local-env.sh up and services. It exits with 0 only if everything was refused that should be,
+with 1 if something failed, and with 2 if nothing failed but a known gap is still open, which isn't a pass.
 """
 
 import base64
@@ -35,12 +36,22 @@ OWNER, OTHER_OWNER, BUILDER = (f"urn:security:{TAG}:{name}" for name in ("owner"
 OUTSIDE = f"security-check-{TAG}"
 NS = lc.PARTICIPANTS
 failures = 0
+known_gaps: list[str] = []
 
 
 def result(what: str, passed: bool, detail: object = "") -> None:
     global failures
     failures += not passed
     print(f"{'PASS' if passed else 'FAIL'} {what}{f': {detail}' if detail and not passed else ''}")
+
+
+def known_gap(what: str, still_open: bool, detail: object = "") -> None:
+    """Something documented as not closed. While open it isn't a pass, and once closed the document is wrong."""
+    if still_open:
+        known_gaps.append(what)
+        print(f"KNOWN GAP {what}: {detail}")
+    else:
+        print(f"PASS {what}. It was a known gap, so correct design.md and deploy/README.md")
 
 
 def in_pod(namespace: str, deployment: str, code: str) -> str:
@@ -126,7 +137,8 @@ def check_network(probe: str) -> None:
         (connector_host(OWNER), 8081, "a connector's management port"),
         (connector_host(OWNER), 8083, "a connector's control port"),
         ("registry.dataspace", 19000, "the registry"),
-        ("seaweedfs.iff", 8111, "the storage's IAM API"), ("seaweedfs.iff", 8888, "the storage's filer"),
+        ("seaweedfs.iff", 8111, "the storage's IAM API"),
+        ("seaweedfs.iff", 8888, "the storage's filer"),
     ):
         result(f"Reaching {what}: closed", not port_open(OUTSIDE, probe, host, port))
     result("The public gateway stays open", port_open(OUTSIDE, probe, "gateway.dataspace", 8080))
@@ -213,6 +225,8 @@ def check_credentials() -> None:
     result("Another's bucket: get is refused", answers[5] == "refused", answers)
     result("A new bucket is refused", answers[6] == "refused", answers)
 
+    check_copy_from_another(mine, theirs, own_bucket, other_bucket)
+
     route = "/internal/capabilities"
     own = http_from(NS, adapter(OWNER), "GET", f"{adapter_url(OWNER)}{route}", {"X-Internal-Key": mine["internal-key"]})
     result("Its own internal key is taken", own[0] == 200, own)
@@ -220,6 +234,85 @@ def check_credentials() -> None:
         NS, adapter(OWNER), "GET", f"{adapter_url(BUILDER)}{route}", {"X-Internal-Key": mine["internal-key"]}
     )
     result("Its internal key is refused by another's adapter", other[0] == 401, other)
+
+
+def check_copy_from_another(mine: dict, theirs: dict, own_bucket: str, other_bucket: str) -> None:
+    """With one participant's keys, take an object out of another's bucket, without reading that bucket directly."""
+    code = f"""
+        import boto3, json
+        from botocore.config import Config
+
+        def client(access, secret):
+            return boto3.client("s3", endpoint_url="http://seaweedfs.iff:80", aws_access_key_id=access,
+                                aws_secret_access_key=secret, region_name="us-east-1",
+                                config=Config(s3={{"addressing_style": "path"}}, signature_version="s3v4",
+                                              retries={{"max_attempts": 1}}))
+
+        holder, taker = client({theirs["s3-access-key"]!r}, {theirs["s3-secret-key"]!r}), client(
+            {mine["s3-access-key"]!r}, {mine["s3-secret-key"]!r})
+        source = {{"Bucket": {other_bucket!r}, "Key": "security-check-copy"}}
+        holder.put_object(Body=b"the other participant's bytes", **source)
+
+        def attempt(action):
+            try:
+                return action()
+            except Exception as error:
+                return "refused: " + type(error).__name__
+
+        def by_copy():
+            taker.copy_object(Bucket={own_bucket!r}, Key="copied", CopySource=source)
+            return taker.get_object(Bucket={own_bucket!r}, Key="copied")["Body"].read().decode()
+
+        def by_part():
+            started = taker.create_multipart_upload(Bucket={own_bucket!r}, Key="copied-part")
+            part = taker.upload_part_copy(Bucket={own_bucket!r}, Key="copied-part", UploadId=started["UploadId"],
+                                           PartNumber=1, CopySource=source)
+            taker.complete_multipart_upload(
+                Bucket={own_bucket!r}, Key="copied-part", UploadId=started["UploadId"],
+                MultipartUpload={{"Parts": [{{"PartNumber": 1, "ETag": part["CopyPartResult"]["ETag"]}}]}})
+            return taker.get_object(Bucket={own_bucket!r}, Key="copied-part")["Body"].read().decode()
+
+        answers = {{
+            "direct": attempt(lambda: taker.get_object(**source)["Body"].read().decode()),
+            "copy": attempt(by_copy),
+            "part": attempt(by_part),
+        }}
+        taker.delete_object(Bucket={own_bucket!r}, Key="copied")
+        taker.delete_object(Bucket={own_bucket!r}, Key="copied-part")
+        holder.delete_object(**source)
+        print(json.dumps(answers))
+    """
+    answers = json.loads(in_pod(NS, adapter(OWNER), code))
+    bytes_wanted = "the other participant's bytes"
+    result("Another's object: a direct read is refused", answers["direct"].startswith("refused"), answers["direct"])
+    for name, what in (("copy", "CopyObject"), ("part", "UploadPartCopy")):
+        known_gap(
+            f"Another's object copied into its own bucket, with {what}, and read there",
+            answers[name] == bytes_wanted,
+            "the storage only checks a copy against its destination. See design.md and deploy/README.md",
+        )
+
+
+def connector_negotiations(participant: str, provider_dsp: str, provider_id: str) -> list[dict]:
+    """A participant's negotiations with this address and counterparty, from its connector's management API."""
+    held = credentials_of(participant)
+    code = f"""
+        import httpx, json
+        answer = httpx.post(
+            "http://{connector_host(participant)}:8081/management/v3/contractnegotiations/request",
+            headers={{"X-Api-Key": {held["edc-api-key"]!r}}},
+            json={{"@context": {{"@vocab": "https://w3id.org/edc/v0.0.1/ns/"}}, "@type": "QuerySpec", "limit": 1000}},
+            timeout=20,
+        )
+        answer.raise_for_status()
+        print(json.dumps(answer.json()))
+    """
+    found = json.loads(in_pod(NS, adapter(participant), code))
+    return [
+        {key: item.get(key) for key in ("state", "contractAgreementId", "errorDetail")}
+        for item in found
+        if item.get("counterPartyAddress") == provider_dsp and item.get("counterPartyId") == provider_id
+    ]
 
 
 def forged_token(keycloak_realm: str) -> str:
@@ -272,14 +365,30 @@ def check_connector_identity(admin_token: str, owner_secret: str, management: st
         {"Authorization": f"Bearer {tokens[OTHER_OWNER]}"},
     )
     asset = sent[1]["message_id"]
+    # The control: the same connectors and the same asset complete, so that a stall below can't be from anything else.
+    honest = None
+    deadline = time.monotonic() + 150
+    while time.monotonic() < deadline:
+        _, honest = lc.http(
+            "GET", f"{GATEWAY}/inbox/messages/{asset}", None, {"Authorization": f"Bearer {tokens[BUILDER]}"}
+        )
+        if isinstance(honest, dict) and honest.get("status") in ("received", "acked", "error"):
+            break
+        time.sleep(1)
+    result(
+        "The same asset, sent by its real owner, arrives",
+        isinstance(honest, dict) and honest.get("status") == "received",
+        honest,
+    )
     lying = f"lying-{TAG}"
+    provider_dsp = f"http://{connector_host(OTHER_OWNER)}:8082/api/v1/dsp"
     notice = {
         "message_id": lying,
         "conversation_id": f"conversation-{TAG}",
         "sender_participant": OWNER,
         "receiver_participant": BUILDER,
         "asset_id": asset,
-        "provider_dsp_url": f"http://{connector_host(OTHER_OWNER)}:8082/api/v1/dsp",
+        "provider_dsp_url": provider_dsp,
     }
     # The notification itself is honest about who sent it. What it names as the connector is not the sender's.
     answer = http_from(
@@ -307,6 +416,18 @@ def check_connector_identity(admin_token: str, owner_secret: str, management: st
     )
     print(f"     It says: {str(state.get('error_message'))[:160]}" if isinstance(state, dict) else "")
     result("Its content never arrives", isinstance(state, dict) and state.get("payload") is None, state)
+
+    # What stopped it: this connector answers as itself, so its agreement doesn't match the offer, which names the
+    # claimed participant, and the consumer refuses it. A stall for any other reason wouldn't show this.
+    named = connector_negotiations(BUILDER, provider_dsp, OWNER)
+    result("The consumer tried, naming the claimed participant", len(named) >= 1, named)
+    result(
+        "That negotiation never reached agreement",
+        bool(named) and all(item.get("state") != "FINALIZED" and not item.get("contractAgreementId") for item in named),
+        named,
+    )
+    log = lc.kubectl("-n", NS, "logs", f"deploy/connector-{lc.slug(BUILDER)}")
+    result("The consumer's connector refused the agreement it got", "Validation failed" in log, log[-500:])
 
 
 def check_public_reads(management: str, gateway_token: str) -> None:
@@ -398,8 +519,15 @@ def main() -> int:
                 removed = lc.http("DELETE", f"{management}/api/participants/{quoted}", None, admin)[0]
                 print(f"Removed {participant}: {removed}")
             lc.kubectl("delete", "namespace", OUTSIDE, "--ignore-not-found")
-    print(f"\n{failures} failed")
-    return 1 if failures else 0
+    print(f"\n{failures} failed, {len(known_gaps)} known gaps")
+    for what in known_gaps:
+        print(f"KNOWN GAP {what}")
+    if failures:
+        return 1
+    if known_gaps:
+        print("Not a pass: the known gaps above are open, and await a maintainer's decision")
+        return 2
+    return 0
 
 
 def _probe_manifest(image: str) -> str:
