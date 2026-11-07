@@ -80,7 +80,7 @@ Without `dependencies.s3.filerUrl`, **participants share the S3 identity in the 
 
 To separate them, the storage has to keep its identities in the filer's `/etc/iam/identity.json`, and management has to be able to write that file:
 
-- Run SeaweedFS **without** `-s3.config`, and write the first list to the filer, with the identity in the secrets file. `write_storage_identities` in `scripts/local-env.sh` shows how. Until it has a list, SeaweedFS accepts anyone.
+- Run SeaweedFS **without** `-s3.config`, with `-filer.saveToFilerLimit` larger than the list, such as `1048576`, as its S3 gateway only takes up a list the filer holds inline. Write the first list to the filer, with the identity in the secrets file. `write_storage_identities` in `scripts/local-env.sh` shows how. Until it has a list, SeaweedFS accepts anyone.
 - Set `dependencies.s3.filerUrl` to the filer's address.
 - Allow only management to reach the filer's port. It serves that file, with every identity's keys in plain text, to anyone who asks.
 - Keep any other user's identity in that list. Management keeps entries it didn't make, and it must be the only writer.

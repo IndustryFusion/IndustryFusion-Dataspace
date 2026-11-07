@@ -250,7 +250,8 @@ def check_connector_identity(admin_token: str, owner_secret: str, management: st
 
     def status(authorization: str | None) -> int:
         headers = {**kinds, **({"Authorization": authorization} if authorization else {})}
-        return http_from(NS, adapter(OWNER), "POST", target, headers, body)[0]
+        # The DSP gateway is what may reach this port, and it holds no credentials of its own.
+        return http_from("dataspace", "dsp-gateway", "POST", target, headers, body)[0]
 
     mock = json.dumps({"region": "eu", "audience": target, "clientId": OWNER})
     result("A real participant's token is taken", status(tokens[OWNER]) == 200, status(tokens[OWNER]))

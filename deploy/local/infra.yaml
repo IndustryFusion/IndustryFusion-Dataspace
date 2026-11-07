@@ -66,8 +66,9 @@ spec:
       containers:
         - name: seaweedfs
           image: chrislusf/seaweedfs:3.80
-          # No static list of identities: scripts/local-env.sh writes the filer's, which management keeps.
-          args: ["server", "-dir=/data", "-s3", "-s3.port=8333"]
+          # No static list of identities: scripts/local-env.sh writes the filer's, which management keeps. The S3
+          # gateway only takes up a change to the list if the filer holds it inline, so small files stay in the filer.
+          args: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-filer.saveToFilerLimit=1048576"]
           ports: [{ containerPort: 8333 }, { containerPort: 8888 }]
           volumeMounts:
             - { name: data, mountPath: /data }
