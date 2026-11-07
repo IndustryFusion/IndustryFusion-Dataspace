@@ -81,6 +81,7 @@ app.kubernetes.io/part-of: dataspace
 {{- $resources := .Values.participants.resources -}}
 {{ include "dataspace.postgresEnv" . }}
 {{ include "dataspace.keycloakEnv" . }}
+{{ include "dataspace.fromSecret" (dict "name" "MANAGEMENT_CLIENT_SECRET" "key" "admin-client-secret") }}
 - { name: KEYCLOAK_HEALTH_URL, value: {{ .Values.dependencies.keycloak.healthUrl | quote }} }
 - { name: SEAWEEDFS_ENDPOINT, value: {{ .Values.dependencies.s3.endpoint | quote }} }
 {{ include "dataspace.fromSecret" (dict "name" "SEAWEEDFS_ACCESS_KEY" "key" "s3-access-key") }}

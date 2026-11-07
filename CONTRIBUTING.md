@@ -171,7 +171,7 @@ Or use existing participants, with `--owner <id>:<secret>` and `--builder <id>:<
 
 External participants' flows run with `--local` once `scripts/external-demo.py up` has run. Against another deployment, give `--external-owner <adapter url>,<id>,<secret>` and `--external-builder` the same way. Without any, they are listed as not run.
 
-`--self-test` needs no deployment and runs in CI. It shows that each shape refuses a wrong answer. `--tamper 'GET /conversations/*:outcome'` removes a field from a route's real answers, and the run must then fail. A maintainer can run the suite in CI with the `Contract tests` workflow, from the Actions tab.
+`--self-test` needs no deployment and runs in CI. It shows that each shape refuses a wrong answer. `--tamper 'GET /conversations/*:outcome'` removes a field from a route's real answers, and the run must then fail. A change can also set a value, as in `:outcome="nonsense"`, or be `messages:flip` or `messages:swap`, and a rule that matches no route fails the run. `--only` limits a run to named sections, and `--max-json-bytes` and `--max-upload-bytes` give a deployment's own limits. A maintainer can run the suite in CI with the `Contract tests` workflow, from the Actions tab.
 
 ### Client and mock agent
 

@@ -173,3 +173,40 @@ test('shows company details when available', async ({ page }) => {
   for (const text of ['Acme Machines', 'manufacturer', 'Bengaluru', 'India']) await expect(row).toContainText(text);
   await expect(rowOf(page, 'urn:other')).toBeVisible();
 });
+
+test('leaving admin mode takes shown secrets away', async ({ page, request }) => {
+  await request.post('/test/pair');
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  await rowOf(page, 'urn:ui:fo').getByRole('button', { name: 'Show credentials' }).click();
+  await expect(page.getByRole('region', { name: 'Credentials' })).toBeVisible();
+  await page.getByRole('button', { name: 'Leave admin mode' }).click();
+  await expect(page.getByRole('region', { name: 'Credentials' })).toHaveCount(0);
+});
+
+test('a company field of an unexpected type does not blank the page', async ({ page, request }) => {
+  await request.post('/test/pair');
+  await page.route('**/api/participants', async (route) => {
+    const answer = await route.fetch();
+    const list = await answer.json();
+    list[0].company_name = { html: 'x' };
+    await route.fulfill({ response: answer, json: list });
+  });
+  await open(page, 'Participants');
+  await expect(page.getByRole('cell', { name: 'urn:ui:fo', exact: true })).toBeVisible();
+});
+
+test('an action error stays visible when the reload after it fails too', async ({ page, request }) => {
+  await request.post('/test/pair');
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  await page.route('**/api/participants/**', (route) =>
+    route.fulfill({ status: 409, json: { detail: 'The action failed like this' } }),
+  );
+  await page.route('**/api/participants', (route) =>
+    route.request().method() === 'GET' ? route.fulfill({ status: 503, json: { detail: 'The list failed' } }) : route.continue(),
+  );
+  page.on('dialog', (dialog) => dialog.accept());
+  await rowOf(page, 'urn:ui:fo').getByRole('button', { name: 'Delete' }).click();
+  await expect(page.getByRole('alert')).toContainText('The action failed like this');
+});

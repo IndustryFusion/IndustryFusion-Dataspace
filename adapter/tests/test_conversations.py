@@ -377,7 +377,8 @@ def test_detail_has_messages_in_both_directions(harness):
     sent, received = conversation["messages"]
     assert set(sent) == {
         "message_id", "direction", "performative", "capability", "in_reply_to", "outcome", "sender_participant",
-        "receiver_participant", "created_at", "applied", "status", "has_files", "replied_at", "payload",
+        "receiver_participant", "created_at", "applied", "status", "error_message", "has_files", "replied_at",
+        "payload",
     }  # fmt: skip
     assert sent["payload"] == {"question": 1}
     assert received["payload"] == {"reply": 2}

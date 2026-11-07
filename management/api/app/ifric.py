@@ -28,6 +28,10 @@ from app.config import Settings
 log = logging.getLogger("management.ifric")
 
 CALL_SECONDS = 5
+# However slowly the other side answers. A timeout per call only limits the wait between its pieces.
+FETCH_SECONDS = 10
+# How long a read waits on a fetch. After this it goes on with what is known, and the fetch finishes for later reads.
+READ_WAIT_SECONDS = 1
 SECONDS_AFTER_A_FAILURE = 30
 # A company's field, and the name it has on a participant's record.
 FIELDS = {
@@ -45,7 +49,7 @@ class CompanyDirectory:
         self.settings = settings
         self.http = http
         self.clock = clock
-        self.lock = asyncio.Lock()
+        self.fetching: asyncio.Task | None = None
         self.companies: dict[str, dict] = {}
         self.good_until = 0.0
 
@@ -77,26 +81,31 @@ class CompanyDirectory:
         found = {}
         for company in answer.json():
             if isinstance(company, dict) and isinstance(company.get("company_ifric_id"), str):
-                details = {name: company[source] for source, name in FIELDS.items() if company.get(source) is not None}
+                shown = FIELDS.items()
+                details = {name: company[source] for source, name in shown if isinstance(company.get(source), str)}
                 found[company["company_ifric_id"]] = details
         return found
+
+    async def _refresh(self) -> None:
+        cache_seconds = self.settings.ifric_lookup_cache_seconds
+        try:
+            async with asyncio.timeout(FETCH_SECONDS):
+                self.companies = await self._fetch()
+            self.good_until = self.clock() + cache_seconds
+        except (httpx.HTTPError, httpx.InvalidURL, TimeoutError, ValueError, KeyError, TypeError) as error:
+            # The error's type is enough: its text can hold addresses.
+            log.warning("Company details are unavailable: %s", type(error).__name__)
+            self.companies = {}
+            self.good_until = self.clock() + min(cache_seconds, SECONDS_AFTER_A_FAILURE)
 
     async def _lookup(self) -> dict[str, dict]:
         if not self.configured:
             return {}
-        async with self.lock:
-            if self.clock() < self.good_until:
-                return self.companies
-            cache_seconds = self.settings.ifric_lookup_cache_seconds
-            try:
-                self.companies = await self._fetch()
-                self.good_until = self.clock() + cache_seconds
-            except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
-                # The error's type is enough: its text can hold addresses.
-                log.warning("Company details are unavailable: %s", type(error).__name__)
-                self.companies = {}
-                self.good_until = self.clock() + min(cache_seconds, SECONDS_AFTER_A_FAILURE)
-            return self.companies
+        if self.clock() >= self.good_until and (self.fetching is None or self.fetching.done()):
+            self.fetching = asyncio.create_task(self._refresh())
+        if self.fetching is not None and not self.fetching.done():
+            await asyncio.wait({self.fetching}, timeout=READ_WAIT_SECONDS)
+        return self.companies
 
     async def add_details(self, records: list[dict]) -> list[dict]:
         companies = await self._lookup()

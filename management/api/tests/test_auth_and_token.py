@@ -96,3 +96,33 @@ def test_the_callers_token_goes_to_keycloak(world):
     assert world.register().status_code == 200
     assert world.keycloak.seen_tokens
     assert set(world.keycloak.seen_tokens) == {world.admin["Authorization"]}
+
+
+def test_a_token_with_no_expiry_gets_401(world):
+    import jwt
+    from conftest import ISSUER, SIGNING_KEY
+
+    claims = {"iss": ISSUER, "realm_access": {"roles": ["dataspace-admin"]}}
+    token = jwt.encode(claims, SIGNING_KEY, algorithm="RS256", headers={"kid": "k1"})
+    assert world.client.post("/api/demo", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+
+
+def test_a_valid_token_under_another_scheme_gets_401(world):
+    answer = world.client.post("/api/demo", headers={"Authorization": f"Basic {make_token()}"})
+    assert answer.status_code == 401
+
+
+def test_a_stream_of_unknown_keys_fetches_the_signing_keys_only_once(world):
+    fetches = []
+    real = world.keycloak.handle
+
+    def counting(request):
+        if request.url.path.endswith("/certs"):
+            fetches.append(1)
+        return real(request)
+
+    world.keycloak.handle = counting
+    for _ in range(5):
+        header = {"Authorization": f"Bearer {make_token(kid='unknown')}"}
+        assert world.client.post("/api/demo", headers=header).status_code == 401
+    assert len(fetches) == 1

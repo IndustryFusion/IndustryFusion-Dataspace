@@ -58,5 +58,10 @@ class Registry:
         return answer.json()
 
     async def delete(self, participant_id: str) -> bool:
+        """Return whether there was such an entry. Anything else the registry answers means it is still there."""
         answer = await self._call("DELETE", f"/participants/{self._path(participant_id)}")
-        return answer.status_code != 404
+        if answer.status_code == 404:
+            return False
+        if answer.status_code >= 300:
+            raise HTTPException(status_code=502, detail=f"The registry answered {answer.status_code} to a removal")
+        return True

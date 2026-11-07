@@ -29,6 +29,7 @@ stringData:
   adapter-internal-key: {{ required "secrets.adapterInternalKey is required" .Values.secrets.adapterInternalKey | quote }}
   ifric-reader-client-id: {{ .Values.secrets.ifricReaderClientId | default "" | quote }}
   ifric-reader-client-secret: {{ .Values.secrets.ifricReaderClientSecret | default "" | quote }}
+  admin-client-secret: {{ required "secrets.adminClientSecret is required" .Values.secrets.adminClientSecret | quote }}
 ---
 apiVersion: v1
 kind: ServiceAccount
