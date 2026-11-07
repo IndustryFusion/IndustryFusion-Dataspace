@@ -55,3 +55,11 @@ The Ingress must allow the same body size. `gateway-api.md` says so for #15.
 
 - [The transfer budget, `TRANSFER_BUDGET_SECONDS`, is 120 seconds by default] → A slow link can use it up on a large file, and the message then shows `error`. The end-to-end check measures a file at the limit, and the setting stays configurable.
 - [An unauthenticated in-cluster caller can still push to `/internal/inbox-receive/{id}`] → Known limit, tracked in #20. The size limit applies there too, and the message must already exist.
+
+## Decisions after review
+
+**JSON is stored compactly, and the size is checked.** The body limit can't by itself bound what is stored, as a number such as `1e5` is written back as `100000.0`. So the sender checks the stored size against `MAX_JSON_BYTES` and answers `413`, where it would otherwise tell the agent `notified` while the receiver refuses the content.
+
+**A `content_ref` asset stays limited to `MAX_JSON_BYTES` on arrival.** The push itself is streamed to storage, so a larger limit would be safe at that point. But such a message has no files, so its content can only be read by `GET /inbox/messages`, which reads it into memory for every listing, and `download` gives `400`. Restoring 1 GiB there would make one message able to exhaust the adapter on each list. Alternative: serve such content through `download`, which changes the published contract, and is left to a maintainer.
+
+**`authorization` is limited at the sender to 200 KiB.** It travels in the notification, which the receiver limits to 256 KiB, so a larger one would be accepted with `202` and then refused. Alternative: raise that route's limit to `MAX_JSON_BYTES`. Rejected, as it parses its body before checking the token.

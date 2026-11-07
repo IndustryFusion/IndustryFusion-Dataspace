@@ -111,6 +111,26 @@ Every adapter route other than the file routes SHALL refuse a body over its smal
 - **WHEN** a message under `MAX_JSON_BYTES` holds non-ASCII text
 - **THEN** it arrives at the receiver within the same limit
 
+### Requirement: JSON content is not lost on its way
+
+The sender SHALL store a JSON payload compactly, and SHALL refuse with `413` any message whose stored payload would exceed `MAX_JSON_BYTES`, or whose `authorization` wouldn't fit a notification, instead of accepting it and losing it later.
+
+#### Scenario: A compact body under the limit
+- **WHEN** a compact JSON body of up to `MAX_JSON_BYTES` is sent, with its numbers and strings as they were
+- **THEN** it is accepted, and arrives at the receiver with its content
+
+#### Scenario: A payload that grows when stored
+- **WHEN** a payload's numbers take more space when stored, as `1e5` does, and it would exceed `MAX_JSON_BYTES`
+- **THEN** the answer is `413`, and nothing is sent
+
+#### Scenario: A large authorization
+- **WHEN** an `authorization` is larger than a notification can carry, 200 KiB
+- **THEN** the answer is `413`, and nothing is sent
+
+#### Scenario: A larger content reference
+- **WHEN** a `content_ref` asset is larger than `MAX_JSON_BYTES`
+- **THEN** on arrival the message has status `error` with the reason, as an agent could only read it into memory
+
 ### Requirement: Memory for a form
 Reading a multipart form SHALL NOT hold its parts in memory beyond a small size each, and a form SHALL have a limited number of parts.
 
