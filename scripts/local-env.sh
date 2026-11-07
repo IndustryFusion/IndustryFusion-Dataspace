@@ -69,6 +69,7 @@ apply_secrets() {
 write_storage_identities() {
   # shellcheck disable=SC1091
   . "$LOCAL/credentials.env"
+  local answer
   for _ in $(seq 1 60); do
     kubectl -n iff exec deploy/seaweedfs -- wget -qO /dev/null http://127.0.0.1:9333/cluster/status && break
     sleep 1
@@ -76,7 +77,9 @@ write_storage_identities() {
   echo "s3.configure -user dataspace-management -access_key $S3_ACCESS_KEY -secret_key $S3_SECRET_KEY -actions Admin,Read,Write,List,Tagging -apply" |
     kubectl -n iff exec -i deploy/seaweedfs -- weed shell -master=127.0.0.1:9333 >/dev/null
   for _ in $(seq 1 60); do
-    kubectl -n iff exec deploy/seaweedfs -- wget -qO /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 403 && return
+    # Without a list, it answers anyone. With one, it refuses this unsigned call.
+    answer=$(kubectl -n iff exec deploy/seaweedfs -- wget -qO /dev/null http://127.0.0.1:8333/ 2>&1 || true)
+    case "$answer" in *403*) return ;; esac
     sleep 1
   done
   echo "Storage did not take up its first identity" >&2
