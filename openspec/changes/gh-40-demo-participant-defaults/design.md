@@ -12,17 +12,17 @@ Unset or empty, `DEMO_PARTICIPANTS` means:
 
 | `participant_id` | `participant_type` |
 |---|---|
-| `urn:demo:factory-owner` | `factory_owner` |
-| `urn:demo:machine-builder` | `machine_builder` |
-| `urn:demo:second-machine-builder` | `machine_builder` |
+| `urn:ifric:ifx-eur-com-own-42ced491-b35d-41f7-9949-fcbb5fa4dcd9` | `factory_owner` |
+| `urn:ifric:ifx-eur-com-nap-37eb511d-49c0-4700-ba17-dee8248f0fb5` | `machine_builder` |
+| `urn:ifric:ifx-eur-com-nap-2150a82e-ccbb-47d7-be5a-8059906bc253` | `machine_builder` |
 
-The first two are the ids the local environment already uses. The third lets a factory owner choose between two machine builders, so a pair isn't the only case the demo shows. `[]` means no demo participants, which is how an installation turns the demo off.
+These are the IFRIC company URNs of the three demo companies. **Maintainer decision:** a participant's id is the same as its company's IFRIC URN, its `company_ifric_id`, as the IFRIC registry's access control matches a token's `participant_id` against `company_ifric_id`. The demo follows that rule, so its participants are the demo companies in IFRIC, and show their company details where IFRIC is configured. The third participant lets a factory owner choose between two machine builders, so a pair isn't the only case the demo shows. `[]` means no demo participants, which is how an installation turns the demo off.
 
 Empty means the default, rather than none, because the chart passes the value through as an empty string when it isn't set. Making empty mean none would need a chart change, and would still leave a fresh Helm install with no demo.
 
 Alternatives:
 
-- **Real IFRIC company ids**, so the demo shows company details. These are records in a registry this project doesn't control, and `keycloak.md` says other participant ids must never equal a real `company_ifric_id`. Using real ones for a demo would be the opposite.
+- **Made-up ids such as `urn:demo:factory-owner`**, as the local environment used. They match no IFRIC company, so they break the rule above, and the demo shows no company details. This was the first proposal, and the maintainers chose the IFRIC URNs instead.
 - **Two participants**, as the local environment has. The issue asks for a third.
 
 ### The JSON form
@@ -63,6 +63,10 @@ The registration form's "Reachable" box starts ticked, so the UI registers what 
 
 `IFRIC_READER_CLIENT_ID` unset or empty means `dataspace-ifric-reader`, the client `keycloak.md` names. Empty means the default because the chart passes an empty string from the Secret when it isn't set. IFRIC now counts as configured with `IFRIC_BACKEND_URL` and `IFRIC_READER_CLIENT_SECRET`, and nothing is called without them.
 
+### The identifier rule in the documents
+
+`keycloak.md`, `architecture.md` and the `ifric-company-details` spec said that a participant id not onboarded from IFRIC must never equal a real `company_ifric_id`. The rule is the opposite: a participant's id is its company's `company_ifric_id`, because the IFRIC registry's access control matches participant ids to `company_ifric_id`. This change corrects them. Nothing in the code or tests enforced the old wording, and nothing enforces the new rule at registration: it stays the administrator's responsibility, as before.
+
 ### The local environment
 
 `deploy/local/services.yaml` and `deploy/helm/values/environments/local.yaml` set two demo participants. They stop setting it, so the default applies there too.
@@ -72,6 +76,7 @@ The registration form's "Reachable" box starts ticked, so the UI registers what 
 - `management-api` "Demo participants", scenario "None configured": empty now means the default, and `[]` means none.
 - `management-api` "Registering a hosted participant", scenario "Reaching a hosted participant from outside", and `external-participants` "Addresses of a reachable hosted participant", scenarios "Not reachable" and "Peer address not configured": the default and the `422` change.
 - `ifric-company-details`, scenario "Not configured": the client id no longer has to be set.
+- `ifric-company-details`, "Identifiers and the shared realm are documented", and `keycloak.md` and `architecture.md`: said other participant ids must never equal a real `company_ifric_id`. Corrected to the rule above.
 - `management-api.md` says reachability gives `422` without the peer addresses, and that `DEMO_PARTICIPANTS` is comma-separated. Both are updated.
 
 ## Risks

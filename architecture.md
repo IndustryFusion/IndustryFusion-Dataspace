@@ -765,4 +765,4 @@ No existing participants need to be reconfigured. The registry and gateway handl
 
 An external participant runs its own adapter and connector, so registering one creates only its Keycloak client and registry entry. See "External participants" in [management-api.md](management-api.md), which also says what registering one trusts it with.
 
-A participant onboarded from the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss) has a `participant_id` equal to its `company_ifric_id`, with no mapping table. So the management API can add its company details to reads, and the two can share a realm. Any other participant id must never equal a real `company_ifric_id`, as it would be taken for that company. See [keycloak.md](keycloak.md).
+A participant's `participant_id` is its company's `company_ifric_id` in the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss), with no mapping table, as the registry's access control matches participant ids to `company_ifric_id`. So the management API can add its company details to reads, and the two can share a realm. See [keycloak.md](keycloak.md).

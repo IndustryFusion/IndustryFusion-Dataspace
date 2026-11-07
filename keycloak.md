@@ -83,11 +83,9 @@ Services compare a token's issuer exactly with the URL they are configured with.
 
 ## Participant identifiers
 
-A participant onboarded from the IFRIC registry has a `participant_id` equal to its `company_ifric_id`, with no mapping table. The realm can then be shared with the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss), which matches a `participant_id` token against its companies.
+A participant's `participant_id` is its company's `company_ifric_id` in the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss), with no mapping table. The registry's access control matches a token's `participant_id` against `company_ifric_id`, so this is what lets the realm be shared with it, and lets the management API show a participant's company details.
 
-Any other participant id must never equal a real `company_ifric_id`, or the registry would treat it as that company.
-
-The dataspace does not check this at registration, so the administrator is responsible for it.
+Register each participant with its company's `company_ifric_id`. The default demo participants are the demo companies' IFRIC ids. The dataspace does not check this at registration, so the administrator is responsible for it.
 
 ## Sharing the realm with the IFRIC registry
 
