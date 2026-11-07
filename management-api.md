@@ -145,7 +145,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
      "adapter_url": "https://mb.example/adapter", "dsp_url": "https://mb.example/connector/api/v1/dsp" }
    ```
 
-3. Set `externally_reachable` on each hosted participant it will talk to, by registering it again. A hosted participant that isn't reachable can't be reached from outside, and a message to it ends with status `error`.
+3. Make sure each hosted participant it will talk to is `externally_reachable`, as it is unless registered with `false`. A hosted participant that isn't reachable can't be reached from outside, and a message to it ends with status `error`.
 4. Configure its adapter:
 
    | Setting | Value |
@@ -158,7 +158,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
 
    Leave `PEER_NOTIFY_URL` empty, as its `adapter_url` is already reachable. Its connector's `edc.participant.id` is its `participant_id`, its callback address is its `dsp_url`, and it needs the same Keycloak settings and client secret: hosted connectors refuse one without a token from that client.
 
-**What it needs to reach:** the gateway, the DSP gateway, these read routes and Keycloak. **What has to reach it:** hosted connectors, on its connector's DSP port and its adapter's `/internal/inbox-receive`, and hosted adapters, on its `/internal/transfer-request` and `/internal/capabilities`. Keep its connector's management and control ports closed.
+**What it needs to reach:** the gateway, the DSP gateway, these read routes and Keycloak. **What has to reach it:** hosted connectors, on its connector's DSP port and its adapter's `/internal/inbox-receive`, and hosted adapters, on its `/internal/transfer-request` and `/internal/capabilities`. The hub's gateway reads its `/internal/capabilities` too, for the policy view below, so let the gateway reach its adapter, or the Policies tab says it couldn't be read. Keep its connector's management and control ports closed.
 
 `scripts/external-demo.py` deploys two like this on a local environment, each with a NetworkPolicy to these limits.
 

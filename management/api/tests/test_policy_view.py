@@ -137,6 +137,8 @@ def test_only_the_consumers_approvals_are_shown_even_if_the_adapter_sends_more(w
 def failing(world, how: str) -> None:
     if how == "gateway down":
         world.gateway.up = False
+    elif how == "gateway too slow":
+        world.gateway.timeout = True
     elif how == "no gateway address":
         world.services.external_policies.settings = world.settings.__class__(
             **{**world.settings.__dict__, "gateway_url": ""}
@@ -163,6 +165,7 @@ def failing(world, how: str) -> None:
 
 REASONS = {
     "gateway down": "The gateway could not be reached",
+    "gateway too slow": "did not answer in time",
     "no gateway address": "no gateway address",
     "no client": "has no client here",
     "keycloak admin refuses": "did not give this service",

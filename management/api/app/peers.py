@@ -88,6 +88,10 @@ class ExternalPolicies:
         address = f"{self.settings.gateway_url}/peer/{quote(provider_id, safe=':')}/internal/capabilities"
         try:
             answer = await self.http.get(address, headers={"Authorization": f"Bearer {token}"}, timeout=READ_SECONDS)
+        except httpx.TimeoutException as error:
+            log.warning("Reading %s's capabilities: %s", provider_id, type(error).__name__)
+            slow = "The gateway did not answer in time. The participant's adapter may be unreachable"
+            raise Unreadable(slow) from None
         except httpx.HTTPError as error:
             log.warning("Reading %s's capabilities: %s", provider_id, type(error).__name__)
             raise Unreadable("The gateway could not be reached") from None

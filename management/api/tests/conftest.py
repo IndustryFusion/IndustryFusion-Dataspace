@@ -318,6 +318,7 @@ class FakeGateway:
         self.registry = registry
         self.calls: list[dict] = []
         self.up = True
+        self.timeout = False
         self.delay = 0.0
         self.answer: httpx.Response | None = None
         self.capabilities = [
@@ -336,6 +337,8 @@ class FakeGateway:
         path = unquote(request.url.raw_path.decode())
         if path == "/health":
             return json_response(200, {})
+        if self.timeout:
+            raise httpx.ReadTimeout("no answer")
         self.calls.append(
             {
                 "method": request.method,
