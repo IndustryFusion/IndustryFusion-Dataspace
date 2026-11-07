@@ -90,6 +90,22 @@ jobs:
       - name: Lint
         run: ruff check --line-length 120 --select E,F,I,B,UP scripts
 
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install "pyyaml>=6,<7"
+      - name: Lint the chart
+        run: >-
+          helm lint deploy/helm/charts/dataspace --set component=registry
+          -f deploy/helm/values/common.yaml
+      - name: Check what it renders
+        run: python scripts/check-helm-values.py
+
   connector:
     runs-on: ubuntu-latest
     steps:

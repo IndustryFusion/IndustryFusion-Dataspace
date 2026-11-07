@@ -138,6 +138,7 @@ The connector is built with `docker build connector`, which runs Gradle on Java 
 scripts/local-env.sh up       # create everything
 scripts/local-env.sh status   # show pods
 scripts/local-env.sh check    # mint a token and check its issuer
+scripts/local-env.sh images   # build the images and load them into the cluster
 scripts/local-env.sh services # build the services and deploy them to the cluster
 scripts/local-env.sh down     # remove the cluster and generated files
 ```
@@ -145,6 +146,8 @@ scripts/local-env.sh down     # remove the cluster and generated files
 It uses only its own kubeconfig, `.local/kubeconfig`, so your other clusters aren't touched. Generated credentials are in `.local/`, which git ignores.
 
 With the services deployed, `scripts/message-exchange-check.py` runs two agents exchanging messages through the gateway, `scripts/connector-transfer-check.py` tests two connectors on their own, and `scripts/management-check.py` onboards and removes participants through the management API, with real failures at each step.
+
+To try the Helm install from [deploy/README.md](deploy/README.md) instead of `services`, run `scripts/local-env.sh images`, install an Ingress controller, and use `-e local` with the file that `scripts/local-env.sh helm-secrets` writes as `DATASPACE_SECRETS_FILE`. `scripts/ingress-check.py` then checks the install through the Ingress, including an upload at the limit.
 
 `scripts/setup-local-hosts.sh add` adds host entries for reaching the environment by name, and `remove` takes them out.
 

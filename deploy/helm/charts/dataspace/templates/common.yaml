@@ -1,0 +1,70 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+{{- if eq .Values.component "common" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: service-credentials
+  labels: {{- include "dataspace.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  postgres-user: {{ required "secrets.postgres.user is required" .Values.secrets.postgres.user | quote }}
+  postgres-password: {{ required "secrets.postgres.password is required" .Values.secrets.postgres.password | quote }}
+  s3-access-key: {{ required "secrets.s3.accessKey is required" .Values.secrets.s3.accessKey | quote }}
+  s3-secret-key: {{ required "secrets.s3.secretKey is required" .Values.secrets.s3.secretKey | quote }}
+  adapter-internal-key: {{ required "secrets.adapterInternalKey is required" .Values.secrets.adapterInternalKey | quote }}
+  admin-client-secret: {{ required "secrets.adminClientSecret is required" .Values.secrets.adminClientSecret | quote }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: management
+  labels: {{- include "dataspace.labels" . | nindent 4 }}
+---
+# Only what provisioning needs, and only in the participants' namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: management
+  namespace: {{ .Values.namespaces.participants }}
+  labels: {{- include "dataspace.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets, configmaps, services]
+    verbs: [get, create, update, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, create, update, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: management
+  namespace: {{ .Values.namespaces.participants }}
+  labels: {{- include "dataspace.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: management
+subjects:
+  - kind: ServiceAccount
+    name: management
+    namespace: {{ .Release.Namespace }}
+{{- end }}
