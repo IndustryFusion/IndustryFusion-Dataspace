@@ -692,7 +692,7 @@ def test_a_payload_that_grows_past_the_limit_when_stored_is_refused(harness):
 
 def test_an_authorization_a_notification_cannot_carry_is_refused(harness):
     big = {"scope": "conversation", "constraints": {"machines": ["m" * 100] * 3000}}
-    response = harness.send(authorization=big)
+    response = harness.send(performative="grant", capability="twin:direct", in_reply_to="x", authorization=big)
     assert response.status_code == 413
     assert "authorization" in response.json()["detail"]
     assert harness.world.notifications == []
@@ -702,7 +702,12 @@ def test_the_largest_authorization_fits_the_notification_route(harness):
     from app.routes.outbox import LONGEST_AUTHORIZATION_BYTES
 
     filler = "m" * (LONGEST_AUTHORIZATION_BYTES - 100)
-    response = harness.send(authorization={"scope": "conversation", "note": filler})
+    response = harness.send(
+        performative="grant",
+        capability="twin:direct",
+        in_reply_to="x",
+        authorization={"scope": "conversation", "note": filler},
+    )
     assert response.status_code == 202, response.text
     harness.settle()
     notification = harness.world.notifications[-1]["body"]

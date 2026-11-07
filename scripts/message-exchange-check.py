@@ -306,6 +306,278 @@ def large_file(owner: Agent, builder: Agent, size_mib: int) -> None:
         print("Over the limit of 1 GiB: 413")
 
 
+AUTHORIZATION = {"scope": "conversation", "expires_at": "2026-12-01T10:00:00+00:00", "constraints": {}}
+
+
+def post(agent: Agent, receiver: str, **fields) -> tuple[int, dict]:
+    body = {"receiver_participant": receiver, **fields}
+    return lc.http("POST", f"{agent.base}/outbox/messages", body, agent.headers())
+
+
+def conversation_on(agent: Agent, conversation_id: str) -> dict:
+    status, shown = lc.http("GET", f"{agent.base}/conversations/{conversation_id}", headers=agent.headers())
+    assert status == 200, (status, shown)
+    return shown
+
+
+def expect_same(owner: Agent, builder: Agent, conversation_id: str, state: str, outcome: str | None = None) -> dict:
+    """Both copies must reach this, without any further message."""
+
+    def agreed():
+        first, second = conversation_on(owner, conversation_id), conversation_on(builder, conversation_id)
+        same = all(first[name] == second[name] for name in ("state", "outcome", "escalated_by"))
+        return first if same and (first["state"], first["outcome"]) == (state, outcome) else None
+
+    return lc.poll(agreed, timeout=60, what=f"both copies of {conversation_id} to be {state}")
+
+
+def conversations(owner: Agent, builder: Agent) -> None:
+    """Each flow in protocol.md, with both participants' state compared after each step."""
+    chat = str(uuid.uuid4())
+    request = owner.send(MACHINE_BUILDER, conversation_id=chat, performative="request", capability="twin:history")
+    received = builder.receive(request)
+    assert received["performative"] == "request" and received["capability"] == "twin:history", received
+    grant = builder.send(
+        FACTORY_OWNER,
+        conversation_id=chat,
+        performative="grant",
+        capability="twin:history",
+        in_reply_to=request,
+        authorization=AUTHORIZATION,
+    )
+    received = owner.receive(grant)
+    assert received["authorization"] == AUTHORIZATION, received
+    shown = expect_same(owner, builder, chat, "OPEN")
+    assert shown["outstanding_requests"] == [] and len(shown["messages"]) == 2, shown
+    print("Request and grant: both OPEN, the receiver reads the authorization, nothing outstanding")
+
+    second = owner.send(MACHINE_BUILDER, conversation_id=chat, performative="request")
+    builder.receive(second)
+    assert [item["message_id"] for item in conversation_on(builder, chat)["outstanding_requests"]] == [second]
+    denied = builder.send(
+        FACTORY_OWNER, conversation_id=chat, performative="deny", capability="twin:history", in_reply_to=second
+    )
+    owner.receive(denied)
+    third = owner.send(MACHINE_BUILDER, conversation_id=chat, performative="request")
+    builder.receive(third)
+    cancelled = owner.send(MACHINE_BUILDER, conversation_id=chat, performative="cancel", in_reply_to=third)
+    builder.receive(cancelled)
+    expect_same(owner, builder, chat, "OPEN")
+    print("Deny and cancel: both OPEN")
+
+    builder.send(FACTORY_OWNER, conversation_id=chat, performative="escalate")
+    shown = expect_same(owner, builder, chat, "ESCALATING")
+    assert shown["escalated_by"] == MACHINE_BUILDER, shown
+    status, answer = post(owner, MACHINE_BUILDER, conversation_id=chat, performative="deescalate", payload={})
+    assert status == 409 and answer["reason"] == "not_escalator", (status, answer)
+    builder.send(FACTORY_OWNER, conversation_id=chat, performative="deescalate")
+    expect_same(owner, builder, chat, "OPEN")
+    print("Escalate and deescalate: same state and escalator on both sides, and the other side gets 409")
+
+    owner.send(MACHINE_BUILDER, conversation_id=chat, performative="close", outcome="resolved")
+    expect_same(owner, builder, chat, "CLOSED_RESOLVED", "resolved")
+    status, answer = post(builder, FACTORY_OWNER, conversation_id=chat, performative="inform", payload={})
+    assert status == 409 and answer["error"] == "conversation_state_violation", (status, answer)
+    assert answer["conversation_state"] == "CLOSED_RESOLVED" and answer["closed_at"], answer
+    status, audit = lc.http(
+        "GET", f"{builder.base}/outbox/messages/{answer['message_id']}", headers=builder.headers()
+    )
+    assert status == 200 and audit["status"] == "rejected" and audit["applied"] is False, audit
+    fields = {"conversation_id": chat, "performative": "close", "outcome": "failed", "payload": {}}
+    status, answer = post(builder, FACTORY_OWNER, **fields)
+    assert status == 202 and answer["applied"] is False, (status, answer)
+    print("Close: both closed, a later message gets 409 and is kept for audit, a repeat close is not applied")
+
+    builder.send(FACTORY_OWNER, conversation_id=chat, performative="reopen")
+    expect_same(owner, builder, chat, "OPEN")
+    print("Reopen: both OPEN")
+
+    status, answer = post(owner, MACHINE_BUILDER, performative="grant", payload={})
+    assert status == 422 and answer["error"] == "invalid_message", (status, answer)
+    print("A message that breaks a validity rule: 422")
+
+    _, listed = lc.http("GET", f"{owner.base}/conversations?state=open", headers=owner.headers())
+    assert chat in {item["conversation_id"] for item in listed}, listed
+
+
+def simultaneous_close(owner: Agent, builder: Agent, rounds: int = 6) -> None:
+    """Both sides close at once, each with its own outcome, through real notifications."""
+    for _ in range(rounds):
+        chat = str(uuid.uuid4())
+        opening = owner.send(MACHINE_BUILDER, conversation_id=chat)
+        builder.receive(opening)
+
+        step = {"conversation_id": chat, "performative": "close", "payload": {}}
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            from_owner = pool.submit(post, owner, MACHINE_BUILDER, **step, outcome="resolved")
+            from_builder = pool.submit(post, builder, FACTORY_OWNER, **step, outcome="withdrawn")
+        (status_one, one), (status_two, two) = from_owner.result(), from_builder.result()
+        assert status_one == status_two == 202, (one, two)
+        if one["applied"] and two["applied"]:
+            outcome = "resolved" if one["message_id"] < two["message_id"] else "withdrawn"
+            kind = "crossed"
+        else:
+            outcome = "resolved" if one["applied"] else "withdrawn"
+            kind = "one saw the other first"
+        expect_same(owner, builder, chat, f"CLOSED_{outcome.upper()}", outcome)
+        print(f"Simultaneous close ({kind}): both CLOSED_{outcome.upper()}")
+
+
+CLOSE = {"performative": "close", "payload": {}}
+
+
+def crossing_steps(owner: Agent, builder: Agent, rounds: int = 4) -> None:
+    """Crossing steps through real notifications: each side reads what protocol.md says it reads."""
+
+    def finished(chat: str):
+        first, second = conversation_on(owner, chat), conversation_on(builder, chat)
+        in_progress = {"pending", "registered", "transferring", "negotiating", "negotiated"}
+        messages = first["messages"] + second["messages"]
+        return None if any(item["status"] in in_progress for item in messages) else (first, second)
+
+    for _ in range(rounds):
+        chat = str(uuid.uuid4())
+        builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            closing = pool.submit(post, owner, MACHINE_BUILDER, **CLOSE, conversation_id=chat, outcome="failed")
+            escalating = pool.submit(
+                post, builder, FACTORY_OWNER, conversation_id=chat, performative="escalate", payload={}
+            )
+        first, second = lc.poll(lambda c=chat: finished(c), timeout=90, what="both notifications")
+        codes = (closing.result()[0], escalating.result()[0])
+        if codes == (202, 202):
+            # They crossed. Each refused the other's, so the copies differ, and each reads its own as rejected.
+            assert (first["state"], second["state"]) == ("CLOSED_FAILED", "ESCALATING"), (first, second)
+            assert any(item["status"] == "rejected" for item in first["messages"])
+            assert any(item["status"] == "rejected" for item in second["messages"])
+            print("close crossing escalate: one CLOSED_FAILED, the other ESCALATING, each rejected, as documented")
+        else:
+            # One saw the other's first, and its own was refused at once. They agree.
+            assert first["state"] == second["state"], (first["state"], second["state"])
+            print(f"close and escalate, one first: both {first['state']}")
+
+        chat = str(uuid.uuid4())
+        builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
+
+        def close_and_reopen(chat: str = chat) -> None:
+            post(owner, MACHINE_BUILDER, conversation_id=chat, **CLOSE, outcome="resolved")
+            post(owner, MACHINE_BUILDER, conversation_id=chat, performative="reopen", payload={})
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pool.submit(close_and_reopen)
+            pool.submit(post, builder, FACTORY_OWNER, conversation_id=chat, **CLOSE, outcome="withdrawn")
+        first, second = lc.poll(lambda c=chat: finished(c), timeout=90, what="both notifications")
+        print(f"close and reopen crossing a close: one side reads {first['state']}, the other {second['state']}")
+
+
+def failed_notification(owner: Agent, builder: Agent) -> None:
+    """The receiver's adapter is down while a close is sent. Repeating it afterwards moves the receiver."""
+    chat = str(uuid.uuid4())
+    builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
+    adapter = f"adapter-{lc.slug(MACHINE_BUILDER)}"
+    lc.kubectl("-n", lc.PARTICIPANTS, "scale", f"deploy/{adapter}", "--replicas=0")
+    pods = ("-n", lc.PARTICIPANTS, "get", "pods", "-l", f"app={adapter}", "-o", "name")
+    lc.poll(lambda: not lc.kubectl(*pods), what="the adapter to stop")
+    closing = {"conversation_id": chat, "performative": "close", "outcome": "superseded", "payload": {}}
+    try:
+        status, first = post(owner, MACHINE_BUILDER, **closing)
+        assert status == 202, first
+
+        def failed():
+            path = f"{owner.base}/outbox/messages/{first['message_id']}/status"
+            state = lc.http("GET", path, headers=owner.headers())[1]
+            return state if state["status"] == "error" else None
+
+        lc.poll(failed, what="the notification to fail")
+    finally:
+        lc.kubectl("-n", lc.PARTICIPANTS, "scale", f"deploy/{adapter}", "--replicas=1")
+        lc.wait_ready(lc.PARTICIPANTS, adapter)
+    assert conversation_on(owner, chat)["state"] == "CLOSED_SUPERSEDED"
+    assert conversation_on(builder, chat)["state"] == "OPEN"
+    print("Failed notification: the sender is closed, the receiver is still OPEN, and the status is error")
+
+    status, again = post(owner, MACHINE_BUILDER, **closing)
+    assert status == 202 and again["applied"] is True, (status, again)
+    owner.wait_notified(again["message_id"])
+    expect_same(owner, builder, chat, "CLOSED_SUPERSEDED", "superseded")
+    print("Failed notification: the repeat reads applied, reaches the receiver, and both are closed")
+
+
+def role_rules_at_the_receiver(owner: Agent) -> None:
+    notification = {
+        "message_id": str(uuid.uuid4()),
+        "conversation_id": str(uuid.uuid4()),
+        "sender_participant": FACTORY_OWNER,
+        "receiver_participant": FACTORY_OWNER,
+        "asset_id": "none",
+        "provider_dsp_url": "http://nowhere.invalid",
+    }
+    route = f"{owner.base}/peer/{FACTORY_OWNER}/internal/transfer-request"
+    status, answer = lc.http("POST", route, notification, owner.headers())
+    assert status == 403, (status, answer)
+    print("A notification from a sender whose role isn't compatible: 403")
+
+
+def conversation_burst(owner: Agent, builder: Agent, count: int = BURST) -> None:
+    """Concurrent messages from both sides on one conversation, then racing with a close."""
+    chat = str(uuid.uuid4())
+    builder.receive(owner.send(MACHINE_BUILDER, conversation_id=chat))
+    owner_headers, builder_headers = owner.headers(), builder.headers()
+
+    def send(agent: Agent, headers: dict, receiver: str, fields: dict) -> tuple[int, dict]:
+        body = {"receiver_participant": receiver, "conversation_id": chat, "payload": {}, **fields}
+        return lc.http("POST", f"{agent.base}/outbox/messages", body, headers)
+
+    with ThreadPoolExecutor(max_workers=count * 2) as pool:
+        items = [{"payload": {"n": n}} for n in range(count)]
+        calls = [pool.submit(send, owner, owner_headers, MACHINE_BUILDER, item) for item in items]
+        calls += [pool.submit(send, builder, builder_headers, FACTORY_OWNER, item) for item in items]
+    answers = [call.result() for call in calls]
+    assert all(status == 202 for status, _ in answers), answers
+    for status_answer, agent in zip(answers, [owner] * count + [builder] * count, strict=True):
+        agent.wait_notified(status_answer[1]["message_id"])
+    from_owner = {answer["message_id"] for _, answer in answers[:count]}
+    from_builder = {answer["message_id"] for _, answer in answers[count:]}
+    for message_id in from_owner:
+        builder.receive(message_id)
+    for message_id in from_builder:
+        owner.receive(message_id)
+    expect_same(owner, builder, chat, "OPEN")
+    print(f"Burst on one conversation: {count} from each side at once, all delivered, both OPEN")
+
+    fields = [{"payload": {"n": n}} for n in range(count)]
+    fields.insert(count // 2, {"performative": "close", "outcome": "resolved"})
+    with ThreadPoolExecutor(max_workers=len(fields)) as pool:
+        calls = [pool.submit(send, owner, owner_headers, MACHINE_BUILDER, item) for item in fields]
+    answers = [call.result() for call in calls]
+    assert {status for status, _ in answers} <= {202, 409}, answers
+    accepted = [answer["message_id"] for status, answer in answers if status == 202]
+    for message_id in accepted:
+        owner.wait_notified(message_id)
+    for message_id in accepted:
+        builder.receive(message_id)
+    expect_same(owner, builder, chat, "CLOSED_RESOLVED", "resolved")
+    refused = len(fields) - len(accepted)
+    print(f"Burst racing a close: {len(accepted)} accepted and delivered, {refused} refused with 409, both closed")
+
+    closes = str(uuid.uuid4())
+    builder.receive(owner.send(MACHINE_BUILDER, conversation_id=closes))
+    outcomes = ["resolved", "failed", "withdrawn", "rejected"] * 3
+
+    def close_with(outcome: str) -> tuple[int, dict]:
+        body = {
+            "receiver_participant": MACHINE_BUILDER, "conversation_id": closes, "payload": {},
+            "performative": "close", "outcome": outcome,
+        }  # fmt: skip
+        return lc.http("POST", f"{owner.base}/outbox/messages", body, owner_headers)
+
+    with ThreadPoolExecutor(max_workers=len(outcomes)) as pool:
+        answers = list(pool.map(close_with, outcomes))
+    assert all(status == 202 for status, _ in answers), answers
+    winners = [outcome for (_, answer), outcome in zip(answers, outcomes, strict=True) if answer["applied"]]
+    assert len(winners) == 1, winners
+    expect_same(owner, builder, closes, f"CLOSED_{winners[0].upper()}", winners[0])
+    print(f"Closes racing on one side: {len(outcomes)} accepted, one applied, the same state on both sides")
 def size_limits(owner: Agent) -> None:
     """Routes other than the file route refuse a large body, with or without a stated length."""
     large = {"receiver_participant": MACHINE_BUILDER, "payload": {"x": "a" * (5 * 1024**2)}}
@@ -386,6 +658,12 @@ def main() -> int:
                 burst(owner, builder)
                 file_transfer(owner, builder, delivered)
                 large_file(owner, builder, args.large_file_mib)
+                conversations(owner, builder)
+                simultaneous_close(owner, builder)
+                conversation_burst(owner, builder)
+                crossing_steps(owner, builder)
+                role_rules_at_the_receiver(owner)
+                failed_notification(owner, builder)
                 size_limits(owner)
             print("PASS")
             return 0

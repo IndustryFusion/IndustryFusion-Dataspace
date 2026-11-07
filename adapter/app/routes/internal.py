@@ -19,6 +19,7 @@
 import asyncio
 import tempfile
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -26,72 +27,132 @@ from pydantic import BaseModel, Field
 from sqlalchemy import update
 
 from app.auth import bearer_token, holds_role
-from app.db import InboxMessage, OutboxMessage, add_inbox_row, now, touch_conversation
+from app.conversations import (
+    apply,
+    invalid_answer,
+    is_refused,
+    locked_decision,
+    locked_for_unapplied,
+    refusal_text,
+    refused_answer,
+    settle_simultaneous,
+)
+from app.db import InboxMessage, OutboxMessage, add_inbox_row, now
 from app.delivery import fetch, note_transfer, set_inbox_in_transfer
 from app.limits import BodyTooLarge, arrival_limit, over_limit
+from app.protocol import NO_CHANGE, check_validity
 
 router = APIRouter(prefix="/internal")
+
+Identifier = Annotated[str, Field(max_length=512)]
 
 
 class TransferRequest(BaseModel):
     # A peer chooses this id, and it becomes part of addresses and storage keys here.
     message_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
-    conversation_id: str
-    performative: str = "inform"
-    capability: str | None = None
-    in_reply_to: str | None = None
+    conversation_id: Identifier
+    performative: Identifier = "inform"
+    capability: Identifier | None = None
+    in_reply_to: Identifier | None = None
     authorization: dict | None = None
-    outcome: str | None = None
-    sender_participant: str
-    receiver_participant: str
+    outcome: Identifier | None = None
+    sender_participant: Identifier
+    receiver_participant: Identifier
     reply_expected: bool = False
     expires_at: datetime | None = None
     response_due_at: datetime | None = None
     asset_id: str = Field(max_length=512)
     provider_dsp_url: str = Field(max_length=2048)
     has_files: bool = False
+    sender_applied: bool = True
 
 
 @router.post("/transfer-request", status_code=202)
-async def transfer_request(body: TransferRequest, request: Request) -> dict:
+async def transfer_request(body: TransferRequest, request: Request):
     services = request.app.state.services
     claims = await services.verifier.claims(bearer_token(request))
     if not holds_role(claims, body.sender_participant):
         raise HTTPException(status_code=403, detail="The token does not belong to the stated sender")
     if body.receiver_participant != services.settings.participant_id:
         raise HTTPException(status_code=403, detail="This message is for a different receiver")
+    try:
+        await services.registry.receiver(services.settings.participant_id, body.sender_participant)
+    except HTTPException as error:
+        if error.status_code == 404:
+            raise HTTPException(status_code=403, detail="The sender is not registered") from error
+        raise
 
+    row = {
+        "message_id": body.message_id,
+        "conversation_id": body.conversation_id,
+        "performative": body.performative,
+        "capability": body.capability,
+        "in_reply_to": body.in_reply_to,
+        "authorization": body.authorization,
+        "outcome": body.outcome,
+        "sender_participant": body.sender_participant,
+        "receiver_participant": body.receiver_participant,
+        "reply_expected": body.reply_expected,
+        # This adapter's own clock: retention and order must not depend on what a peer states.
+        "created_at": now(),
+        "expires_at": body.expires_at,
+        "response_due_at": body.response_due_at,
+        "asset_id": body.asset_id,
+        "provider_dsp_url": body.provider_dsp_url,
+        "has_files": body.has_files,
+    }
+    duplicate = {"message_id": body.message_id, "status": "duplicate"}
+
+    invalid = check_validity(body.performative, body.capability, body.in_reply_to, body.authorization, body.outcome)
+    if invalid:
+        reason = refusal_text(invalid.reason, invalid.detail)
+        async with services.db.session() as session:
+            added = await add_inbox_row(session, **row, status="error", applied=False, error_message=reason)
+            await session.commit()
+        return invalid_answer(invalid, body.performative) if added else duplicate
+
+    kept_step = None
     async with services.db.session() as session:
-        added = await add_inbox_row(
-            session,
-            message_id=body.message_id,
-            conversation_id=body.conversation_id,
-            performative=body.performative,
-            capability=body.capability,
-            in_reply_to=body.in_reply_to,
-            authorization=body.authorization,
-            outcome=body.outcome,
-            sender_participant=body.sender_participant,
-            receiver_participant=body.receiver_participant,
-            reply_expected=body.reply_expected,
-            # This adapter's own clock: retention and order must not depend on what a peer states.
-            created_at=now(),
-            expires_at=body.expires_at,
-            response_due_at=body.response_due_at,
-            status="transferring",
-            applied=True,
-            asset_id=body.asset_id,
-            provider_dsp_url=body.provider_dsp_url,
-            has_files=body.has_files,
-        )
+        if body.sender_applied:
+            conversation, decision = await locked_decision(
+                session,
+                body.conversation_id,
+                body.sender_participant,
+                body.performative,
+                body.sender_participant,
+                body.outcome,
+            )
+            if conversation is not None and decision.reason != "counterpart_mismatch":
+                settled = await settle_simultaneous(session, conversation, body.message_id, body.performative)
+                decision = settled or decision
+                kept_step = conversation.state_message_id if settled is NO_CHANGE else None
+        else:
+            conversation, decision = await locked_for_unapplied(
+                session,
+                body.conversation_id,
+                body.sender_participant,
+                body.performative,
+                body.sender_participant,
+                body.outcome,
+            )
+
+        if decision.refused:
+            reason = refusal_text(decision.reason, decision.detail)
+            added = await add_inbox_row(session, **row, status="error", applied=False, error_message=reason)
+            await session.commit()
+            return refused_answer(decision, conversation, body.conversation_id, body.message_id) if added else duplicate
+
+        added = await add_inbox_row(session, **row, status="transferring", applied=decision.applied)
         if not added:
-            # The same message was notified before. There's nothing more to do.
-            return {"message_id": body.message_id, "status": "duplicate"}
-        await touch_conversation(session, body.conversation_id, body.sender_participant)
+            # The same message was notified before. There's nothing more to do, and nothing may change.
+            await session.rollback()
+            return duplicate
+        if conversation is not None:
+            apply(conversation, decision, body.message_id, body.sender_participant, body.outcome)
         await session.commit()
 
     services.spawn(fetch(services, body.message_id, body.sender_participant, body.asset_id, body.provider_dsp_url))
-    return {"message_id": body.message_id, "status": "transferring"}
+    return {"message_id": body.message_id, "status": "transferring", "kept_step": kept_step}
 
 
 @router.get("/payload/{message_id}")
@@ -130,6 +191,8 @@ async def inbox_receive(message_id: str, request: Request):
     async with services.db.session() as session:
         row = await session.get(InboxMessage, message_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="Unknown message")
+    if is_refused(row):
         raise HTTPException(status_code=404, detail="Unknown message")
     if row.status == "acked":
         # The agent has finished with it, and its content may already have been purged.

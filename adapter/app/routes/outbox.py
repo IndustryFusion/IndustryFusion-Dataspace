@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import tempfile
 import uuid
 from datetime import datetime
@@ -34,8 +35,17 @@ from starlette.formparsers import MultiPartParser
 
 from app.auth import require_participant
 from app.bundle import write_bundle
-from app.db import Conversation, OutboxMessage, iso, touch_conversation
+from app.conversations import (
+    apply,
+    invalid_answer,
+    locked_decision,
+    refusal_text,
+    refused_answer,
+    repeats_a_failed_step,
+)
+from app.db import Conversation, OutboxMessage, iso
 from app.delivery import deliver
+from app.protocol import Decision, check_validity
 
 log = logging.getLogger("adapter")
 
@@ -72,9 +82,14 @@ class OutgoingMessage(BaseModel):
     response_due_at: datetime | None = None
 
 
-async def conversation_state(session, conversation_id: str) -> str:
+async def conversation_state(session, conversation_id: str) -> str | None:
     conversation = await session.get(Conversation, conversation_id)
-    return conversation.state if conversation else "OPEN"
+    return conversation.state if conversation else None
+
+
+def _invalid(body: "OutgoingMessage") -> JSONResponse | None:
+    invalid = check_validity(body.performative, body.capability, body.in_reply_to, body.authorization, body.outcome)
+    return invalid_answer(invalid, body.performative) if invalid else None
 
 
 def _as_json(value: object) -> bytes:
@@ -101,6 +116,10 @@ async def send_message(body: OutgoingMessage, request: Request):
                 "performative": body.performative,
             },
         )
+
+    refusal = _invalid(body)
+    if refusal:
+        return refusal
 
     if body.authorization is not None and len(_as_json(body.authorization)) > LONGEST_AUTHORIZATION_BYTES:
         raise _too_large("The authorization", LONGEST_AUTHORIZATION_BYTES)
@@ -150,6 +169,9 @@ async def send_files(request: Request):
         raise HTTPException(status_code=422, detail=f"The form can't be read: {error.detail}") from error
     try:
         body, uploads = _read_form_fields(form)
+        refusal = _invalid(body)
+        if refusal:
+            return refusal
         peer = await services.registry.receiver(own_id, body.receiver_participant)
         message_id = str(uuid.uuid4())
         with tempfile.TemporaryDirectory(prefix="bundle-") as folder:
@@ -168,44 +190,10 @@ async def send_files(request: Request):
 async def _accept(
     services, body: OutgoingMessage, message_id: str, payload_ref: str | None, peer: dict, has_files: bool
 ):
-    """Record a message whose content is stored, and start delivering it."""
+    """Decide what a message does to its conversation, record that, and start delivering it."""
     own_id = services.settings.participant_id
     conversation_id = body.conversation_id or str(uuid.uuid4())
-    row = OutboxMessage(
-        message_id=message_id,
-        conversation_id=conversation_id,
-        performative=body.performative,
-        capability=body.capability,
-        in_reply_to=body.in_reply_to,
-        authorization=body.authorization,
-        outcome=body.outcome,
-        sender_participant=own_id,
-        receiver_participant=body.receiver_participant,
-        payload_ref=payload_ref,
-        content_ref=body.content_ref.model_dump() if body.content_ref else None,
-        reply_expected=body.reply_expected,
-        expires_at=body.expires_at,
-        response_due_at=body.response_due_at,
-        status="pending",
-        applied=True,
-    )
-    try:
-        async with services.db.session() as session:
-            session.add(row)
-            await touch_conversation(session, conversation_id, body.receiver_participant)
-            await session.commit()
-    except Exception:
-        # Without a row, retention could never remove what was just uploaded.
-        if payload_ref:
-            try:
-                await services.storage.delete(payload_ref)
-            except Exception as error:
-                log.warning("Could not remove the content of unsaved message %s: %s", message_id, error)
-        raise
-    async with services.db.session() as session:
-        state = await conversation_state(session, conversation_id)
-
-    notification = {
+    fields = {
         "message_id": message_id,
         "conversation_id": conversation_id,
         "performative": body.performative,
@@ -216,13 +204,76 @@ async def _accept(
         "sender_participant": own_id,
         "receiver_participant": body.receiver_participant,
         "reply_expected": body.reply_expected,
-        "expires_at": iso(body.expires_at),
-        "response_due_at": iso(body.response_due_at),
-        "content_ref": row.content_ref,
-        "has_files": has_files,
     }
-    services.spawn(deliver(services, notification, peer))
-    return {"message_id": message_id, "status": "pending", "applied": True, "conversation_state": state}
+    content_ref = body.content_ref.model_dump() if body.content_ref else None
+    gate = None
+    try:
+        async with services.db.session() as session:
+            conversation, decision = await locked_decision(
+                session, conversation_id, body.receiver_participant, body.performative, own_id, body.outcome
+            )
+            # Goes to the peer as a step, as the earlier one never reached it. The earlier row stays as it is.
+            same_counterpart = decision.reason != "counterpart_mismatch"
+            if same_counterpart and await repeats_a_failed_step(
+                session, conversation, body.performative, body.outcome
+            ):
+                decision = Decision(transition=body.performative)
+            if decision.refused:
+                session.add(
+                    OutboxMessage(
+                        **fields,
+                        content_ref=content_ref,
+                        expires_at=body.expires_at,
+                        response_due_at=body.response_due_at,
+                        status="rejected",
+                        applied=False,
+                        error_message=refusal_text(decision.reason, decision.detail),
+                    )
+                )
+                await session.commit()
+                await _remove_content(services, payload_ref, message_id)
+                return refused_answer(decision, conversation, conversation_id, message_id)
+
+            apply(conversation, decision, message_id, own_id, body.outcome)
+            session.add(
+                OutboxMessage(
+                    **fields,
+                    payload_ref=payload_ref,
+                    content_ref=content_ref,
+                    expires_at=body.expires_at,
+                    response_due_at=body.response_due_at,
+                    status="pending",
+                    applied=decision.applied,
+                )
+            )
+            state = conversation.state
+            notification = {
+                **fields,
+                "expires_at": iso(body.expires_at),
+                "response_due_at": iso(body.response_due_at),
+                "content_ref": content_ref,
+                "has_files": has_files,
+                "sender_applied": decision.applied,
+            }
+            gate = services.deliver_in_order(conversation_id, deliver(services, notification, peer))
+            await session.commit()
+    except Exception:
+        # Without a row, retention could never remove what was just uploaded.
+        await _remove_content(services, payload_ref, message_id)
+        raise
+    finally:
+        # Also when accepting is cancelled, or the queue would wait for this gate for ever.
+        if gate is not None and not gate.done():
+            gate.set_result(sys.exc_info()[0] is None)
+    return {"message_id": message_id, "status": "pending", "applied": decision.applied, "conversation_state": state}
+
+
+async def _remove_content(services, payload_ref: str | None, message_id: str) -> None:
+    if payload_ref:
+        try:
+            await services.storage.delete(payload_ref)
+        except Exception as error:
+            log.warning("Could not remove the content of message %s: %s", message_id, error)
 
 
 async def _get_row(request: Request, message_id: str) -> OutboxMessage:

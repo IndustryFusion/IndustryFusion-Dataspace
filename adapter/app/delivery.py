@@ -29,6 +29,7 @@ from sqlalchemy import update
 from app.auth import OwnToken, TokenVerifier
 from app.config import Settings
 from app.connector import Connector, ConnectorError
+from app.conversations import note_the_answer
 from app.db import Database, InboxMessage, OutboxMessage, now
 from app.registry import Registry
 from app.storage import Storage
@@ -50,16 +51,49 @@ class Services:
     registry: Registry
     http: httpx.AsyncClient
     tasks: set[asyncio.Task] = field(default_factory=set)
+    last_delivery: dict[str, asyncio.Task] = field(default_factory=dict)
 
     def spawn(self, work: Coroutine) -> None:
         task = asyncio.create_task(work)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
+    def deliver_in_order(self, conversation_id: str, work: Coroutine) -> asyncio.Future:
+        """Queue work behind this conversation's earlier deliveries, and return its gate.
+
+        Call this while holding the conversation's row, so that the queue has the order the messages were accepted
+        in. The work starts once the gate is given True, after the commit. Given False, it never runs.
+        """
+        gate: asyncio.Future = asyncio.get_running_loop().create_future()
+        previous = self.last_delivery.get(conversation_id)
+
+        async def in_turn() -> None:
+            go_ahead = await gate
+            if previous is not None:
+                await asyncio.wait([previous])
+            if go_ahead:
+                await work
+            else:
+                work.close()
+
+        task = asyncio.create_task(in_turn())
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        self.last_delivery[conversation_id] = task
+
+        def forget(finished: asyncio.Task) -> None:
+            if self.last_delivery.get(conversation_id) is finished:
+                del self.last_delivery[conversation_id]
+
+        task.add_done_callback(forget)
+        return gate
+
     async def settle(self) -> None:
         """Wait for background work. Used at shutdown and in tests."""
         while self.tasks:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)
+            # With every task already done, that doesn't yield, and they leave the set only once the loop runs.
+            await asyncio.sleep(0)
 
 
 async def set_outbox(services: Services, message_id: str, **values) -> None:
@@ -100,6 +134,16 @@ async def fail_outbox(services: Services, message_id: str, error: Exception) -> 
         log.error("Could not record the failed delivery of %s: %s", message_id, second)
 
 
+async def _note_answer(services: Services, message: dict, response: httpx.Response) -> None:
+    """An optional part of the answer, so its absence changes nothing."""
+    try:
+        answer = response.json()
+    except ValueError:
+        return
+    async with services.db.session() as session:
+        await note_the_answer(session, message, answer)
+
+
 async def deliver(services: Services, message: dict, peer: dict) -> None:
     """Offer the content through the connector, then notify the receiver."""
     message_id = message["message_id"]
@@ -128,6 +172,7 @@ async def deliver(services: Services, message: dict, peer: dict) -> None:
             headers={"Authorization": f"Bearer {token}"},
         )
         if response.status_code < 300:
+            await _note_answer(services, message, response)
             await set_outbox(services, message_id, status="notified")
         elif response.status_code < 500:
             reason = f"The receiver refused it: {response.status_code} {response.text[:500]}"

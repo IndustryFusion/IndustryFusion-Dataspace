@@ -35,7 +35,7 @@ from app.delivery import Services
 from app.limits import BodyLimit
 from app.registry import Registry
 from app.retention import retention_loop, schema_loop
-from app.routes import inbox, internal, outbox
+from app.routes import conversations, inbox, internal, outbox
 from app.storage import S3Storage
 
 
@@ -96,6 +96,7 @@ def create_app(services: Services | None = None) -> FastAPI:
 
     application.include_router(outbox.router)
     application.include_router(inbox.router)
+    application.include_router(conversations.router)
     application.include_router(internal.router)
     return application
 

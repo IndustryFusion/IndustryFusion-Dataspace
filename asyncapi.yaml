@@ -111,6 +111,17 @@ components:
         response_due_at:
           type: string
           format: date-time
+    PeerNotification:
+      description: |
+        What a sender's adapter posts to POST /internal/transfer-request, beyond the message's own fields.
+        Agents don't use this. protocol.md, "Between adapters", describes it and the answer.
+      type: object
+      properties:
+        has_files:
+          type: boolean
+        sender_applied:
+          type: boolean
+          default: true
     InboxMessage:
       type: object
       required: [message_id, received_at, status, applied]
