@@ -50,7 +50,7 @@ A user login is not a substitute. A user's token can be given a `participant_id`
 
 ## A token sent to a peer can be replayed
 
-An adapter authenticates to a peer's adapter with its own token, on notifications and capability calls, and the audience isn't checked. So a peer that keeps such a token can use it at the sender's own adapter, as the sender, until it expires. For example, a machine builder could use a factory owner's token at that factory owner's `POST /capabilities/policy`, and approve itself.
+An adapter authenticates to a peer's adapter with its own token, on notifications and capability calls, a connector authenticates to a peer's connector with one from the same client, and the audience isn't checked. So a peer that keeps such a token can use it at the sender's own adapter, as the sender, until it expires. For example, a machine builder could use a factory owner's token at that factory owner's `POST /capabilities/policy`, and approve itself.
 
 Inside the hub the operator runs every adapter, and the traffic stays in the cluster. It matters most for an `adapter_url` or `peer_notify_url` outside the hub. Changing this affects tokens across the platform, so it is recorded here as an open decision.
 
@@ -70,6 +70,12 @@ The same holds in the other direction, and between external participants:
 - Two external participants hold each other's tokens. Each could use the other's at its adapter, if it can reach that, and at the gateway's peer routes.
 
 Nothing in the dataspace limits this. **Registering an external participant is a decision to trust it with the tokens of everyone it talks to**, so register only those you would trust with that. Client credentials themselves aren't exposed, and rotating a client's secret doesn't end a token already issued.
+
+A connector's token adds nothing to this: it comes from the same client, and reaches the same things. It does go to a peer's connector as well as its adapter, so a peer that runs only a connector holds it too.
+
+## Connectors
+
+A connector gets a token with its participant's client, `client_credentials`, and presents it on the Dataspace Protocol. It takes the other side's identity from the `participant_id` claim, once it has checked the signature against the realm's keys, RS256 only, the exact issuer, an expiry, and the role `participant:<id>`. So `KEYCLOAK_URL` has to be the same address for connectors as for every other service, and an external participant's connector needs to reach Keycloak as well as its adapter does.
 
 ## The issuer must match
 

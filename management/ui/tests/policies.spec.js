@@ -30,8 +30,15 @@ async function showPair(page) {
   await page.getByRole('button', { name: 'Show' }).click();
 }
 
-test('a pair is shown in both directions without signing in', async ({ page }) => {
+test('reading who has access needs admin mode', async ({ page }) => {
   await open(page, 'Policies');
+  await expect(page.getByRole('note')).toContainText('needs admin mode');
+  await expect(page.getByRole('button', { name: 'Show' })).toHaveCount(0);
+});
+
+test('a pair is shown in both directions', async ({ page }) => {
+  await open(page, 'Policies');
+  await enterAdminMode(page);
   await showPair(page);
   await expect(rowOf(page, 'Machine history')).toContainText('on-request');
   await expect(rowOf(page, 'Vendor confidential')).toContainText('on-request');
@@ -66,15 +73,12 @@ test('approve, deny and reset', async ({ page }) => {
   await expect(row.getByRole('button', { name: 'Reset' })).toBeDisabled();
 });
 
-test('an external side needs admin mode, and is noted as held elsewhere', async ({ page, request }) => {
+test('an external side is noted as held elsewhere', async ({ page, request }) => {
   await request.post('/test/external-builder');
   await open(page, 'Policies');
+  await enterAdminMode(page);
   await page.getByLabel('Factory owner').selectOption('urn:ui:fo');
   await page.getByLabel('Machine builder').selectOption('urn:ui:ext');
-  await page.getByRole('button', { name: 'Show' }).click();
-  await expect(page.getByRole('alert')).toHaveText('Missing token');
-
-  await enterAdminMode(page);
   await page.getByRole('button', { name: 'Show' }).click();
   await expect(page.getByRole('note')).toContainText('urn:ui:ext');
   await expect(rowOf(page, 'Machine history')).toBeVisible();
@@ -94,6 +98,7 @@ test('an error from an action is shown', async ({ page, request }) => {
 test('an error reading a pair is shown', async ({ page, request }) => {
   await request.post('/test/adapter-down');
   await open(page, 'Policies');
+  await enterAdminMode(page);
   await showPair(page);
   await expect(page.getByRole('alert')).toHaveText("The participant's adapter is unavailable");
 });

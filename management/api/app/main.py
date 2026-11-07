@@ -17,6 +17,7 @@
 """Management API: onboarding participants, and administering their capabilities."""
 
 import asyncio
+import logging
 import pathlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -39,8 +40,10 @@ from app.keycloak import KeycloakAdmin
 from app.kubernetes import Kubernetes, in_cluster_client
 from app.provisioning import Provisioner, Registration
 from app.registry import Registry
-from app.storage import Buckets
+from app.storage import Buckets, StorageIdentities
 from app.tokens import AdminTokens, fetch_admin_token
+
+log = logging.getLogger("management")
 
 
 class TokenRequest(BaseModel):
@@ -110,14 +113,17 @@ class Services:
 def build_services(settings: Settings, http: httpx.AsyncClient, kubernetes: Kubernetes) -> Services:
     registry = Registry(http, settings.registry_url)
     databases = Databases(settings)
+    identities = StorageIdentities(settings)
+    if not identities.enabled:
+        log.warning("SEAWEEDFS_IAM_URL is not set, so participants share one S3 identity")
     return Services(
         settings=settings,
         http=http,
         tokens=AdminTokens(settings.issuer, http),
         registry=registry,
-        adapters=Adapters(http, settings.adapter_internal_key, settings.participants_namespace),
+        adapters=Adapters(http, kubernetes, settings.participants_namespace),
         databases=databases,
-        provisioner=Provisioner(settings, databases, kubernetes, registry, Buckets(settings)),
+        provisioner=Provisioner(settings, databases, kubernetes, registry, Buckets(settings), identities),
         companies=CompanyDirectory(settings, http),
     )
 
@@ -151,10 +157,30 @@ def services_of(request: Request) -> Services:
     return request.app.state.services
 
 
+def public_view(record: dict) -> dict:
+    """What anyone may read. A hosted participant's own addresses only work inside the hub."""
+    if not record.get("hosted"):
+        return record
+    return {
+        **record,
+        "adapter_url": None,
+        "dsp_url": record.get("dsp_url") if record.get("externally_reachable") else None,
+    }
+
+
 async def admin_token(
     services: Services = Depends(services_of), authorization: str | None = Header(default=None)
 ) -> str:
     return await services.tokens.require_admin(authorization)
+
+
+async def shown_as_token_allows(services: Services, authorization: str | None, records: list[dict]) -> list[dict]:
+    """A token that isn't an administrator's is refused, not treated as no token."""
+    if authorization is not None:
+        await services.tokens.require_admin(authorization)
+    else:
+        records = [public_view(record) for record in records]
+    return await services.companies.add_details(records)
 
 
 async def participant_or_404(services: Services, participant_id: str) -> dict:
@@ -205,16 +231,20 @@ async def create_demo(services: Services = Depends(services_of), token: str = De
 
 
 @app.get("/api/participants")
-async def list_participants(services: Services = Depends(services_of)) -> list[dict]:
-    return await services.companies.add_details(await services.registry.all())
+async def list_participants(
+    services: Services = Depends(services_of), authorization: str | None = Header(default=None)
+) -> list[dict]:
+    return await shown_as_token_allows(services, authorization, await services.registry.all())
 
 
 @app.get("/api/participants/compatible/{participant_id:path}")
-async def compatible_participants(participant_id: str, services: Services = Depends(services_of)) -> list[dict]:
+async def compatible_participants(
+    participant_id: str, services: Services = Depends(services_of), authorization: str | None = Header(default=None)
+) -> list[dict]:
     found = await services.registry.compatible(participant_id) if roles.id_is_safe(participant_id) else None
     if found is None:
         raise HTTPException(status_code=404, detail="Participant not found")
-    return await services.companies.add_details(found)
+    return await shown_as_token_allows(services, authorization, found)
 
 
 # Declared before the single-participant route, whose path would match all of these.
@@ -229,7 +259,7 @@ async def participant_credentials(
     return {"client_id": participant_id, "client_secret": secret}
 
 
-@app.get("/api/participants/{participant_id:path}/capabilities")
+@app.get("/api/participants/{participant_id:path}/capabilities", dependencies=[Depends(admin_token)])
 async def read_capabilities(participant_id: str, services: Services = Depends(services_of)) -> dict:
     return await services.adapters.state(await participant_or_404(services, participant_id))
 
@@ -265,8 +295,11 @@ async def change_approval(
 
 
 @app.get("/api/participants/{participant_id:path}")
-async def read_participant(participant_id: str, services: Services = Depends(services_of)) -> dict:
-    return (await services.companies.add_details([await participant_or_404(services, participant_id)]))[0]
+async def read_participant(
+    participant_id: str, services: Services = Depends(services_of), authorization: str | None = Header(default=None)
+) -> dict:
+    record = await participant_or_404(services, participant_id)
+    return (await shown_as_token_allows(services, authorization, [record]))[0]
 
 
 @app.delete("/api/participants/{participant_id:path}", status_code=204)
@@ -279,12 +312,9 @@ async def delete_participant(
     return Response(status_code=204)
 
 
-@app.get("/api/policy")
+@app.get("/api/policy", dependencies=[Depends(admin_token)])
 async def read_policy(
-    fo: str = Query(min_length=1),
-    mb: str = Query(min_length=1),
-    services: Services = Depends(services_of),
-    authorization: str | None = Header(default=None),
+    fo: str = Query(min_length=1), mb: str = Query(min_length=1), services: Services = Depends(services_of)
 ) -> dict:
     owner = await participant_or_404(services, fo)
     builder = await participant_or_404(services, mb)
@@ -292,8 +322,6 @@ async def read_policy(
         raise HTTPException(status_code=422, detail="fo is not a factory owner")
     if roles.bare_name(builder["participant_type"]) != roles.MACHINE_BUILDER:
         raise HTTPException(status_code=422, detail="mb is not a machine builder")
-    if not (owner.get("hosted") and builder.get("hosted")):
-        await services.tokens.require_admin(authorization)
     entries: list[dict] = []
     unavailable: list[str] = []
     for provider, consumer in ((owner, builder), (builder, owner)):

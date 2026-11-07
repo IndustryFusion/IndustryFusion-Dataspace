@@ -52,7 +52,7 @@ def setup(keycloak: str, registry: str, key: str) -> dict[str, str]:
     client_secrets = {}
     for participant, role in ((FACTORY_OWNER, "factory_owner"), (MACHINE_BUILDER, "machine_builder")):
         client_secrets[participant] = admin.add_participant(participant)
-        connector = lc.deploy_connector(participant, key)
+        connector = lc.deploy_connector(participant, key, client_secrets[participant])
         adapter = lc.deploy_adapter(participant, role, key, client_secrets[participant], internal_key=key)
         name = lc.slug(participant)
         status, answer = lc.http(

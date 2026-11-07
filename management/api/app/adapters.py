@@ -14,39 +14,46 @@
 # limitations under the License.
 #
 
-"""Capability calls to a hosted participant's adapter, using its internal routes."""
+"""Capability calls to a hosted participant's adapter, using its internal routes and its own key."""
 
+import base64
 from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
 
 from app import manifests
+from app.kubernetes import Kubernetes
 
 PASSED_ON = {400, 403, 404, 409, 422}
 
 
 class Adapters:
-    def __init__(self, http: httpx.AsyncClient, internal_key: str, namespace: str) -> None:
+    def __init__(self, http: httpx.AsyncClient, kubernetes: Kubernetes, namespace: str) -> None:
         self.http = http
-        self.internal_key = internal_key
+        self.kubernetes = kubernetes
         self.namespace = namespace
 
-    async def call(self, record: dict, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
-        """Call the adapter of a registry record.
+    async def _key_of(self, participant_id: str) -> str:
+        secret = await self.kubernetes.get("Secret", manifests.secret_name(participant_id))
+        encoded = (secret or {}).get("data", {}).get("internal-key")
+        if not encoded:
+            raise HTTPException(status_code=503, detail="This participant has no internal key")
+        return base64.b64decode(encoded).decode()
 
-        The registry takes writes from any pod, so none of its addresses gets the key. It only goes to the address
+    async def call(self, record: dict, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
+        """Call the adapter of a registry record, with the key that participant alone has.
+
+        The registry takes writes from any pod, so none of its addresses gets a key. It only goes to the address
         derived from the id, where only this service can have put anything.
         """
         if not record.get("hosted", False):
             raise HTTPException(status_code=409, detail="An external participant runs its own adapter")
         address, _ = manifests.hosted_addresses(record["participant_id"], self.namespace)
+        key = await self._key_of(record["participant_id"])
         try:
             answer = await self.http.request(
-                method,
-                f"{address}/internal/capabilities{path}",
-                json=body,
-                headers={"X-Internal-Key": self.internal_key},
+                method, f"{address}/internal/capabilities{path}", json=body, headers={"X-Internal-Key": key}
             )
         except httpx.HTTPError as error:
             raise HTTPException(status_code=503, detail="The participant's adapter is unavailable") from error

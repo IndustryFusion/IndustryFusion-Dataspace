@@ -40,14 +40,19 @@ def test_offer_creates_asset_policy_and_contract_with_the_key():
         calls.append((request.url.path, request.headers["X-Api-Key"], json.loads(request.content)))
         return httpx.Response(200, json={"@id": "x"})
 
-    run(connector_with(handler).offer("asset-1", "http://me/internal/payload/asset-1"))
+    run(connector_with(handler).offer("asset-1", "http://me/internal/payload/asset-1", ("X-T", "v")))
     assert [call[0] for call in calls] == [
         "/management/v3/assets",
         "/management/v3/policydefinitions",
         "/management/v3/contractdefinitions",
     ]
     assert {call[1] for call in calls} == {"the-key"}
-    assert calls[0][2]["dataAddress"]["baseUrl"] == "http://me/internal/payload/asset-1"
+    assert calls[0][2]["dataAddress"] == {
+        "type": "HttpData",
+        "baseUrl": "http://me/internal/payload/asset-1",
+        "authKey": "X-T",
+        "authCode": "v",
+    }
     assert calls[2][2]["accessPolicyId"] == "policy-asset-1"
     assert calls[2][2]["assetsSelector"][0]["operandRight"] == "asset-1"
 
@@ -55,7 +60,7 @@ def test_offer_creates_asset_policy_and_contract_with_the_key():
 def test_failure_is_a_connector_error():
     connector = connector_with(lambda _: httpx.Response(500, text="broken"))
     with pytest.raises(ConnectorError, match="500"):
-        run(connector.offer("a", "http://x"))
+        run(connector.offer("a", "http://x", ("X-T", "v")))
 
 
 @pytest.mark.parametrize(

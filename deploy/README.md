@@ -9,7 +9,8 @@ This installs the dataspace on Kubernetes with [Helmfile](https://helmfile.readt
 - `kubectl` and `helm`, with `KUBECONFIG` pointing at the cluster. `bootstrap.sh` installs `helmfile` if it is missing.
 - An Ingress controller, if you enable the Ingress. The annotations are for [ingress-nginx](https://kubernetes.github.io/ingress-nginx/). Any other controller needs its own, through `ingress.annotations`, and has to allow the same body size.
 - [cert-manager](https://cert-manager.io), if you want it to issue certificates.
-- PostgreSQL, S3-compatible storage and Keycloak. They aren't installed here. By default they are the ones from the [IndustryFusion DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack in namespace `iff`, at the addresses in `values/common.yaml`.
+- A network plugin that enforces NetworkPolicies, for `networkPolicy.enabled`. Without one, they are accepted and do nothing.
+- PostgreSQL, S3-compatible storage and Keycloak. They aren't installed here. The PostgreSQL user in the secrets file has to be able to create databases and roles. By default they are the ones from the [IndustryFusion DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack in namespace `iff`, at the addresses in `values/common.yaml`.
 - The realm set up once, as [keycloak.md](../keycloak.md) describes. `scripts/setup-keycloak.py` does this.
 - The images of `registry`, `gateway`, `dsp-gateway`, `management`, `adapter` and `connector` in a registry the cluster can pull from, as `[<images.registry>/]<images.repo>/<name>:<images.version>`. This project doesn't publish images yet, so build them with `docker build`.
 
@@ -64,12 +65,28 @@ A registration waits for the participant's pods, so it can take a few minutes.
 |---|---|
 | `limits.maxUploadBytes`, `limits.maxJsonBytes` | The one place these are set. The gateway, management and, through management, every new adapter read them. The gateway Ingress allows exactly `maxUploadBytes`, and the management Ingress `maxJsonBytes`. A participant that already exists gets a new value when it is registered again |
 | `dependencies.keycloak.url` | Used by every service, and compared exactly with a token's issuer. Keycloak has to be reachable at this address from inside the cluster, and tokens have to be minted through it. No addresses are fixed: use a name your cluster resolves |
-| `ingress.management.allowFrom` | Restrict who reaches management. See "What is and is not publicly reachable" in [architecture.md](../architecture.md) |
+| `ingress.management.allowFrom` | Who reaches management, required with its Ingress. See "What is and is not publicly reachable" in [architecture.md](../architecture.md). External participants' adapters read participants there, so include them |
+| `networkPolicy.enabled` | On by default. See "Security Layers" in [architecture.md](../architecture.md) |
+| `dependencies.s3.iamUrl` | For an S3 identity per participant. See below |
 | `ingress.dspGateway.enabled`, `ingress.dspGateway.host` | Exposes the DSP gateway, for external participants. Off by default, and hosted-only installations leave it off. It routes to every hosted connector's DSP and public ports. See "DSP Gateway" in [architecture.md](../architecture.md) |
 | `participants.gatewayPeerUrl`, `participants.dspGatewayPeerUrl` | What an `externally_reachable` participant announces, such as `https://<gateway host>`. Empty means the addresses inside the cluster, which work only for peers in this cluster. They have to work from inside the cluster too |
 | `ingress.tls.certManagerClusterIssuer` | With `ingress.tls.enabled`, adds the cert-manager annotation. Without it, the named TLS Secrets have to exist |
 
 With external participants, connectors push content through the gateway, and through the DSP gateway's addresses. A connector's HTTP client reuses a connection for up to 5 minutes, and a push on a connection the other end has dropped fails the transfer. The services keep idle connections for longer. So must anything in front of them: with ingress-nginx, set `keep-alive` above 300 in its ConfigMap, as its default is 75 seconds.
+
+### An S3 identity per participant
+
+Without `dependencies.s3.iamUrl`, **participants share the S3 identity in the secrets file, so one participant's credentials can read another's bucket.** PostgreSQL users and internal keys are per participant in any case.
+
+To separate them, the storage has to keep its identities in its own list, and management has to be able to change it:
+
+- Run SeaweedFS **without** `-s3.config`, and with `-iam`. Add the identity in the secrets file to its list: `s3.configure -user dataspace-management -access_key <key> -secret_key <secret> -actions Admin,Read,Write,List,Tagging -apply` in `weed shell`. Until it has a list, SeaweedFS accepts anyone. `write_storage_identities` in `scripts/local-env.sh` shows how.
+- Set `dependencies.s3.iamUrl` to its IAM API's address.
+- Allow only management to reach the IAM port, and nothing to reach the filer's port but the storage itself. In the version used here, the IAM API didn't refuse a wrong signature, and the filer serves every identity's keys in plain text.
+
+**Even then, the separation isn't complete.** In the version used here, SeaweedFS 3.80, a copy is only checked against its destination. So with one participant's keys, a direct read, write or list of another's bucket is refused, and `CopyObject` or `UploadPartCopy` of an object it can name, into its own bucket, succeeds. Listing stays refused, so it has to know the key, which holds a message's id. No policy or setting closed this. `scripts/security-check.py` reports it as a known gap, and exits with 2. See "A known gap" in the design of `gh-20-security-hardening`, for the alternatives and the decision it waits on.
+
+**Don't set this on a storage started with `-s3.config`,** which includes the [DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack's. SeaweedFS uses its filer's list instead of its static one once that exists, so that stack's other identities would stop working, and the participants' would go at its next restart. Move that storage's identities to the filer's list first, or give the dataspace its own storage.
 
 A body over the limit is refused by the Ingress with `413`, with the Ingress's own body. A smaller request over `MAX_JSON_BYTES` is refused by the gateway, with the contract's error.
 

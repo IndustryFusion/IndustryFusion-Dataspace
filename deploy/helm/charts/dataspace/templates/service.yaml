@@ -31,6 +31,11 @@ spec:
     metadata:
       labels: {{- include "dataspace.labels" . | nindent 8 }}
     spec:
+      {{- if eq .Values.component "registry" }}
+      # A resolver sends two lookups at once, and some network plugins that enforce NetworkPolicies lose one of them.
+      dnsConfig:
+        options: [{ name: single-request }]
+      {{- end }}
       {{- if eq .Values.component "management" }}
       serviceAccountName: management
       {{- else }}

@@ -42,8 +42,8 @@ The participants this one may communicate with.
   {
     "participant_id": "urn:example:machine-builder-1",
     "participant_type": "https://industryfusion.github.io/contexts/ontology/v0/dataspace#machine_builder",
-    "adapter_url": "...",
-    "dsp_url": "...",
+    "adapter_url": null,
+    "dsp_url": null,
     "hosted": true,
     "externally_reachable": false,
     "peer_notify_url": null
@@ -51,7 +51,7 @@ The participants this one may communicate with.
 ]
 ```
 
-`participant_type` is a full IRI.
+`participant_type` is a full IRI. An agent doesn't need the addresses. A hosted participant's `adapter_url` is `null`, and so is its `dsp_url` unless it is `externally_reachable`, as they only work inside the hub. An external participant's own addresses are shown.
 
 ## Sending
 

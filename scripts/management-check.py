@@ -157,7 +157,7 @@ def capability_reset(check: Check, owner_secret: str, builder_secret: str) -> No
         builder,
     )
     expect("the machine builder asks for access", status, 202, answer)
-    status, state = lc.http("GET", f"{check.management}/api/participants/{quoted(OWNER)}/capabilities")
+    status, state = check.api("GET", f"/api/participants/{quoted(OWNER)}/capabilities")
     expect("capabilities read with no token", status, 200, state)
     approval = next(a for a in state["approvals"] if a["consumer_id"] == BUILDER and a["capability"] == capability)
     path = f"/api/participants/{quoted(OWNER)}/approvals/{approval['id']}"
@@ -167,7 +167,7 @@ def capability_reset(check: Check, owner_secret: str, builder_secret: str) -> No
     status, answer = check.api("PATCH", path, {"action": "deny"})
     expect("deciding a resolved request gives 409", status, 409, answer)
 
-    status, view = lc.http("GET", f"{check.management}/api/policy?fo={OWNER}&mb={BUILDER}")
+    status, view = check.api("GET", f"/api/policy?fo={OWNER}&mb={BUILDER}")
     expect("policy view with no token", status, 200, view)
     entry = next(e for e in view["capabilities"] if e["capability"] == capability)
     assert entry["status"] == "approved" and entry["approval_id"] == approval["id"], entry
@@ -187,7 +187,7 @@ def capability_reset(check: Check, owner_secret: str, builder_secret: str) -> No
     )
     expect("record a decision through the management route", status, 200, answer)
     assert access()[capability]["status"] == "denied"
-    status, state = lc.http("GET", f"{check.management}/api/participants/{quoted(OWNER)}/capabilities")
+    status, state = check.api("GET", f"/api/participants/{quoted(OWNER)}/capabilities")
     denied = next(a for a in state["approvals"] if a["consumer_id"] == BUILDER and a["capability"] == capability)
     denied_path = f"/api/participants/{quoted(OWNER)}/approvals/{denied['id']}"
     status, answer = check.api("PATCH", denied_path, {"action": "reset"})

@@ -42,8 +42,7 @@ export default function Policies() {
 
   const read = async (fo, mb) => {
     const query = new URLSearchParams({ fo, mb }).toString();
-    // An external side needs a token, so send one when there is one.
-    return admin.active ? admin.call('GET', `/api/policy?${query}`) : request('GET', `/api/policy?${query}`);
+    return admin.call('GET', `/api/policy?${query}`);
   };
 
   const show = async (event) => {
@@ -121,12 +120,13 @@ export default function Policies() {
               ))}
           </select>
         </label>
-        <button type="submit">Show</button>
+        {admin.active && <button type="submit">Show</button>}
       </form>
-      {view && view.unavailable.length > 0 && (
+      {!admin.active && <p role="note">Reading who has access needs admin mode.</p>}
+      {admin.active && view && view.unavailable.length > 0 && (
         <p role="note">Held by its own adapter, so not shown here: {view.unavailable.join(', ')}</p>
       )}
-      {view && (
+      {admin.active && view && (
         <table>
           <thead>
             <tr>

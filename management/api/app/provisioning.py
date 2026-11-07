@@ -18,6 +18,7 @@
 
 import asyncio
 import base64
+import dataclasses
 import logging
 import secrets as token_source
 import weakref
@@ -33,7 +34,7 @@ from app.databases import Databases
 from app.keycloak import KeycloakAdmin
 from app.kubernetes import Kubernetes
 from app.registry import Registry
-from app.storage import Buckets
+from app.storage import Buckets, StorageIdentities
 from app.tokens import fetch_admin_token
 
 log = logging.getLogger("management.provisioning")
@@ -89,13 +90,20 @@ def _answer_for(error: Exception) -> tuple[int, str]:
 
 class Provisioner:
     def __init__(
-        self, settings: Settings, databases: Databases, kubernetes: Kubernetes, registry: Registry, buckets: Buckets
+        self,
+        settings: Settings,
+        databases: Databases,
+        kubernetes: Kubernetes,
+        registry: Registry,
+        buckets: Buckets,
+        identities: StorageIdentities,
     ) -> None:
         self.settings = settings
         self.databases = databases
         self.kubernetes = kubernetes
         self.registry = registry
         self.buckets = buckets
+        self.identities = identities
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
     @asynccontextmanager
@@ -144,10 +152,49 @@ class Provisioner:
         if existing["participant_type"] != record["participant_type"]:
             raise HTTPException(status_code=409, detail="A participant can't change type. Delete it first")
 
-    async def _databases_step(self, participant_id: str, undo: Undo) -> None:
+    def _credentials(self, participant_id: str, existing_secret: dict | None) -> manifests.Credentials:
+        """A repeated registration keeps what the participant holds. Anything missing is made."""
+        data = (existing_secret or {}).get("data", {})
+
+        def kept(key: str) -> str | None:
+            return base64.b64decode(data[key]).decode() if key in data else None
+
+        # With identities to manage, the storage makes the keys.
+        s3_access_key = kept("s3-access-key") if self.identities.enabled else self.settings.s3_access_key
+        s3_secret_key = kept("s3-secret-key") if self.identities.enabled else self.settings.s3_secret_key
+        return manifests.Credentials(
+            edc_api_key=kept("edc-api-key") or token_source.token_hex(24),
+            database_password=kept("db-password") or token_source.token_hex(24),
+            internal_key=kept("internal-key") or token_source.token_hex(24),
+            s3_access_key=s3_access_key or "",
+            s3_secret_key=s3_secret_key or "",
+        )
+
+    async def _databases_step(self, participant_id: str, password: str, undo: Undo) -> None:
+        user = manifests.database_user(participant_id)
+        if await self.databases.ensure_user(user, password):
+            undo.add(f"database user {user}", lambda: self.databases.drop_user(user))
         for name in manifests.database_names(participant_id):
-            if await self.databases.create(name):
+            if await self.databases.create(name, user):
                 undo.add(f"database {name}", lambda name=name: self.databases.drop(name))
+
+    async def _storage_step(
+        self, participant_id: str, credentials: manifests.Credentials, is_new: bool, undo: Undo
+    ) -> manifests.Credentials:
+        """Without identities to manage, the participant uses the configured one, and its adapter makes the bucket."""
+        if not self.identities.enabled:
+            return credentials
+        name = manifests.storage_identity(participant_id)
+        bucket = manifests.bucket_name(participant_id)
+        await self.buckets.create(bucket)
+        if is_new:
+            undo.add("bucket", lambda: self.buckets.remove(bucket))
+        held = (credentials.s3_access_key, credentials.s3_secret_key) if credentials.s3_access_key else None
+        access_key, secret_key, made = await self.identities.ensure(name, bucket, held)
+        if made:
+            undo.add(f"storage identity {name}", lambda: self.identities.remove(name))
+        await self.buckets.wait_usable(bucket, access_key, secret_key)
+        return dataclasses.replace(credentials, s3_access_key=access_key, s3_secret_key=secret_key)
 
     async def _keycloak_step(self, participant_id: str, keycloak: KeycloakAdmin, undo: Undo) -> str:
         role, made_role = await keycloak.ensure_role(participant_id)
@@ -161,19 +208,21 @@ class Provisioner:
         return await keycloak.client_secret(client_uuid)
 
     async def _kubernetes_step(
-        self, request: Registration, client_secret: str, existing_secret: dict | None, undo: Undo
+        self,
+        request: Registration,
+        client_secret: str,
+        credentials: manifests.Credentials,
+        existing_secret: dict | None,
+        undo: Undo,
     ) -> None:
         participant_id = request.participant_id
         if existing_secret is None:
-            key = token_source.token_hex(24)
             # An adapter that started may have made its bucket.
             undo.add("bucket", lambda: self.buckets.remove(manifests.bucket_name(participant_id)))
             undo.add("pods", lambda: self._wait_gone(participant_id, UNDO_PODS_SECONDS))
-        else:
-            key = base64.b64decode(existing_secret["data"]["edc-api-key"]).decode()
         bare_type = roles.bare_name(request.participant_type)
         objects = manifests.all_objects(
-            participant_id, bare_type, self.settings, client_secret, key, request.externally_reachable
+            participant_id, bare_type, self.settings, client_secret, credentials, request.externally_reachable
         )
         for manifest in objects:
             previous = await self.kubernetes.apply(manifest)
@@ -227,11 +276,15 @@ class Provisioner:
             undo = Undo()
             try:
                 async with asyncio.timeout_at(deadline):
+                    credentials = self._credentials(participant_id, existing_secret)
                     if request.hosted:
-                        await self._databases_step(participant_id, undo)
+                        await self._databases_step(participant_id, credentials.database_password, undo)
                     client_secret = await self._keycloak_step(participant_id, keycloak, undo)
                     if request.hosted:
-                        await self._kubernetes_step(request, client_secret, existing_secret, undo)
+                        credentials = await self._storage_step(
+                            participant_id, credentials, existing_secret is None, undo
+                        )
+                        await self._kubernetes_step(request, client_secret, credentials, existing_secret, undo)
                     saved = await self.registry.save(record)
             except Exception as error:
                 status, detail = _answer_for(error)
@@ -284,4 +337,9 @@ class Provisioner:
         await step("pods", lambda: self._wait_gone(participant_id))
         for name in manifests.database_names(participant_id):
             await step(f"database {name}", lambda name=name: self.databases.drop(name))
+        user = manifests.database_user(participant_id)
+        await step(f"database user {user}", lambda: self.databases.drop_user(user))
         await step("bucket", lambda: self.buckets.remove(manifests.bucket_name(participant_id)))
+        if self.identities.enabled:
+            identity = manifests.storage_identity(participant_id)
+            await step(f"storage identity {identity}", lambda: self.identities.remove(identity))

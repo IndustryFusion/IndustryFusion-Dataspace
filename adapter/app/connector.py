@@ -51,7 +51,7 @@ class Connector:
             raise ConnectorError(f"GET {path} gave {response.status_code}: {response.text[:300]}")
         return response.json()
 
-    async def offer(self, asset_id: str, source_url: str) -> None:
+    async def offer(self, asset_id: str, source_url: str, header: tuple[str, str]) -> None:
         """Offer an HTTP source to other participants, with its own permit-all policy and contract."""
         policy_id = f"policy-{asset_id}"
         await self._post(
@@ -60,7 +60,12 @@ class Connector:
                 "@context": EDC_CONTEXT,
                 "@id": asset_id,
                 "properties": {"name": asset_id},
-                "dataAddress": {"type": "HttpData", "baseUrl": source_url},
+                "dataAddress": {
+                    "type": "HttpData",
+                    "baseUrl": source_url,
+                    "authKey": header[0],
+                    "authCode": header[1],
+                },
             },
         )
         await self._post(

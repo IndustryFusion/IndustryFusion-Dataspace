@@ -75,7 +75,7 @@ def world(clock):
 
 
 def read(world, participant=KNOWN):
-    return world.client.get(f"/api/participants/{participant}").json()
+    return world.client.get(f"/api/participants/{participant}", headers=world.admin).json()
 
 
 def plain(record: dict) -> dict:

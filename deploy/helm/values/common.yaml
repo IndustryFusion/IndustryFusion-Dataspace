@@ -34,6 +34,10 @@ dependencies:
     port: 5432
   s3:
     endpoint: http://seaweedfs.iff:80
+    # The storage's IAM API, for an S3 identity per participant. A storage started with a static list can't use this,
+    # which includes the DigitalTwin stack's. Empty means participants share the identity in the secrets file. See
+    # deploy/README.md.
+    iamUrl: ""
   keycloak:
     # Every service compares a token's issuer with <url>/realms/<realm>, so mint tokens through this URL.
     url: http://keycloak-service.iff:8080/auth
@@ -71,7 +75,8 @@ ingress:
     transferTimeoutSeconds: 3600
   management:
     host: ""
-    # Addresses allowed to reach it, comma-separated. Empty leaves it open to whoever reaches the Ingress.
+    # Addresses allowed to reach it, comma-separated, required with the Ingress. Include external participants'
+    # adapters, as they read participants here.
     allowFrom: ""
   # For external participants. Hosted-only installations leave this off.
   dspGateway:
@@ -84,6 +89,10 @@ ingress:
     gatewaySecretName: dataspace-gateway-tls
     managementSecretName: dataspace-management-tls
     dspGatewaySecretName: dataspace-dsp-gateway-tls
+
+# Who reaches adapters, connectors and the registry. They need a network plugin that enforces them.
+networkPolicy:
+  enabled: true
 
 # How a service's own containers are sized. Empty leaves it to the cluster.
 resources: {}

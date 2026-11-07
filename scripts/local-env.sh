@@ -40,9 +40,6 @@ generate_credentials() {
   mkdir -p "$LOCAL"
   chmod 700 "$LOCAL"
   if [ -f "$LOCAL/credentials.env" ]; then
-    # An environment made before the management service existed lacks this one.
-    grep -q '^ADAPTER_INTERNAL_KEY=' "$LOCAL/credentials.env" ||
-      echo "ADAPTER_INTERNAL_KEY=$(openssl rand -hex 24)" >> "$LOCAL/credentials.env"
     return
   fi
   umask 077
@@ -53,23 +50,40 @@ S3_ACCESS_KEY=$(openssl rand -hex 12)
 S3_SECRET_KEY=$(openssl rand -hex 24)
 KEYCLOAK_ADMIN_USER=admin
 KEYCLOAK_ADMIN_PASSWORD=$(openssl rand -hex 24)
-ADAPTER_INTERNAL_KEY=$(openssl rand -hex 24)
 CREDENTIALS
 }
 
 apply_secrets() {
   # shellcheck disable=SC1091
   . "$LOCAL/credentials.env"
-  local s3config
-  s3config=$(printf '{"identities":[{"name":"dataspace","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' \
-    "$S3_ACCESS_KEY" "$S3_SECRET_KEY")
   kubectl -n iff create secret generic infra-credentials \
     --from-literal=postgres-user="$POSTGRES_USER" \
     --from-literal=postgres-password="$POSTGRES_PASSWORD" \
     --from-literal=keycloak-admin-user="$KEYCLOAK_ADMIN_USER" \
     --from-literal=keycloak-admin-password="$KEYCLOAK_ADMIN_PASSWORD" \
-    --from-literal=s3-config="$s3config" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+}
+
+# Writes the first S3 identity to the storage's own list. Management adds participants to it. The storage accepts
+# anything until it has a list, so this comes before anything else uses it.
+write_storage_identities() {
+  # shellcheck disable=SC1091
+  . "$LOCAL/credentials.env"
+  local answer
+  for _ in $(seq 1 60); do
+    kubectl -n iff exec deploy/seaweedfs -- wget -qO /dev/null http://127.0.0.1:9333/cluster/status && break
+    sleep 1
+  done
+  echo "s3.configure -user dataspace-management -access_key $S3_ACCESS_KEY -secret_key $S3_SECRET_KEY -actions Admin,Read,Write,List,Tagging -apply" |
+    kubectl -n iff exec -i deploy/seaweedfs -- weed shell -master=127.0.0.1:9333 >/dev/null
+  for _ in $(seq 1 60); do
+    # Without a list, it answers anyone. With one, it refuses this unsigned call.
+    answer=$(kubectl -n iff exec deploy/seaweedfs -- wget -qO /dev/null http://127.0.0.1:8333/ 2>&1 || true)
+    case "$answer" in *403*) return ;; esac
+    sleep 1
+  done
+  echo "Storage did not take up its first identity" >&2
+  return 1
 }
 
 # Runs a command with $KEYCLOAK_LOCAL_URL set to a forwarded Keycloak port.
@@ -116,6 +130,7 @@ up() {
   kubectl apply -f "$ROOT/deploy/local/infra.yaml" >/dev/null
   kubectl -n iff rollout status deploy/acid-cluster --timeout=300s
   kubectl -n iff rollout status deploy/seaweedfs --timeout=300s
+  write_storage_identities
   kubectl -n iff rollout status deploy/keycloak-service --timeout=420s
   with_keycloak setup_realm
   with_keycloak check_token
@@ -148,7 +163,6 @@ secrets:
   s3:
     accessKey: "$S3_ACCESS_KEY"
     secretKey: "$S3_SECRET_KEY"
-  adapterInternalKey: "$ADAPTER_INTERNAL_KEY"
   adminClientSecret: "$(cat "$LOCAL/admin-client-secret")"
 SECRETS
   echo "$LOCAL/helm-secrets.yaml"
@@ -165,11 +179,11 @@ services() {
     --from-literal=postgres-password="$POSTGRES_PASSWORD" \
     --from-literal=s3-access-key="$S3_ACCESS_KEY" \
     --from-literal=s3-secret-key="$S3_SECRET_KEY" \
-    --from-literal=adapter-internal-key="$ADAPTER_INTERNAL_KEY" \
     --from-literal=admin-client-secret="$(cat "$LOCAL/admin-client-secret")" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   images
   kubectl apply -f "$ROOT/deploy/local/services.yaml" >/dev/null
+  kubectl apply -f "$ROOT/deploy/local/network-policies.yaml" >/dev/null
   for service in $SERVICES; do
     kubectl -n dataspace rollout restart "deploy/$service" >/dev/null
     kubectl -n dataspace rollout status "deploy/$service" --timeout=180s

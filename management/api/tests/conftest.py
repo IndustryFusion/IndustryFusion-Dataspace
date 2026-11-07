@@ -308,10 +308,21 @@ class FakeIfric:
 class FakeDatabases:
     def __init__(self) -> None:
         self.names: set[str] = set()
+        self.owners: dict[str, str] = {}
+        self.users: dict[str, str] = {}
         self.fail_create: str | None = None
         self.fail_drop = False
 
-    async def create(self, name: str) -> bool:
+    async def ensure_user(self, name: str, password: str) -> bool:
+        made = name not in self.users
+        self.users[name] = password
+        return made
+
+    async def drop_user(self, name: str) -> bool:
+        return self.users.pop(name, None) is not None
+
+    async def create(self, name: str, owner: str) -> bool:
+        self.owners[name] = owner
         if self.fail_create and name.startswith(self.fail_create):
             raise HTTPException(status_code=503, detail="PostgreSQL refused or did not answer")
         if name in self.names:
@@ -335,11 +346,33 @@ class FakeBuckets:
         self.names: set[str] = set()
         self.removed: list[str] = []
 
+    async def create(self, bucket: str) -> None:
+        self.names.add(bucket)
+
+    async def wait_usable(self, bucket: str, access_key: str, secret_key: str) -> None:
+        return None
+
     async def remove(self, bucket: str) -> bool:
         self.removed.append(bucket)
         existed = bucket in self.names
         self.names.discard(bucket)
         return existed
+
+
+class FakeIdentities:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.entries: dict[str, dict] = {}
+
+    async def ensure(self, name: str, bucket: str, held: tuple[str, str] | None) -> tuple[str, str, bool]:
+        made = name not in self.entries
+        access, secret = held if held and not made else (uuid.uuid4().hex, uuid.uuid4().hex)
+        self.entries[name] = {"access": access, "secret": secret, "bucket": bucket}
+        return access, secret, made
+
+    async def remove(self, name: str) -> bool:
+        return self.entries.pop(name, None) is not None
 
 
 class World:
@@ -355,7 +388,6 @@ class World:
             s3_endpoint="http://storage.test",
             s3_access_key="s3-access",
             s3_secret_key="hidden-s3-value",
-            adapter_internal_key="the-internal-key",
             management_client_secret="right",
             gateway_peer_url="http://gateway.test:8080",
             gateway_url="http://gateway.test:8080",
@@ -390,7 +422,8 @@ class World:
         )
         kube = Kubernetes(kube_http, lambda: "service-account", "dataspace-participants", 0.01)
         self.services = build_services(self.settings, self.http, kube)
-        self.databases, self.buckets = FakeDatabases(), FakeBuckets()
+        self.databases, self.buckets, self.identities = FakeDatabases(), FakeBuckets(), FakeIdentities()
+        self.services.provisioner.identities = self.identities
         self.services.databases = self.databases
         self.services.provisioner.databases = self.databases
         self.services.provisioner.buckets = self.buckets
@@ -409,6 +442,8 @@ class World:
         name = manifests.slug(participant_id)
         assert not [key for key in self.kubernetes.objects if name in key[1]]
         assert not [db for db in self.databases.names if name in db]
+        assert not [user for user in self.databases.users if name in user]
+        assert not [identity for identity in self.identities.entries if name in identity]
         assert f"participant:{participant_id}" not in self.keycloak.roles
         assert self.keycloak.client_of(participant_id) is None
         assert participant_id not in self.registry.records

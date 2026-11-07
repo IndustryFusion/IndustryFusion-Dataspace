@@ -62,7 +62,8 @@ class PairedConnector:
     def __init__(self, mesh: "Mesh") -> None:
         self.mesh = mesh
 
-    async def offer(self, asset_id: str, source_url: str) -> None:
+    async def offer(self, asset_id: str, source_url: str, header: tuple[str, str]) -> None:
+        self.mesh.source_headers[asset_id] = dict([header])
         # A real connector takes a varying time, which is what could put notifications out of order.
         if self.mesh.varying_offers:
             await asyncio.sleep(random.random() * 0.03)
@@ -78,7 +79,9 @@ class PairedConnector:
 
     async def push(self, agreement_id: str, provider_dsp: str, destination_url: str, header: tuple[str, str]) -> str:
         provider, asset = agreement_id.split("|")
-        source = await self.mesh.client_at(provider).get(f"/internal/payload/{asset}")
+        source = await self.mesh.client_at(provider).get(
+            f"/internal/payload/{asset}", headers=self.mesh.source_headers[asset]
+        )
         target = urlparse(destination_url)
         answer = await self.mesh.clients[target.hostname].post(
             target.path, content=source.content, headers=dict([header])
@@ -98,6 +101,7 @@ class Mesh:
 
     def __init__(self) -> None:
         self.clients: dict[str, httpx.AsyncClient] = {}
+        self.source_headers: dict[str, dict[str, str]] = {}
         self.held = asyncio.Event()
         self.held.set()
         self.varying_offers = False

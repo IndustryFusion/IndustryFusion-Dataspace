@@ -66,21 +66,17 @@ spec:
       containers:
         - name: seaweedfs
           image: chrislusf/seaweedfs:3.80
-          args: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/config/s3.json"]
-          ports: [{ containerPort: 8333 }]
+          # No static list of identities: scripts/local-env.sh writes the first, and management adds to it.
+          args: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-iam", "-iam.port=8111"]
+          ports: [{ containerPort: 8333 }, { containerPort: 8111 }]
           volumeMounts:
             - { name: data, mountPath: /data }
-            - { name: config, mountPath: /config }
           readinessProbe:
             tcpSocket: { port: 8333 }
             periodSeconds: 3
       volumes:
         - name: data
           emptyDir: {}
-        - name: config
-          secret:
-            secretName: infra-credentials
-            items: [{ key: s3-config, path: s3.json }]
 ---
 apiVersion: v1
 kind: Service
@@ -89,7 +85,38 @@ metadata:
   namespace: iff
 spec:
   selector: { app: seaweedfs }
-  ports: [{ port: 80, targetPort: 8333 }]
+  ports:
+    - { name: s3, port: 80, targetPort: 8333 }
+    - { name: iam, port: 8111 }
+---
+# Its IAM API changes who may do what, and its filer serves every identity's keys, so only management reaches the first.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: seaweedfs
+  namespace: iff
+spec:
+  podSelector:
+    matchLabels: { app: seaweedfs }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 8333 }]
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dataspace }
+          podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [management] }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dataspace }
+          podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [management] }
+      ports: [{ protocol: TCP, port: 8111 }]
+    # Its master, volume server and filer call each other.
+    - from:
+        - podSelector:
+            matchLabels: { app: seaweedfs }
 ---
 apiVersion: apps/v1
 kind: Deployment

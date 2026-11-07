@@ -70,13 +70,100 @@ def test_the_secret_holds_credentials_and_no_deployment_does(world):
     world.register()
     secret = world.kubernetes.objects[("Secret", f"participant-{NAME}")]
     decoded = {key: base64.b64decode(value).decode() for key, value in secret["data"].items()}
-    assert decoded["internal-key"] == "the-internal-key"
+    assert len(decoded["internal-key"]) == 48
     assert decoded["client-secret"].startswith("secret-")
-    assert "p%40ss%2Fword" in decoded["database-url"], "a password is escaped in a URL"
+    assert decoded["db-user"] == f"participant_{NAME}"
+    assert f"{decoded['db-user']}:{decoded['db-password']}@" in decoded["database-url"]
     for kind, name in OBJECTS:
         if kind == "Deployment":
             text = json.dumps(world.kubernetes.objects[(kind, name)])
-            assert "p@ss" not in text and "the-internal-key" not in text and "hidden-s3-value" not in text
+            for key in ("internal-key", "db-password", "s3-secret-key", "client-secret"):
+                assert decoded[key] not in text
+
+
+def credentials_of(world, participant: str = ID) -> dict:
+    name = manifests.secret_name(participant)
+    secret = world.kubernetes.objects[("Secret", name)]
+    return {key: base64.b64decode(value).decode() for key, value in secret["data"].items()}
+
+
+def test_two_participants_share_no_credential(world):
+    world.register()
+    world.register("urn:test:mb", "machine_builder")
+    one, two = credentials_of(world), credentials_of(world, "urn:test:mb")
+    for key in ("db-user", "db-password", "internal-key", "s3-access-key", "s3-secret-key", "edc-api-key"):
+        assert one[key] != two[key], key
+    assert one["db-password"] != world.settings.postgres_password
+    assert one["s3-access-key"] != world.settings.s3_access_key
+
+
+def test_a_participant_owns_its_databases(world):
+    world.register()
+    for name in manifests.database_names(ID):
+        assert world.databases.owners[name] == f"participant_{NAME}"
+    assert world.databases.users[f"participant_{NAME}"] == credentials_of(world)["db-password"]
+
+
+def test_a_participant_has_an_identity_for_its_own_bucket(world):
+    world.register()
+    entry = world.identities.entries[f"participant-{NAME}"]
+    held = credentials_of(world)
+    assert (entry["access"], entry["secret"]) == (held["s3-access-key"], held["s3-secret-key"])
+    assert entry["bucket"] == f"participant-{NAME}"
+    assert entry["bucket"] in world.buckets.names
+
+
+def test_repeating_keeps_each_credential(world):
+    world.register()
+    before = credentials_of(world)
+    world.register(externally_reachable=True)
+    assert credentials_of(world) == before
+    assert world.identities.entries[f"participant-{NAME}"]["secret"] == before["s3-secret-key"]
+
+
+def test_removing_takes_the_user_and_identity(world):
+    world.register()
+    assert world.client.delete(f"/api/participants/{ID}", headers=world.admin).status_code == 204
+    world.nothing_of(ID)
+
+
+def test_a_failed_registration_takes_the_user_and_identity(world):
+    world.registry.fail_save = True
+    assert world.register().status_code == 503
+    world.nothing_of(ID)
+
+
+def test_an_external_participant_gets_no_user_or_identity(world):
+    world.register(hosted=False, adapter_url="http://a.example", dsp_url="http://d.example")
+    assert world.databases.users == {}
+    assert world.identities.entries == {}
+
+
+def test_without_a_filer_address_participants_use_the_configured_identity(world):
+    world.identities.enabled = False
+    world.register()
+    held = credentials_of(world)
+    assert (held["s3-access-key"], held["s3-secret-key"]) == ("s3-access", "hidden-s3-value")
+    assert world.identities.entries == {}
+    assert world.buckets.names == set()
+
+
+def test_the_connector_gets_its_client_secret_and_keycloak(world):
+    world.register()
+    template = world.kubernetes.objects[("Deployment", f"connector-{NAME}")]["spec"]["template"]
+    container = template["spec"]["containers"][0]
+    secret_keys = {e["name"]: e["valueFrom"]["secretKeyRef"]["key"] for e in container["env"] if "valueFrom" in e}
+    assert secret_keys["DATASPACE_KEYCLOAK_CLIENT_SECRET"] == "client-secret"
+    text = world.kubernetes.objects[("ConfigMap", f"connector-{NAME}")]["data"]["connector.properties"]
+    assert "edc.agent.identity.key=participant_id" in text
+    assert f"dataspace.keycloak.url={world.settings.keycloak_url}" in text
+
+
+def test_pods_carry_what_the_network_policies_select(world):
+    world.register()
+    for name, component in ((f"adapter-{NAME}", "adapter"), (f"connector-{NAME}", "connector")):
+        labels = world.kubernetes.objects[("Deployment", name)]["spec"]["template"]["metadata"]["labels"]
+        assert labels["dataspace.industryfusion.org/component"] == component
 
 
 def test_the_adapter_gets_what_it_reads(world):
@@ -701,7 +788,7 @@ def test_a_changed_secret_restarts_pods_and_an_unchanged_one_does_not(world):
     first = templates()
     world.register()
     assert templates() == first
-    world.services.provisioner.settings = dataclasses.replace(world.settings, adapter_internal_key="a new key")
+    world.keycloak.client_of(ID)["secret"] = "a new secret"
     world.register()
     second = templates()
     for name, template in second.items():

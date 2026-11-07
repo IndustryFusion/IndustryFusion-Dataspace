@@ -26,7 +26,6 @@ stringData:
   postgres-password: {{ required "secrets.postgres.password is required" .Values.secrets.postgres.password | quote }}
   s3-access-key: {{ required "secrets.s3.accessKey is required" .Values.secrets.s3.accessKey | quote }}
   s3-secret-key: {{ required "secrets.s3.secretKey is required" .Values.secrets.s3.secretKey | quote }}
-  adapter-internal-key: {{ required "secrets.adapterInternalKey is required" .Values.secrets.adapterInternalKey | quote }}
   ifric-reader-client-id: {{ .Values.secrets.ifricReaderClientId | default "" | quote }}
   ifric-reader-client-secret: {{ .Values.secrets.ifricReaderClientSecret | default "" | quote }}
   admin-client-secret: {{ required "secrets.adminClientSecret is required" .Values.secrets.adminClientSecret | quote }}
@@ -69,4 +68,89 @@ subjects:
   - kind: ServiceAccount
     name: management
     namespace: {{ .Release.Namespace }}
+{{- if .Values.networkPolicy.enabled }}
+{{- $component := "dataspace.industryfusion.org/component" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: adapters
+  namespace: {{ .Values.namespaces.participants }}
+  labels: {{- include "dataspace.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{ $component }}: adapter
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [gateway, management] }
+        # Peers notify directly, and connectors read and push content.
+        - podSelector: {}
+      ports: [{ protocol: TCP, port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: connectors
+  namespace: {{ .Values.namespaces.participants }}
+  labels: {{- include "dataspace.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{ $component }}: connector
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{ $component }}: connector
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dsp-gateway
+      ports:
+        - { protocol: TCP, port: 8082 }
+        - { protocol: TCP, port: 8084 }
+    - from:
+        - podSelector:
+            matchLabels:
+              {{ $component }}: adapter
+      ports: [{ protocol: TCP, port: 8081 }]
+    - from:
+        - podSelector:
+            matchLabels:
+              {{ $component }}: connector
+      ports: [{ protocol: TCP, port: 8083 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: registry
+  labels: {{- include "dataspace.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [gateway, management] }
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.participants }}
+          podSelector:
+            matchLabels:
+              {{ $component }}: adapter
+      ports: [{ protocol: TCP, port: 19000 }]
+{{- end }}
 {{- end }}

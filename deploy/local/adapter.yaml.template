@@ -40,8 +40,11 @@ spec:
     matchLabels: { app: adapter-${SLUG} }
   template:
     metadata:
-      labels: { app: adapter-${SLUG} }
+      labels: { app: adapter-${SLUG}, dataspace.industryfusion.org/component: adapter }
     spec:
+      # A resolver sends two lookups at once, and some network plugins that enforce NetworkPolicies lose one of them.
+      dnsConfig:
+        options: [{ name: single-request }]
       containers:
         - name: adapter
           image: dataspace/adapter:dev

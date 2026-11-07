@@ -15,6 +15,10 @@
 #
 
 # The cluster from scripts/local-env.sh, whose images are loaded under dataspace/<component>:dev.
+dependencies:
+  s3:
+    iamUrl: http://seaweedfs.iff:8111
+
 participants:
   demo: "urn:demo:factory-owner=factory_owner,urn:demo:machine-builder=machine_builder"
 
@@ -24,3 +28,4 @@ ingress:
     host: dataspace.localtest.me
   management:
     host: dataspace-management.localtest.me
+    allowFrom: "0.0.0.0/0"

@@ -15,12 +15,16 @@
 #
 #
 # Template for /config/connector.properties. Whatever provisions a connector
-# replaces ${PARTICIPANT_ID}, ${CONNECTOR_URL}, ${DSP_ADDRESS} and ${PUBLIC_ADDRESS}.
-# The last two are what other connectors use, through the DSP gateway if this
-# connector is reached from outside. The API key and database
-# connection come from EDC_API_AUTH_KEY and EDC_DATASOURCE_DEFAULT_*.
+# replaces ${PARTICIPANT_ID}, ${CONNECTOR_URL}, ${DSP_ADDRESS}, ${PUBLIC_ADDRESS},
+# ${KEYCLOAK_URL} and ${KEYCLOAK_REALM}. The address ones are what other connectors
+# use, through the DSP gateway if this connector is reached from outside. The API key,
+# database connection and client secret come from EDC_API_AUTH_KEY,
+# EDC_DATASOURCE_DEFAULT_* and DATASPACE_KEYCLOAK_CLIENT_SECRET.
 
 edc.participant.id=${PARTICIPANT_ID}
+edc.agent.identity.key=participant_id
+dataspace.keycloak.url=${KEYCLOAK_URL}
+dataspace.keycloak.realm=${KEYCLOAK_REALM}
 edc.hostname=${CONNECTOR_URL}
 
 web.http.port=8080

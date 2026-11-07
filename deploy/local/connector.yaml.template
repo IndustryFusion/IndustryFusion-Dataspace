@@ -35,6 +35,7 @@ stringData:
   api-key: "${EDC_API_KEY}"
   db-user: "${POSTGRES_USER}"
   db-password: "${POSTGRES_PASSWORD}"
+  client-secret: "${CLIENT_SECRET}"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -46,8 +47,11 @@ spec:
     matchLabels: { app: connector-${SLUG} }
   template:
     metadata:
-      labels: { app: connector-${SLUG} }
+      labels: { app: connector-${SLUG}, dataspace.industryfusion.org/component: connector }
     spec:
+      # A resolver sends two lookups at once, and some network plugins that enforce NetworkPolicies lose one of them.
+      dnsConfig:
+        options: [{ name: single-request }]
       containers:
         - name: connector
           image: dataspace/connector:dev
@@ -66,6 +70,8 @@ spec:
               valueFrom: { secretKeyRef: { name: connector-${SLUG}, key: db-user } }
             - name: EDC_DATASOURCE_DEFAULT_PASSWORD
               valueFrom: { secretKeyRef: { name: connector-${SLUG}, key: db-password } }
+            - name: DATASPACE_KEYCLOAK_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: connector-${SLUG}, key: client-secret } }
           volumeMounts:
             - { name: config, mountPath: /config }
           readinessProbe:

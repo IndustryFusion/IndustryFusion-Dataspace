@@ -91,20 +91,25 @@ def drop_database(name: str) -> None:
 
 
 def connector_properties(participant_id: str, url: str) -> str:
-    """Fill in the connector's template, for a connector other connectors reach at its own address."""
+    """Fill in the connector's template, for a connector other connectors reach at its own address.
+
+    The id goes last, so nothing in it is taken for a placeholder.
+    """
     text = (ROOT / "connector" / "connector.properties.template").read_text()
     for name, value in (
-        ("PARTICIPANT_ID", participant_id),
         ("CONNECTOR_URL", url),
         ("DSP_ADDRESS", f"{url}:8082/api/v1/dsp"),
         ("PUBLIC_ADDRESS", f"{url}:8084/api/v1/public"),
+        ("KEYCLOAK_URL", "http://keycloak-service.iff:8080/auth"),
+        ("KEYCLOAK_REALM", "dataspace"),
+        ("PARTICIPANT_ID", participant_id),
     ):
         text = text.replace("${" + name + "}", value)
     return text
 
 
-def deploy_connector(participant_id: str, api_key: str) -> str:
-    """Deploy one participant's connector, and return its Service name."""
+def deploy_connector(participant_id: str, api_key: str, client_secret: str) -> str:
+    """Deploy one participant's connector, and return its Service name. It needs that participant's Keycloak client."""
     name = slug(participant_id)
     ensure_database(f"edc_{name}")
     url = f"http://connector-{name}.{PARTICIPANTS}"
@@ -118,6 +123,7 @@ def deploy_connector(participant_id: str, api_key: str) -> str:
             EDC_API_KEY=api_key,
             POSTGRES_USER=secrets["POSTGRES_USER"],
             POSTGRES_PASSWORD=secrets["POSTGRES_PASSWORD"],
+            CLIENT_SECRET=client_secret,
         )
     )
     return f"connector-{name}"
