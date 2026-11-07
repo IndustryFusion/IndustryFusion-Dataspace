@@ -30,6 +30,7 @@ answers. That run must fail, naming the field. It exits with 0 only if everythin
 
 import argparse
 import contextlib
+import datetime
 import hashlib
 import http.client
 import http.server
@@ -48,6 +49,7 @@ import urllib.request
 import uuid
 import zipfile
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 from dataspace_client import Answer, ApiError, DataspaceClient
 
@@ -89,7 +91,9 @@ class Moment(Kind):
         if found:
             return found
         try:
-            time.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")
+            if "T" not in value:
+                raise ValueError(value)
+            datetime.datetime.fromisoformat(value)
         except ValueError:
             return [f"{where}: expected a date-time, got {value!r}"]
         return []
@@ -161,6 +165,23 @@ class Exactly(Shape):
         return "not-an-object"
 
 
+class Reasoned(Exactly):
+    """A message that has a status has a reason if, and only if, that status says it failed."""
+
+    def problems(self, value, where):
+        found = super().problems(value, where)
+        if isinstance(value, dict):
+            reason = value.get("error_message")
+            if value.get("status") in ("notified", "received", "acked") and reason is not None:
+                found.append(f"{where}.error_message: {reason!r} on a message that reads {value['status']}")
+            if value.get("status") in ("error", "rejected") and not reason:
+                found.append(f"{where}.error_message: none on a message that reads {value['status']}")
+        return found
+
+    def sample(self):
+        return {**super().sample(), "error_message": None}
+
+
 class Each(Shape):
     def __init__(self, inner: Shape) -> None:
         self.inner = inner
@@ -187,7 +208,9 @@ WHEN = Moment()
 ANY_NAME = Nullable(TEXT)
 SENT_STATUS = OneOf("pending", "registered", "notified", "error", "rejected")
 INBOX_STATUS = OneOf("transferring", "negotiating", "negotiated", "received", "acked", "error")
-STATE = Pattern(r"OPEN|ESCALATING|CLOSED_[A-Z_]+", "OPEN")
+OUTCOMES = ("resolved", "withdrawn", "rejected", "failed", "timed_out", "superseded", "escalated")
+OUTCOME = OneOf(*OUTCOMES)
+STATE = OneOf("OPEN", "ESCALATING", *(f"CLOSED_{outcome.upper()}" for outcome in OUTCOMES))
 PERFORMATIVE = OneOf("request", "inform", "grant", "deny", "cancel", "close", "reopen", "escalate", "deescalate")
 ACCESS_STATUS = OneOf("auto", "on-request", "pending", "approved", "denied")
 ONTOLOGY = "https://industryfusion.github.io/contexts/ontology/v0/dataspace#"
@@ -208,7 +231,7 @@ SENT = Exactly(
     performative=PERFORMATIVE,
     capability=ANY_NAME,
     in_reply_to=ANY_NAME,
-    outcome=ANY_NAME,
+    outcome=Nullable(OUTCOME),
     sender_participant=TEXT,
     receiver_participant=TEXT,
     created_at=WHEN,
@@ -218,7 +241,7 @@ SENT = Exactly(
     status=SENT_STATUS,
     applied=FLAG,
 )
-STATUS = Exactly(
+STATUS = Reasoned(
     message_id=TEXT,
     status=SENT_STATUS,
     edc_transfer_id=ANY_NAME,
@@ -227,13 +250,13 @@ STATUS = Exactly(
     applied=FLAG,
     conversation_state=Nullable(STATE),
 )
-RECEIVED = Exactly(
+RECEIVED = Reasoned(
     message_id=TEXT,
     conversation_id=TEXT,
     performative=PERFORMATIVE,
     capability=ANY_NAME,
     in_reply_to=ANY_NAME,
-    outcome=ANY_NAME,
+    outcome=Nullable(OUTCOME),
     authorization=Nullable(OBJECT),
     expires_at=Nullable(WHEN),
     response_due_at=Nullable(WHEN),
@@ -250,7 +273,7 @@ RECEIVED = Exactly(
 CONVERSATION_FIELDS = {
     "conversation_id": TEXT,
     "state": STATE,
-    "outcome": ANY_NAME,
+    "outcome": Nullable(OUTCOME),
     "counterpart_participant": TEXT,
     "opened_at": WHEN,
     "closed_at": Nullable(WHEN),
@@ -258,18 +281,19 @@ CONVERSATION_FIELDS = {
     "escalated_by": ANY_NAME,
 }
 CONVERSATION = Exactly(**CONVERSATION_FIELDS)
-CONVERSATION_MESSAGE = Exactly(
+CONVERSATION_MESSAGE = Reasoned(
     message_id=TEXT,
     direction=OneOf("sent", "received"),
     performative=PERFORMATIVE,
     capability=ANY_NAME,
     in_reply_to=ANY_NAME,
-    outcome=ANY_NAME,
+    outcome=Nullable(OUTCOME),
     sender_participant=TEXT,
     receiver_participant=TEXT,
     created_at=WHEN,
     applied=FLAG,
     status=OneOf(*SENT_STATUS.values, *INBOX_STATUS.values),
+    error_message=ANY_NAME,
     has_files=FLAG,
     replied_at=Nullable(WHEN),
     payload=Nullable(OBJECT),
@@ -300,7 +324,8 @@ ACCESS_REQUEST = Exactly(
 )
 POLICY = Exactly(consumer_id=TEXT, capability=TEXT, status=ACCESS_STATUS, source=OneOf("default", "explicit"))
 STANDARD = Exactly(detail=TEXT)
-VALIDATION = Exactly(detail=Each(OBJECT))
+# Without the values sent, as they can be a secret.
+VALIDATION = Exactly(detail=Each(Exactly(loc=Kind(list, ["body"], 5), msg=TEXT, type=TEXT)))
 VIOLATION = Exactly(
     error=OneOf("conversation_state_violation"),
     reason=TEXT,
@@ -341,6 +366,35 @@ def self_test() -> int:
         refuses(shape, {**shape.sample(), "unnamed": 1}, f"{name} with a field the contract doesn't name")
         refuses(shape, shape.wrong(), f"{name} that isn't an object")
     refuses(CONVERSATION_DETAIL, {**CONVERSATION_DETAIL.sample(), "messages": [{}]}, "a list with an empty entry")
+    # Wrong values, of the right type.
+    conversation = CONVERSATION.sample()
+    refuses(CONVERSATION, {**conversation, "state": "CLOSED_BOGUS"}, "a state the contract doesn't name")
+    refuses(CONVERSATION, {**conversation, "outcome": "nonsense"}, "an outcome the contract doesn't name")
+    refuses(
+        CONVERSATION, {**conversation, "opened_at": "2026-11-07T10:00:00 this is not a time"}, "a date-time with junk"
+    )
+    refuses(CONVERSATION, {**conversation, "opened_at": "2026-11-07"}, "a date with no time")
+    status = STATUS.sample()
+    refuses(STATUS, {**status, "conversation_state": "CLOSED_NOPE"}, "a conversation_state the contract doesn't name")
+    refuses(STATUS, {**status, "status": "notified", "error_message": "It all went wrong"}, "an error on success")
+    refuses(STATUS, {**status, "status": "error", "error_message": None}, "a failure with no reason")
+    refuses(
+        VALIDATION, {"detail": [{"loc": ["body"], "msg": "m", "type": "t", "input": "a secret"}]}, "a value sent back"
+    )
+    checks += 2
+    for label, change in (("flipped", {"applied": False}), ("swapped", {"sender_participant": "b"})):
+        message = {**CONVERSATION_MESSAGE.sample(), "direction": "sent", "sender_participant": "a",
+                   "receiver_participant": "b", "applied": True, "status": "notified", **change}  # fmt: skip
+        if not view_problems(
+            {"messages": [message], "counterpart_participant": "b"}, "a", "a view", [message["message_id"]]
+        ):
+            failures += 1
+            print(f"FAIL the view check accepted a {label} message")
+    for rule, sample, wanted in TAMPER_CHANGES:
+        checks += 1
+        if change_value(sample, rule) != wanted:
+            failures += 1
+            print(f"FAIL the tamper change {rule} did something else")
     print(f"Self-test: {checks} checks, {failures} failures")
     return 1 if failures else 0
 
@@ -385,9 +439,19 @@ class Report:
         return 1 if self.failed else 0
 
 
+@dataclass
+class Limits:
+    """What this deployment set. Each deployment can set its own, and these are the defaults."""
+
+    json_bytes: int = 4 * 1024**2
+    upload_bytes: int = 1024**3
+
+
 class Run:
-    def __init__(self, report: Report, owner: DataspaceClient, builder: DataspaceClient, other: str | None) -> None:
-        self.report, self.owner, self.builder, self.other = report, owner, builder, other
+    def __init__(
+        self, report: Report, owner: DataspaceClient, builder: DataspaceClient, other: str | None, limits: Limits
+    ) -> None:
+        self.report, self.owner, self.builder, self.other, self.limits = report, owner, builder, other, limits
         self.owner_id, self.builder_id = owner.client_id, builder.client_id
 
     def post(self, sender: DataspaceClient, receiver: str, **fields) -> Answer:
@@ -403,6 +467,43 @@ class Run:
         if state["status"] != "notified":
             raise AssertionError(f"Message {message_id} ended as {state['status']}: {state['error_message']}")
         return receiver.wait_for_message(message_id)
+
+
+def view_problems(view: dict, own_id: str, where: str, accepted: list[str] | None = None) -> list[str]:
+    """What one side's view of a conversation says has to fit together, whatever the shapes allow."""
+    found = []
+    peer = view["counterpart_participant"]
+    for message in view["messages"]:
+        sides = (message["sender_participant"], message["receiver_participant"])
+        wanted = (own_id, peer) if message["direction"] == "sent" else (peer, own_id)
+        if sides != wanted:
+            found.append(f"{where}: message {message['message_id']} reads {sides}, wanted {wanted}")
+        if accepted and message["message_id"] in accepted and message["applied"] is not True:
+            found.append(f"{where}: message {message['message_id']} moved the state, and reads applied false")
+        if accepted and message["message_id"] in accepted and message["status"] in ("error", "rejected"):
+            found.append(f"{where}: message {message['message_id']} went through, and reads {message['status']}")
+    return found
+
+
+def both_views_agree(run: "Run", chat: str, what: str, accepted: list[str] | None = None) -> None:
+    """Each side's view of a conversation, on its own and against the other's."""
+    one, two = run.owner.conversation(chat), run.builder.conversation(chat)
+    found = view_problems(one, run.owner_id, "owner", accepted) + view_problems(
+        two, run.builder_id, "builder", accepted
+    )
+    if (one["state"], one["outcome"], one["escalated_by"]) != (two["state"], two["outcome"], two["escalated_by"]):
+        found.append(f"the sides read {(one['state'], one['outcome'])} and {(two['state'], two['outcome'])}")
+    theirs = {message["message_id"]: message for message in two["messages"]}
+    for message in one["messages"]:
+        other = theirs.get(message["message_id"])
+        if other is None:
+            continue
+        if other["direction"] == message["direction"]:
+            found.append(f"message {message['message_id']} reads {message['direction']} on both sides")
+        for field in ("sender_participant", "receiver_participant", "performative", "outcome", "applied"):
+            if message[field] != other[field]:
+                found.append(f"message {message['message_id']}: {field} {message[field]!r} and {other[field]!r}")
+    run.report.note(what, found)
 
 
 # --- The routes -------------------------------------------------------------------------------------------------------
@@ -476,7 +577,7 @@ def sending(run: Run) -> None:
     }.items():
         report.shape(f"{what}: 422 invalid_message", run.post(owner, run.builder_id, **fields), 422, INVALID)
 
-    report.shape("A body over MAX_JSON_BYTES: 413", oversized_post(owner, 4 * 1024**2 + 1), 413, STANDARD)
+    report.shape("A body over MAX_JSON_BYTES: 413", oversized_post(owner, run.limits.json_bytes + 1), 413, STANDARD)
 
 
 def oversized_post(client: DataspaceClient, size: int) -> Answer:
@@ -487,7 +588,9 @@ def oversized_post(client: DataspaceClient, size: int) -> Answer:
     return Answer(status, json.loads(content) if content else None, answer_headers)
 
 
-def watching_for_an_early_answer(base: str, method: str, path: str, headers: dict, body: bytes | None) -> tuple:
+def watching_for_an_early_answer(
+    base: str, method: str, path: str, headers: dict, body: bytes | None, stated: int | None = None
+) -> tuple:
     """Send the headers first: a service that refuses a body's stated length answers at once, and may close then."""
     parts = urllib.parse.urlsplit(base)
     connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=130)
@@ -495,7 +598,7 @@ def watching_for_an_early_answer(base: str, method: str, path: str, headers: dic
     for name, value in headers.items():
         connection.putheader(name, value)
     if body:
-        connection.putheader("Content-Length", str(len(body)))
+        connection.putheader("Content-Length", str(stated or len(body)))
     connection.endheaders()
     if body and not select.select([connection.sock], [], [], 3)[0]:
         connection.send(body)
@@ -563,6 +666,40 @@ def files(run: Run, folder: str) -> None:
     )
     report.shape("No files: 422", owner.send_files_request(run.builder_id, []), 422, STANDARD)
 
+    # The route has to answer before the body arrives, so this states a length, and needs no gibibyte to be sent.
+    headers = {
+        "Authorization": f"Bearer {owner.token()}",
+        "Content-Type": "multipart/form-data; boundary=x",
+    }
+    status, content, _ = watching_for_an_early_answer(
+        owner.gateway, "POST", "/outbox/files", headers, b"--x\r\n", stated=run.limits.upload_bytes + 1
+    )
+    report.that(f"POST /outbox/files over {run.limits.upload_bytes} bytes: 413", status == 413, (status, content[:200]))
+
+    # Before it arrives, a download gives 404. That can only be seen if the transfer is slower than this client.
+    path = os.path.join(folder, "large.bin")
+    with open(path, "wb") as target:
+        target.write(os.urandom(5 * 1024**2))
+    message_id = owner.send_files_request(run.builder_id, [path]).body["message_id"]
+    seen = None
+    for _ in range(200):
+        seen = builder.request("GET", f"/inbox/messages/{message_id}")
+        if seen.status == 200:
+            break
+        time.sleep(0.05)
+    if seen.status == 200 and seen.body["status"] not in ("received", "acked"):
+        early = builder.request("GET", f"/inbox/messages/{message_id}/download")
+        late = (
+            early.status != 404 and builder.request("GET", f"/inbox/messages/{message_id}").body["status"] == "received"
+        )
+        if late:
+            report.not_run.append("Download before arrival: the content arrived first")
+        else:
+            report.shape("Download before arrival: 404", early, 404, STANDARD)
+    else:
+        report.not_run.append("Download before arrival: the content arrived first")
+    builder.wait_for_message(message_id)
+
 
 def rules(run: Run) -> None:
     report, owner, builder = run.report, run.owner, run.builder
@@ -607,6 +744,14 @@ def rules(run: Run) -> None:
     report.that(
         "It is kept for audit, as rejected", kept.status == 200 and kept.body["status"] == "rejected", kept.body
     )
+    audit = owner.status(refused["message_id"])
+    report.that("Its status has the reason", audit["status"] == "rejected" and bool(audit["error_message"]), audit)
+    both_views_agree(run, chat, "Both views of that conversation fit together", [opening["message_id"]])
+    bad = owner.request(
+        "POST", "/outbox/messages", {"receiver_participant": "a-secret-value", "payload": "a-secret-value"}
+    )
+    report.shape("A request that doesn't match the schema: 422", bad, 422, VALIDATION)
+    report.that("It doesn't repeat what was sent", "a-secret-value" not in json.dumps(bad.body), bad.body)
 
     unknown = run.post(owner, run.builder_id, conversation_id=f"none-{uuid.uuid4()}", performative="reopen", payload={})
     body = report.shape("reopen of nothing: 409", unknown, 409, VIOLATION)
@@ -636,6 +781,8 @@ def capabilities(run: Run) -> None:
     if run.other:
         wrong = owner.request("GET", f"/capabilities/access?provider={run.other}")
         report.shape("An incompatible provider: 403", wrong, 403, STANDARD)
+    else:
+        report.not_run.append("An incompatible provider and consumer: there is no such participant with --owner")
 
     capability = "twin:history"
     report.that("twin:history starts on-request", by_name[capability]["status"] == "on-request", by_name[capability])
@@ -746,13 +893,14 @@ def flow_worked_example(run: Run, folder: str) -> None:
         report.that("Flow 4: with the same bytes", archive.read("flow-machine.json") == content)
     builder.ack(sent_file["message_id"])
 
+    # Existing participants can start with a decision from an earlier run.
+    owner.policy(run.builder_id, "twin:history", "reset")
     access = {entry["capability"]: entry for entry in builder.access(provider=run.owner_id)}
     report.that(
         "Flow 5: twin:history shows on-request",
-        access["twin:history"]["status"] in ("on-request", "approved"),
+        access["twin:history"]["status"] == "on-request",
         access["twin:history"],
     )
-    owner.policy(run.builder_id, "twin:history", "reset")
     asked = builder.request_access(
         run.owner_id, "twin:history", conversation_id=chat, purpose="Compare with earlier runs"
     )
@@ -817,6 +965,9 @@ def flow_escalation(run: Run) -> None:
     )
     other = run.post(builder, run.owner_id, conversation_id=chat, performative="deescalate", payload={})
     report.shape("Escalation: only the escalator can deescalate", other, 409, VIOLATION)
+    other = run.post(builder, run.owner_id, conversation_id=chat, performative="close", outcome="failed", payload={})
+    report.shape("Escalation: only the escalator can close", other, 409, VIOLATION)
+    report.that("Escalation: which leaves it ESCALATING", builder.conversation(chat)["state"] == "ESCALATING")
     run.sent_and_arrived(owner, builder, conversation_id=chat, performative="deescalate", payload={})
     report.that(
         "Escalation: deescalate takes both to OPEN",
@@ -842,6 +993,49 @@ def flow_reopening(run: Run) -> None:
         "Reopening: both OPEN, with no outcome",
         (one["state"], one["outcome"]) == (two["state"], two["outcome"]) == ("OPEN", None),
         (one["state"], two["state"]),
+    )
+
+
+def flow_other_steps(run: Run) -> None:
+    """The rest of protocol.md's performatives and state rules."""
+    report, owner, builder = run.report, run.owner, run.builder
+    opening = run.sent_and_arrived(owner, builder, performative="request", payload={})
+    chat = opening["conversation_id"]
+    denied = run.sent_and_arrived(
+        builder, owner, conversation_id=chat, performative="deny", capability="twin:history",
+        in_reply_to=opening["message_id"], payload={},
+    )  # fmt: skip
+    report.that("deny arrives, and names what it refuses", denied["capability"] == "twin:history", denied)
+    no_capability = run.post(builder, run.owner_id, conversation_id=chat, performative="deny", in_reply_to="x")
+    report.shape("deny without a capability: 422", no_capability, 422, INVALID)
+    cancelled = run.sent_and_arrived(
+        owner, builder, conversation_id=chat, performative="cancel", in_reply_to=opening["message_id"], payload={}
+    )
+    report.that("cancel arrives", cancelled["performative"] == "cancel", cancelled)
+    report.that(
+        "And changes no state", owner.conversation(chat)["state"] == builder.conversation(chat)["state"] == "OPEN"
+    )
+    both_views_agree(run, chat, "Both views after deny and cancel fit together", [opening["message_id"]])
+
+    run.sent_and_arrived(owner, builder, conversation_id=chat, performative="close", outcome="superseded", payload={})
+    refused = run.post(builder, run.owner_id, conversation_id=chat, performative="reopen", payload={})
+    report.shape("Reopening: refused if closed as superseded", refused, 409, VIOLATION)
+    report.that("Which leaves both closed", builder.conversation(chat)["state"] == "CLOSED_SUPERSEDED")
+
+    if run.other:
+        # Registered at an address that doesn't answer.
+        failed = run.post(builder, run.other, performative="inform", payload={})
+        accepted = report.shape("A receiver that can't be reached: 202", failed, 202, ACCEPTED)
+        state = builder.wait_for_status(accepted["message_id"])
+        report.that(
+            "Its status ends as error, with the reason",
+            state["status"] == "error" and bool(state["error_message"]),
+            state,
+        )
+    else:
+        report.not_run.append("A status of error: there is no receiver known not to answer with --owner")
+    report.not_run.append(
+        "An inbox message with status error: it needs a transfer to fail, or copies that differ, which only a race gives"
     )
 
 
@@ -919,7 +1113,7 @@ def worked_scenario(run: Run, folder: str) -> None:
     owner.policy(run.builder_id, "twin:history", "reset")
 
 
-def all_of_it(run: Run) -> None:
+def all_of_it(run: Run, only: list[str] | None = None) -> None:
     report = run.report
     with tempfile.TemporaryDirectory(prefix="contract-") as folder:
         sections = [
@@ -932,9 +1126,12 @@ def all_of_it(run: Run) -> None:
             ("flow.md, the worked example", lambda: flow_worked_example(run, folder)),
             ("flow.md, escalation", lambda: flow_escalation(run)),
             ("flow.md, reopening", lambda: flow_reopening(run)),
+            ("protocol.md, other steps", lambda: flow_other_steps(run)),
             ("the worked scenario", lambda: worked_scenario(run, folder)),
         ]
         for name, section in sections:
+            if only and name not in only:
+                continue
             print(f"\n--- {name}")
             try:
                 section()
@@ -945,18 +1142,48 @@ def all_of_it(run: Run) -> None:
 
 
 # --- A proxy that changes answers, to show that the suite fails ----------------------------------------------
-def remove_field(value: object, field: str) -> object:
+def change_value(value: object, change: str) -> object:
+    """A field's name removes it. `field=<JSON>` sets it. `messages:flip` and `messages:swap` change what a view says."""
     if isinstance(value, list):
-        return [remove_field(item, field) for item in value]
-    if isinstance(value, dict):
-        return {key: item for key, item in value.items() if key != field}
-    return value
+        return [change_value(item, change) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if change == "messages:flip":
+        flipped = [{**message, "applied": not message["applied"]} for message in value.get("messages", [])]
+        return {**value, "messages": flipped}
+    if change == "messages:swap":
+        swapped = [
+            {**message, "sender_participant": message["receiver_participant"],
+             "receiver_participant": message["sender_participant"]}
+            for message in value.get("messages", [])
+        ]  # fmt: skip
+        return {**value, "messages": swapped}
+    field, separator, setting = change.partition("=")
+    if separator:
+        return {**value, field: json.loads(setting)}
+    return {key: item for key, item in value.items() if key != field}
+
+
+TAMPER_CHANGES = (
+    ("outcome", {"outcome": "a", "b": 1}, {"b": 1}),
+    ('outcome="nonsense"', {"outcome": "a"}, {"outcome": "nonsense"}),
+    ("messages:flip", {"messages": [{"applied": True}]}, {"messages": [{"applied": False}]}),
+    (
+        "messages:swap",
+        {"messages": [{"sender_participant": "a", "receiver_participant": "b"}]},
+        {"messages": [{"sender_participant": "b", "receiver_participant": "a"}]},
+    ),
+)
 
 
 @contextlib.contextmanager
 def tamper_proxy(gateway: str, rule: str) -> Iterator[str]:
     """In front of the gateway. Answers on a route matching 'METHOD /path/*:field' lose it."""
-    route, _, field = rule.rpartition(":")
+    # A change can hold a colon of its own.
+    match = re.fullmatch(r"(\S+ \S+?):((?:messages:)?.*)", rule)
+    if match is None:
+        raise SystemExit(f"--tamper needs METHOD /path/*:change, not {rule}")
+    route, change = match[1], match[2]
     method, _, pattern = route.partition(" ")
     matcher = re.compile(re.escape(pattern).replace(r"\*", "[^/]+") + "$")
     touched = {"count": 0}
@@ -968,7 +1195,7 @@ def tamper_proxy(gateway: str, rule: str) -> Iterator[str]:
             forwarded = {k: v for k, v in self.headers.items() if k.lower() not in {"host", "content-length"}}
             status, content, headers = watching_for_an_early_answer(gateway, self.command, self.path, forwarded, body)
             if self.command == method and matcher.match(self.path.split("?")[0]) and status < 300:
-                content = json.dumps(remove_field(json.loads(content), field)).encode()
+                content = json.dumps(change_value(json.loads(content), change)).encode()
                 touched["count"] += 1
             self.send_response(status)
             for name, value in headers.items():
@@ -991,6 +1218,12 @@ def tamper_proxy(gateway: str, rule: str) -> Iterator[str]:
     finally:
         server.shutdown()
         print(f"The proxy changed {touched['count']} answers on {route}")
+        if not touched["count"]:
+            # A rule that matches nothing proves nothing, so it can't count as a pass.
+            CLEANUP_FAILURES.append(f"--tamper matched no route: {rule}")
+
+
+CLEANUP_FAILURES: list[str] = []
 
 
 # --- Participants -----------------------------------------------------------------------------------------------------
@@ -1061,11 +1294,15 @@ def own_participants(management: str, admin_secret: str, keycloak: str, gateway:
             quoted = urllib.parse.quote(participant, safe=":")
             status, answer = json_call("DELETE", f"{management}/api/participants/{quoted}", None, token)
             print(f"Removed {participant}: {status}")
+            if status != 204:
+                CLEANUP_FAILURES.append(f"Could not remove {participant}: {status} {answer}")
 
 
-def run_suite(owner: DataspaceClient, builder: DataspaceClient, other: str | None) -> int:
+def run_suite(
+    owner: DataspaceClient, builder: DataspaceClient, other: str | None, limits: Limits, only: list[str] | None
+) -> int:
     report = Report()
-    all_of_it(Run(report, owner, builder, other))
+    all_of_it(Run(report, owner, builder, other, limits), only)
     return report.finish()
 
 
@@ -1080,12 +1317,19 @@ def main() -> int:
     top.add_argument("--owner", help="id:secret of a factory owner. The secret comes after the last colon")
     top.add_argument("--builder", help="id:secret of a machine builder")
     top.add_argument(
-        "--tamper", help="METHOD /path/*:field. Remove a field from a route's answers, so the run must fail"
+        "--tamper",
+        help="METHOD /path/*:change. Change a route's answers, so the run must fail. A change is a field to remove, "
+        "field=<JSON>, messages:flip or messages:swap. A rule that matches nothing fails",
     )
+    top.add_argument("--only", help="Run only these sections, comma-separated, by the names the report prints")
+    top.add_argument("--max-json-bytes", type=int, default=Limits.json_bytes, help="This deployment's MAX_JSON_BYTES")
+    top.add_argument("--max-upload-bytes", type=int, default=Limits.upload_bytes, help="Its MAX_UPLOAD_BYTES")
     args = top.parse_args()
 
     if args.self_test:
         return self_test()
+    limits = Limits(args.max_json_bytes, args.max_upload_bytes)
+    only = args.only.split(",") if args.only else None
 
     def against(gateway: str, keycloak: str, management: str | None, secret: str | None) -> int:
         if args.tamper:
@@ -1096,12 +1340,12 @@ def main() -> int:
     def against_this(gateway: str, keycloak: str, management: str | None, secret: str | None) -> int:
         if management:
             with own_participants(management, secret, keycloak, gateway) as (owner, builder, other):
-                return run_suite(owner, builder, other)
+                return run_suite(owner, builder, other, limits, only)
         owner_id, _, owner_secret = args.owner.rpartition(":")
         builder_id, _, builder_secret = args.builder.rpartition(":")
         owner = DataspaceClient(gateway, keycloak, owner_id, owner_secret)
         builder = DataspaceClient(gateway, keycloak, builder_id, builder_secret)
-        return run_suite(owner, builder, None)
+        return run_suite(owner, builder, None, limits, only)
 
     if args.local:
         import local_cluster as lc
@@ -1123,5 +1367,12 @@ def main() -> int:
     return against(args.gateway_url, args.keycloak_url, None, None)
 
 
+def outcome() -> int:
+    answer = main()
+    for problem in CLEANUP_FAILURES:
+        print(f"FAIL {problem}")
+    return 1 if CLEANUP_FAILURES else answer
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(outcome())
