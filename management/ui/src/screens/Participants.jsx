@@ -142,12 +142,38 @@ const address = (value) => (typeof value === 'string' && value ? value : 'Not pu
 // These come from another service, and anything but text would stop the page from drawing.
 const asText = (value) => (typeof value === 'string' || typeof value === 'number' ? value : '');
 
+// The warnings of answers to registering, as [participant id, warning] pairs, leaving out anything that isn't text.
+const warningsOf = (records) =>
+  (Array.isArray(records) ? records : [records]).flatMap((made) =>
+    made && Array.isArray(made.warnings)
+      ? made.warnings
+          .filter((warning) => typeof warning === 'string' && warning)
+          .map((warning) => [asText(made.participant_id), warning])
+      : [],
+  );
+
+function Warnings({ warnings }) {
+  return (
+    <section className="panel" aria-label="Warnings">
+      <h3>Warnings</h3>
+      <ul>
+        {warnings.map(([participant, warning], index) => (
+          <li key={index}>
+            {participant}: {asText(warning)}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default function Participants() {
   const admin = useAdmin();
   const [participants, setParticipants] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [credentials, setCredentials] = useState(null);
+  const [warnings, setWarnings] = useState([]);
 
   // In admin mode the read carries the token, so it has every address.
   const load = useCallback(async () => {
@@ -173,7 +199,10 @@ export default function Participants() {
 
   // A secret on the screen goes with the mode that fetched it.
   useEffect(() => {
-    if (!admin.active) setCredentials(null);
+    if (!admin.active) {
+      setCredentials(null);
+      setWarnings([]);
+    }
   }, [admin.active]);
 
   useEffect(() => {
@@ -184,6 +213,7 @@ export default function Participants() {
   const act = async (action) => {
     setBusy(true);
     setError(null);
+    setWarnings([]);
     try {
       await action();
       await load();
@@ -221,16 +251,22 @@ export default function Participants() {
         <RegisterForm
           busy={busy}
           run={() =>
-            act(async () => setCredentials(await admin.call('POST', '/api/demo')))
+            act(async () => {
+              const made = await admin.call('POST', '/api/demo');
+              setCredentials(made);
+              setWarnings(warningsOf(made));
+            })
           }
           onDone={(body) =>
             act(async () => {
               const made = await admin.call('POST', '/api/participants', body);
               setCredentials([{ client_id: made.client_id, client_secret: made.client_secret }]);
+              setWarnings(warningsOf(made));
             })
           }
         />
       )}
+      {warnings.length > 0 && <Warnings warnings={warnings} />}
       {credentials && <Credentials credentials={credentials} onClose={() => setCredentials(null)} />}
       <p>
         <button type="button" onClick={refresh} disabled={refreshing || busy}>
@@ -298,11 +334,15 @@ export default function Participants() {
                       type="button"
                       disabled={busy}
                       onClick={() =>
-                        act(() =>
-                          admin.call(
-                            'POST',
-                            '/api/participants',
-                            record(entry, { externally_reachable: !entry.externally_reachable }),
+                        act(async () =>
+                          setWarnings(
+                            warningsOf(
+                              await admin.call(
+                                'POST',
+                                '/api/participants',
+                                record(entry, { externally_reachable: !entry.externally_reachable }),
+                              ),
+                            ),
                           ),
                         )
                       }

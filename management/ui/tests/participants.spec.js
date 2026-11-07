@@ -296,3 +296,74 @@ test('credentials can be copied, and no secret is shown until asked for', async 
   expect(await page.content()).not.toContain(secret);
   await expect(page.getByRole('button', { name: /^Copy/ })).toHaveCount(0);
 });
+
+test('a registration that cannot be reachable shows the warning with the participant', async ({ page, request }) => {
+  test.skip(!STAND_INS, 'Needs a hub without peer addresses');
+  await request.post('/test/no-peer-addresses');
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  await register(page, ID);
+  const warnings = page.getByRole('region', { name: 'Warnings' });
+  await expect(warnings.getByRole('listitem')).toHaveCount(1);
+  await expect(warnings).toContainText(`${ID}: Registered as not reachable from outside`);
+  await expect(warnings).toContainText('GATEWAY_PEER_URL');
+  await expect(rowOf(page, ID).getByRole('cell').nth(3)).toHaveText('No');
+});
+
+test('making a participant reachable shows the warning', async ({ page, request }) => {
+  test.skip(!STAND_INS, 'Needs a hub without peer addresses');
+  await request.post('/test/pair');
+  await request.post('/test/no-peer-addresses');
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  const row = rowOf(page, 'urn:ui:fo');
+  await row.getByRole('button', { name: 'Make unreachable' }).click();
+  await expect(row.getByRole('button', { name: 'Make reachable' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Warnings' })).toHaveCount(0);
+  await row.getByRole('button', { name: 'Make reachable' }).click();
+  const warnings = page.getByRole('region', { name: 'Warnings' });
+  await expect(warnings).toContainText('urn:ui:fo: Registered as not reachable from outside');
+  await expect(row.getByRole('cell').nth(3)).toHaveText('No');
+});
+
+test('creating the demo participants shows the warnings of each', async ({ page, request }) => {
+  test.skip(!STAND_INS, 'A deployment has its own demo participants');
+  await request.post('/test/no-peer-addresses');
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  await page.getByRole('button', { name: 'Create demo participants' }).click();
+  const warnings = page.getByRole('region', { name: 'Warnings' });
+  await expect(warnings.getByRole('listitem')).toHaveCount(2);
+  await expect(warnings).toContainText('urn:demo:fo: Registered as not reachable from outside');
+  await expect(warnings).toContainText('urn:demo:mb: Registered as not reachable from outside');
+  await expect(page.getByRole('region', { name: 'Credentials' }).locator('dl')).toHaveCount(2);
+});
+
+test('a registration without warnings shows none', async ({ page }) => {
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  await register(page, ID);
+  await expect(page.getByRole('region', { name: 'Credentials' })).toContainText(ID);
+  await expect(page.getByRole('region', { name: 'Warnings' })).toHaveCount(0);
+});
+
+test('a warning that is not text is left out, and the screen still renders', async ({ page }) => {
+  test.skip(!STAND_INS, 'Changes the answer of the stand-in');
+  await page.route('**/api/participants', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const answer = await route.fetch();
+    const made = await answer.json();
+    made.warnings = [{ html: 'x' }, ['y'], 'Shown as text <b>bold</b>'];
+    return route.fulfill({ response: answer, json: made });
+  });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  await register(page, ID);
+  const warnings = page.getByRole('region', { name: 'Warnings' });
+  await expect(warnings.getByRole('listitem')).toHaveCount(1);
+  await expect(warnings.getByRole('listitem')).toHaveText(`${ID}: Shown as text <b>bold</b>`);
+  await expect(page.getByRole('region', { name: 'Credentials' })).toContainText(ID);
+  expect(errors).toEqual([]);
+});
