@@ -27,7 +27,7 @@ LOCAL="$ROOT/.local"
 CLUSTER="${DATASPACE_CLUSTER:-dataspace-local}"
 export KUBECONFIG="$LOCAL/kubeconfig"
 KEYCLOAK_ISSUER_BASE="http://keycloak-service.iff:8080/auth"
-SERVICES="registry gateway"
+SERVICES="registry gateway dsp-gateway management"
 PARTICIPANT_IMAGES="connector adapter"
 
 need() {
@@ -39,7 +39,12 @@ need() {
 generate_credentials() {
   mkdir -p "$LOCAL"
   chmod 700 "$LOCAL"
-  [ -f "$LOCAL/credentials.env" ] && return
+  if [ -f "$LOCAL/credentials.env" ]; then
+    # An environment made before the management service existed lacks this one.
+    grep -q '^ADAPTER_INTERNAL_KEY=' "$LOCAL/credentials.env" ||
+      echo "ADAPTER_INTERNAL_KEY=$(openssl rand -hex 24)" >> "$LOCAL/credentials.env"
+    return
+  fi
   umask 077
   cat > "$LOCAL/credentials.env" <<CREDENTIALS
 POSTGRES_USER=dataspace
@@ -48,6 +53,7 @@ S3_ACCESS_KEY=$(openssl rand -hex 12)
 S3_SECRET_KEY=$(openssl rand -hex 24)
 KEYCLOAK_ADMIN_USER=admin
 KEYCLOAK_ADMIN_PASSWORD=$(openssl rand -hex 24)
+ADAPTER_INTERNAL_KEY=$(openssl rand -hex 24)
 CREDENTIALS
 }
 
@@ -118,15 +124,22 @@ up() {
 
 # Builds the service images, loads them into the cluster and deploys them.
 services() {
-  need docker kind kubectl
+  need docker kind kubectl openssl
+  generate_credentials
   # shellcheck disable=SC1091
   . "$LOCAL/credentials.env"
   kubectl -n dataspace create secret generic service-credentials \
     --from-literal=postgres-user="$POSTGRES_USER" \
     --from-literal=postgres-password="$POSTGRES_PASSWORD" \
+    --from-literal=s3-access-key="$S3_ACCESS_KEY" \
+    --from-literal=s3-secret-key="$S3_SECRET_KEY" \
+    --from-literal=adapter-internal-key="$ADAPTER_INTERNAL_KEY" \
+    --from-literal=admin-client-secret="$(cat "$LOCAL/admin-client-secret")" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   for service in $SERVICES $PARTICIPANT_IMAGES; do
-    docker build -q -t "dataspace/$service:dev" "$ROOT/$service" >/dev/null
+    context="$ROOT/$service"
+    [ "$service" = management ] && context="$ROOT/management/api"
+    docker build -q -t "dataspace/$service:dev" "$context" >/dev/null
     kind load docker-image --name "$CLUSTER" "dataspace/$service:dev" >/dev/null
   done
   kubectl apply -f "$ROOT/deploy/local/services.yaml" >/dev/null

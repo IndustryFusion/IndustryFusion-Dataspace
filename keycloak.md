@@ -28,6 +28,7 @@ The management API creates this at registration, for hosted and external partici
 | Client | Client id equal to `participant_id`, client credentials only |
 | Claim mapper | Hardcoded claim `participant_id` with the participant's id |
 | Role assignment | The realm role on the client's service account |
+| Client attribute | `dataspace.participant_id`, equal to the id. It marks the client as a participant's, so that other clients in a shared realm are left alone. Registering an id equal to a client without it gives `409` |
 
 ## What a participant token carries
 
