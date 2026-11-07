@@ -313,3 +313,38 @@ def test_a_dripping_registry_holds_up_no_read_for_long(monkeypatch, clock):
 def test_a_read_gets_what_a_quick_fetch_found(world):
     assert read(world)["company_name"] == FULL["company_name"]
 
+
+
+@pytest.mark.parametrize("given", [None, ""])
+def test_the_reader_client_id_has_a_default(monkeypatch, clock, given):
+    if given is None:
+        monkeypatch.delenv("IFRIC_READER_CLIENT_ID", raising=False)
+    else:
+        monkeypatch.setenv("IFRIC_READER_CLIENT_ID", given)
+    instance = World(ifric_backend_url="http://ifric.test", ifric_reader_client_secret="right")
+    try:
+        assert instance.settings.ifric_reader_client_id == "dataspace-ifric-reader"
+        instance.services.companies = CompanyDirectory(instance.settings, instance.http, clock)
+        instance.ifric.companies = [FULL]
+        instance.register(KNOWN, "machine_builder")
+        record = read(instance)
+        assert {key: record[key] for key in DETAILS} == DETAILS
+        assert "dataspace-ifric-reader" in instance.keycloak.token_requests
+    finally:
+        app.state.services = None
+
+
+@pytest.mark.parametrize("missing", ["ifric_backend_url", "ifric_reader_client_secret"])
+def test_not_configured_with_the_default_client_id(monkeypatch, clock, missing):
+    monkeypatch.delenv("IFRIC_READER_CLIENT_ID", raising=False)
+    values = {"ifric_backend_url": "http://ifric.test", "ifric_reader_client_secret": "right", missing: ""}
+    instance = World(**values)
+    try:
+        instance.services.companies = CompanyDirectory(instance.settings, instance.http, clock)
+        instance.register(KNOWN, "machine_builder")
+        before = list(instance.keycloak.token_requests)
+        assert plain(read(instance)) == read(instance)
+        assert instance.ifric.calls == 0
+        assert instance.keycloak.token_requests == before
+    finally:
+        app.state.services = None

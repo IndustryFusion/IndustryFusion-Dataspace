@@ -30,7 +30,7 @@ from app.auth import DELIVER_CONTENT, READ_PAYLOAD, TRANSFER_TOKEN_HEADER, OwnTo
 from app.config import Settings
 from app.connector import Connector, ConnectorError
 from app.conversations import note_the_answer
-from app.db import Database, InboxMessage, OutboxMessage, now
+from app.db import Database, InboxMessage, OutboxMessage, mark_replied, now
 from app.registry import Registry
 from app.storage import Storage
 
@@ -107,6 +107,20 @@ async def set_outbox(services: Services, message_id: str, **values) -> None:
         await session.commit()
 
 
+async def _notified(services: Services, message: dict) -> None:
+    """The receiver accepted it. If it is a reply, the message it answers now counts as answered."""
+    await set_outbox(services, message["message_id"], status="notified")
+    if not message.get("in_reply_to"):
+        return
+    try:
+        async with services.db.session() as session:
+            between = (message["sender_participant"], message["receiver_participant"])
+            await mark_replied(session, message["in_reply_to"], message["conversation_id"], between)
+            await session.commit()
+    except Exception as error:  # the message was delivered, and must not read as failed
+        log.warning("Could not note that %s was answered: %s", message["in_reply_to"], error)
+
+
 async def set_inbox_in_transfer(services: Services, message_id: str, **values) -> None:
     """Update an inbox row from the transfer flow, unless it has already settled."""
     async with services.db.session() as session:
@@ -174,7 +188,7 @@ async def deliver(services: Services, message: dict, peer: dict) -> None:
         )
         if response.status_code < 300:
             await _note_answer(services, message, response)
-            await set_outbox(services, message_id, status="notified")
+            await _notified(services, message)
         elif response.status_code < 500:
             reason = f"The receiver refused it: {response.status_code} {response.text[:500]}"
             await set_outbox(services, message_id, status="rejected", error_message=reason)

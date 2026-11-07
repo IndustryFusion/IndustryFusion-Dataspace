@@ -196,21 +196,18 @@ def conversation(harness, conversation_id: str) -> Conversation | None:
     return harness.run(get)
 
 
-def test_conversation_is_purged_only_after_the_row_period(harness):
+def test_conversations_are_not_purged(harness):
     assert harness.notify("old", conversation_id="old-conversation").status_code == 202
-    assert harness.notify("new", conversation_id="new-conversation").status_code == 202
     harness.settle()
 
     async def age_conversation() -> None:
         async with harness.services.db.session() as session:
-            (await session.get(Conversation, "old-conversation")).last_message_at = now() - timedelta(days=31)
-            (await session.get(Conversation, "new-conversation")).last_message_at = now() - timedelta(days=29)
+            (await session.get(Conversation, "old-conversation")).last_message_at = now() - timedelta(days=365)
             await session.commit()
 
     harness.run(age_conversation)
     purge(harness)
-    assert conversation(harness, "old-conversation") is None
-    assert conversation(harness, "new-conversation") is not None
+    assert conversation(harness, "old-conversation") is not None
 
 
 def faster(harness, **values) -> None:

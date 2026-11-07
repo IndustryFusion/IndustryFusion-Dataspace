@@ -37,7 +37,7 @@ from app.conversations import (
     refused_answer,
     settle_simultaneous,
 )
-from app.db import InboxMessage, OutboxMessage, add_inbox_row, now
+from app.db import InboxMessage, OutboxMessage, add_inbox_row, mark_replied, now
 from app.delivery import fetch, note_transfer, set_inbox_in_transfer
 from app.limits import BodyTooLarge, arrival_limit, over_limit
 from app.protocol import NO_CHANGE, check_validity
@@ -149,6 +149,9 @@ async def transfer_request(body: TransferRequest, request: Request):
             return duplicate
         if conversation is not None:
             apply(conversation, decision, body.message_id, body.sender_participant, body.outcome)
+        await mark_replied(
+            session, body.in_reply_to, body.conversation_id, (body.sender_participant, body.receiver_participant)
+        )
         await session.commit()
 
     services.spawn(fetch(services, body.message_id, body.sender_participant, body.asset_id, body.provider_dsp_url))

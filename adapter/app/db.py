@@ -18,7 +18,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, String, Text, UniqueConstraint, inspect, text
+from sqlalchemy import JSON, Boolean, DateTime, String, Text, UniqueConstraint, and_, inspect, or_, text, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -60,6 +60,8 @@ class MessageColumns:
     response_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String, index=True)
     applied: Mapped[bool] = mapped_column(Boolean, default=True)
+    # When an accepted message first named this one in `in_reply_to`. Kept after that reply's row is removed.
+    replied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -124,6 +126,34 @@ class CapabilityApproval(Base):
     decision_note: Mapped[str | None] = mapped_column(Text)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+async def mark_replied(
+    session: AsyncSession, in_reply_to: str | None, conversation_id: str, between: tuple[str, str]
+) -> None:
+    """Note on the message a reply names that it has been answered, unless it already was.
+
+    Only a message of the same conversation, between the same two participants, can be marked, so a peer can't mark
+    someone else's. The first time stays: concurrent replies each try, and the condition lets one through.
+    """
+    if not in_reply_to:
+        return
+    stamp = now()
+    for model in (OutboxMessage, InboxMessage):
+        await session.execute(
+            update(model)
+            .where(
+                model.message_id == in_reply_to,
+                model.conversation_id == conversation_id,
+                model.replied_at.is_(None),
+                or_(
+                    and_(model.sender_participant == between[0], model.receiver_participant == between[1]),
+                    and_(model.sender_participant == between[1], model.receiver_participant == between[0]),
+                ),
+            )
+            .values(replied_at=stamp)
+            .execution_options(synchronize_session=False)
+        )
 
 
 def insert_for(session: AsyncSession):

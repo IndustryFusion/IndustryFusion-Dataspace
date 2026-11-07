@@ -24,7 +24,8 @@ const EMPTY_FORM = {
   participant_id: '',
   participant_type: 'factory_owner',
   hosted: true,
-  externally_reachable: false,
+  // A hosted participant is reachable unless the administrator says otherwise, as in the API.
+  externally_reachable: true,
   adapter_url: '',
   dsp_url: '',
   peer_notify_url: '',
@@ -40,6 +41,8 @@ function RegisterForm({ onDone, run, busy }) {
     for (const key of ['adapter_url', 'dsp_url', 'peer_notify_url']) {
       if (form.hosted || !form[key]) delete body[key];
     }
+    // Reachability is for hosted participants. The API treats an external one as not reachable.
+    if (!form.hosted) delete body.externally_reachable;
     if (await onDone(body)) setForm(EMPTY_FORM);
   };
   return (

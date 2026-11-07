@@ -763,6 +763,8 @@ pods — no orphaned Deployments left behind.
 
 No existing participants need to be reconfigured. The registry and gateway handle discovery automatically.
 
+A hosted participant is registered as `externally_reachable` unless the request says `false`, so external participants can reach it through the two public doors. Two reachable hosted participants then talk through the same public addresses, one hop longer than directly. Where the service has no public addresses configured, it is registered as not reachable, and the answer says why. `POST /api/demo` registers the demo participants the same way.
+
 An external participant runs its own adapter and connector, so registering one creates only its Keycloak client and registry entry. See "External participants" in [management-api.md](management-api.md), which also says what registering one trusts it with.
 
 A participant's `participant_id` is its company's `company_ifric_id` in the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss), with no mapping table, as the registry's access control matches participant ids to `company_ifric_id`. So the management API can add its company details to reads, and the two can share a realm. See [keycloak.md](keycloak.md).

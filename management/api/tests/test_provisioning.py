@@ -46,7 +46,7 @@ def test_the_slug_is_the_first_eight_of_the_hash():
 
 
 def test_registering_a_hosted_participant_makes_everything(world):
-    answer = world.register()
+    answer = world.register(externally_reachable=False)
     assert answer.status_code == 200
     body = answer.json()
     assert body["client_id"] == ID and body["client_secret"].startswith("secret-")
@@ -249,7 +249,7 @@ def test_a_reachable_participant_announces_the_public_addresses(world):
 
 
 def test_a_participant_that_is_not_reachable_announces_its_own_addresses(world):
-    body = world.register().json()
+    body = world.register(externally_reachable=False).json()
     assert body["peer_notify_url"] is None
     assert body["dsp_url"] == f"http://connector-{NAME}.dataspace-participants:8082/api/v1/dsp"
     env = adapter_env(world)
@@ -259,7 +259,7 @@ def test_a_participant_that_is_not_reachable_announces_its_own_addresses(world):
 
 
 def test_changing_reachability_changes_the_pods_so_they_restart(world):
-    world.register()
+    world.register(externally_reachable=False)
     connector, adapter = pod_template(world, f"connector-{NAME}"), pod_template(world, f"adapter-{NAME}")
     world.register(externally_reachable=True)
     assert pod_template(world, f"connector-{NAME}") != connector
@@ -269,15 +269,56 @@ def test_changing_reachability_changes_the_pods_so_they_restart(world):
     assert pod_template(world, f"connector-{NAME}") == reachable
 
 
-@pytest.mark.parametrize("missing", ["gateway_peer_url", "dsp_gateway_peer_url"])
-def test_reachable_needs_the_public_addresses(world, missing):
+@pytest.mark.parametrize(
+    ("missing", "setting"),
+    [("gateway_peer_url", "GATEWAY_PEER_URL"), ("dsp_gateway_peer_url", "DSP_GATEWAY_PEER_URL")],
+)
+@pytest.mark.parametrize("asked", [{"externally_reachable": True}, {}])
+def test_without_a_public_address_it_is_registered_as_not_reachable(world, missing, setting, asked):
     world.services.provisioner.settings = dataclasses.replace(world.settings, **{missing: ""})
-    assert world.register(externally_reachable=True).status_code == 422
-    world.nothing_of(ID)
-    assert world.register().status_code == 200
-    before = snapshot(world)
-    assert world.register(externally_reachable=True).status_code == 422
-    assert snapshot(world) == before
+    answer = world.register(**asked)
+    assert answer.status_code == 200
+    body = answer.json()
+    assert body["externally_reachable"] is False and body["peer_notify_url"] is None
+    assert body["dsp_url"] == f"http://connector-{NAME}.dataspace-participants:8082/api/v1/dsp"
+    assert len(body["warnings"]) == 1 and setting in body["warnings"][0]
+    assert "not reachable" in body["warnings"][0]
+    assert world.registry.records[ID]["externally_reachable"] is False
+    assert "warnings" not in world.registry.records[ID]
+    assert adapter_env(world)["PEER_NOTIFY_URL"] == ""
+    assert f"edc.dsp.callback.address={body['dsp_url']}" in connector_text(world)
+    read = world.client.get(f"/api/participants/{ID}", headers=world.admin).json()
+    assert read["externally_reachable"] is False and "warnings" not in read
+
+
+def test_reachable_by_default(world):
+    body = world.register().json()
+    assert body["externally_reachable"] is True and body["warnings"] == []
+    assert body["peer_notify_url"] == f"http://gateway.test:8080/peer/{ID}"
+    assert body["dsp_url"] == f"http://dsp-public.test:8085/{NAME}/api/v1/dsp"
+    assert body["adapter_url"] == f"http://adapter-{NAME}.dataspace-participants:8000"
+    assert adapter_env(world)["PEER_NOTIFY_URL"] == body["peer_notify_url"]
+
+
+def test_registered_again_without_the_flag_becomes_reachable(world):
+    first = world.register(externally_reachable=False).json()
+    connector = pod_template(world, f"connector-{NAME}")
+    again = world.register().json()
+    assert again["externally_reachable"] is True and again["peer_notify_url"]
+    assert again["client_secret"] == first["client_secret"]
+    assert pod_template(world, f"connector-{NAME}") != connector
+
+
+def test_not_reachable_when_asked_has_no_warning(world):
+    body = world.register(externally_reachable=False).json()
+    assert body["externally_reachable"] is False and body["warnings"] == []
+
+
+def test_an_external_participant_without_the_flag_is_not_reachable(world):
+    body = world.register(
+        "urn:test:ext", "machine_builder", hosted=False, adapter_url="http://a.example", dsp_url="http://d.example"
+    ).json()
+    assert body["externally_reachable"] is False and body["warnings"] == []
 
 
 def test_reachable_says_nothing_about_an_external_participant(world):
@@ -579,7 +620,10 @@ def test_demo_creates_the_named_participants_and_repeats_with_the_same_credentia
     assert {e["client_secret"] for e in second} == {e["client_secret"] for e in first.json()}
 
 
-def test_demo_with_none_configured_gives_an_empty_list(world):
+def test_demo_with_none_configured_gives_an_empty_list():
+    from app.config import parse_demo_participants
+
+    world = World(demo_participants=parse_demo_participants("[]"))
     answer = world.client.post("/api/demo", headers=world.admin)
     assert answer.status_code == 200 and answer.json() == []
 
@@ -587,20 +631,143 @@ def test_demo_with_none_configured_gives_an_empty_list(world):
 def test_demo_reports_a_failure_and_undoes_only_the_one_that_failed():
     world = World(demo_participants=[("urn:d:fo", "factory_owner"), ("urn:d:mb", "machine_builder")])
     world.kubernetes.never_available = {manifests.adapter_name("urn:d:mb")}
-    assert world.client.post("/api/demo", headers=world.admin).status_code == 502
+    answer = world.client.post("/api/demo", headers=world.admin)
+    assert answer.status_code == 502, answer.text
     assert "urn:d:fo" in world.registry.records
     world.nothing_of("urn:d:mb")
+
+
+DEFAULT_DEMO = [
+    ("urn:ifric:ifx-eur-com-own-42ced491-b35d-41f7-9949-fcbb5fa4dcd9", "factory_owner", None),
+    ("urn:ifric:ifx-eur-com-nap-37eb511d-49c0-4700-ba17-dee8248f0fb5", "machine_builder", None),
+    ("urn:ifric:ifx-eur-com-nap-2150a82e-ccbb-47d7-be5a-8059906bc253", "machine_builder", None),
+]
 
 
 def test_demo_configuration_is_parsed():
     from app.config import parse_demo_participants
 
     assert parse_demo_participants("urn:a:b=factory_owner, c=machine_builder,") == [
-        ("urn:a:b", "factory_owner"),
-        ("c", "machine_builder"),
+        ("urn:a:b", "factory_owner", None),
+        ("c", "machine_builder", None),
     ]
-    with pytest.raises(ValueError):
-        parse_demo_participants("no-type")
+    listed = json.dumps(
+        [
+            {"participant_id": "urn:a:fo", "participant_type": "factory_owner"},
+            {"participant_id": "urn:a:mb", "participant_type": "ds:machine_builder", "externally_reachable": False},
+        ]
+    )
+    assert parse_demo_participants(f"  {listed}") == [
+        ("urn:a:fo", "factory_owner", None),
+        ("urn:a:mb", "ds:machine_builder", False),
+    ]
+    assert parse_demo_participants("[]") == []
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_demo_default_when_unset_or_empty(value):
+    from app.config import parse_demo_participants
+
+    assert parse_demo_participants(value) == DEFAULT_DEMO
+
+
+def test_demo_default_from_the_environment(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.delenv("DEMO_PARTICIPANTS", raising=False)
+    assert Settings().demo_participants == DEFAULT_DEMO
+    monkeypatch.setenv("DEMO_PARTICIPANTS", "")
+    assert Settings().demo_participants == DEFAULT_DEMO
+
+
+@pytest.mark.parametrize(
+    ("value", "says"),
+    [
+        ("no-type", "<id>=<type>"),
+        ("=factory_owner", "<id>=<type>"),
+        ("urn:a=painter", "unknown participant_type"),
+        ("-bad=factory_owner", "would refuse"),
+        ("compatible=factory_owner", "would refuse"),
+        ("urn:a=factory_owner,urn:a=machine_builder", "twice"),
+        ("[{", "not valid JSON"),
+        ('{"participant_id": "a"}', "<id>=<type>"),
+        ('[["urn:a", "factory_owner"]]', "must be an object"),
+        ('{"a": 1}', "<id>=<type>"),
+        ('[{"participant_id": "urn:a", "participant_type": "factory_owner", "hosted": false}]', "unknown key: hosted"),
+        ('[{"participant_id": "urn:a"}]', "needs participant_id and participant_type"),
+        ('[{"participant_id": 5, "participant_type": "factory_owner"}]', "needs participant_id"),
+        ('[{"participant_id": "urn:a", "participant_type": "factory_owner", "externally_reachable": "yes"}]',
+         "not true or false"),
+        ('[{"participant_id": "urn:a", "participant_type": "robot"}]', "unknown participant_type"),
+        ("[" + ",".join(['{"participant_id": "urn:a", "participant_type": "factory_owner"}'] * 2) + "]", "twice"),
+        ('{"participants": []}', "<id>=<type>"),
+    ],
+)
+def test_demo_values_that_cannot_be_used(value, says):
+    from app.config import ConfigurationError, parse_demo_participants
+
+    with pytest.raises(ConfigurationError) as raised:
+        parse_demo_participants(value)
+    assert says in str(raised.value)
+    assert "DEMO_PARTICIPANTS" in str(raised.value)
+
+
+def test_a_value_that_cannot_be_used_stops_the_service_at_start():
+    import os
+    import subprocess
+    import sys
+
+    environment = {**os.environ, "DEMO_PARTICIPANTS": "urn:a=painter"}
+    started = subprocess.run(
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--port", "0"],
+        cwd=pathlib.Path(__file__).parent.parent,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert started.returncode != 0
+    output = started.stdout + started.stderr
+    assert "Cannot start: DEMO_PARTICIPANTS has an unknown participant_type: painter" in output
+    assert "Application startup failed" in output
+
+
+def test_demo_default_creates_three_reachable_hosted_participants(monkeypatch):
+    monkeypatch.delenv("DEMO_PARTICIPANTS", raising=False)
+    world = World()
+    answer = world.client.post("/api/demo", headers=world.admin)
+    assert answer.status_code == 200
+    made = {entry["participant_id"]: entry for entry in answer.json()}
+    assert set(made) == {entry[0] for entry in DEFAULT_DEMO}
+    for participant_id, kind, _ in DEFAULT_DEMO:
+        record = made[participant_id]
+        assert record["hosted"] is True and record["externally_reachable"] is True
+        assert record["participant_type"].endswith(kind) and record["client_secret"] and record["warnings"] == []
+
+
+def test_demo_json_form_keeps_the_reachability_given():
+    from app.config import parse_demo_participants
+
+    value = json.dumps(
+        [
+            {"participant_id": "urn:d:fo", "participant_type": "factory_owner", "externally_reachable": False},
+            {"participant_id": "urn:d:mb", "participant_type": "machine_builder"},
+        ]
+    )
+    world = World(demo_participants=parse_demo_participants(value))
+    made = {entry["participant_id"]: entry for entry in world.client.post("/api/demo", headers=world.admin).json()}
+    assert made["urn:d:fo"]["externally_reachable"] is False and made["urn:d:fo"]["hosted"] is True
+    assert made["urn:d:mb"]["externally_reachable"] is True and made["urn:d:mb"]["hosted"] is True
+
+
+def test_demo_without_peer_addresses_warns_on_each():
+    world = World(demo_participants=[("urn:d:fo", "factory_owner"), ("urn:d:mb", "machine_builder")])
+    world.services.provisioner.settings = dataclasses.replace(world.settings, dsp_gateway_peer_url="")
+    answer = world.client.post("/api/demo", headers=world.admin)
+    assert answer.status_code == 200
+    for record in answer.json():
+        assert record["externally_reachable"] is False
+        assert len(record["warnings"]) == 1 and "DSP_GATEWAY_PEER_URL" in record["warnings"][0]
 
 
 def test_removing_a_hosted_participant_leaves_nothing(world):
@@ -795,10 +962,6 @@ def test_a_changed_secret_restarts_pods_and_an_unchanged_one_does_not(world):
         assert template["metadata"]["annotations"] != first[name]["metadata"]["annotations"], name
 
 
-def test_reachable_without_a_peer_address_is_refused(world):
-    world.services.provisioner.settings = dataclasses.replace(world.settings, gateway_peer_url="")
-    assert world.register(externally_reachable=True).status_code == 422
-    world.nothing_of(ID)
 
 
 @pytest.mark.parametrize(

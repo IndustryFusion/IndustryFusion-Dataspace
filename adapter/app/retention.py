@@ -22,7 +22,7 @@ from datetime import timedelta
 
 from sqlalchemy import delete, select
 
-from app.db import Conversation, InboxMessage, OutboxMessage, as_utc, now
+from app.db import InboxMessage, OutboxMessage, as_utc, now
 from app.delivery import Services
 
 log = logging.getLogger("adapter")
@@ -54,11 +54,7 @@ async def purge_expired(services: Services) -> None:
                 .where(model.status.in_(final), model.created_at <= row_limit, model.payload_ref.is_(None))
                 .execution_options(synchronize_session=False)
             )
-        await session.execute(
-            delete(Conversation)
-            .where(Conversation.last_message_at <= row_limit)
-            .execution_options(synchronize_session=False)
-        )
+        # Conversations are kept: they hold no content, and participants need their state for as long as they last.
         await session.commit()
 
 
