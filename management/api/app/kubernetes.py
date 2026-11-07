@@ -115,15 +115,24 @@ class Kubernetes:
         )
         return answer.status_code != 404
 
+    @staticmethod
+    def _rolled_out(deployment: dict) -> bool:
+        """The new version is what is running. An old pod being available says nothing about an update."""
+        status = deployment.get("status", {})
+        wanted = deployment.get("spec", {}).get("replicas", 1)
+        return (
+            status.get("observedGeneration", 0) >= deployment["metadata"].get("generation", 1)
+            and status.get("updatedReplicas", 0) >= wanted
+            and status.get("replicas", 0) == status.get("updatedReplicas", 0)
+            and status.get("availableReplicas", 0) >= wanted
+        )
+
     async def wait_available(self, name: str, seconds: float) -> None:
         async with asyncio.timeout(seconds):
             while True:
                 found = await self.get("Deployment", name)
-                if found:
-                    status = found.get("status", {})
-                    current = status.get("observedGeneration", 0) >= found["metadata"].get("generation", 1)
-                    if current and status.get("updatedReplicas", 0) >= 1 and status.get("availableReplicas", 0) >= 1:
-                        return
+                if found and self._rolled_out(found):
+                    return
                 await asyncio.sleep(self.poll_seconds)
 
     async def wait_gone(self, deployments: list[str], label_selector: str, seconds: float) -> None:

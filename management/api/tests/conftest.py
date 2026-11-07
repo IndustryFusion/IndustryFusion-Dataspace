@@ -169,8 +169,16 @@ class FakeKubernetes:
         if manifest["kind"] == "Service":
             kept["spec"] = {"clusterIP": "10.0.0.1", **manifest["spec"]}
         if manifest["kind"] == "Deployment":
-            ready = 0 if manifest["metadata"]["name"] in self.never_available else 1
-            kept["status"] = {"observedGeneration": 1, "updatedReplicas": ready, "availableReplicas": ready}
+            name = manifest["metadata"]["name"]
+            updating = ("Deployment", name) in self.objects
+            if name not in self.never_available:
+                status = {"replicas": 1, "updatedReplicas": 1, "availableReplicas": 1}
+            elif updating:
+                # The old pod still runs, and the new one never becomes available.
+                status = {"replicas": 2, "updatedReplicas": 1, "availableReplicas": 1}
+            else:
+                status = {"replicas": 1, "updatedReplicas": 1, "availableReplicas": 0}
+            kept["status"] = {"observedGeneration": 1, **status}
         self.objects[(manifest["kind"], manifest["metadata"]["name"])] = kept
 
     def handle(self, request: httpx.Request) -> httpx.Response:

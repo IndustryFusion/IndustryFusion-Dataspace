@@ -22,6 +22,8 @@ for what remains in Kubernetes, PostgreSQL, Keycloak and storage. Needs scripts/
 """
 
 import argparse
+import base64
+import json
 import sys
 import urllib.parse
 
@@ -220,6 +222,9 @@ def main() -> int:
 
             with lc.port_forward("dataspace", "management", 3000) as management:
                 check = connect(management)
+                # What an interrupted run left behind.
+                for participant in (OWNER, BUILDER, SPARE):
+                    check.api("DELETE", f"/api/participants/{quoted(participant)}")
                 try:
                     status, health = lc.http("GET", f"{management}/api/health")
                     expect("health", status, 200, health)
@@ -334,6 +339,110 @@ def run_failures(connect) -> None:
     step(registry_replicas(0), "registry down: refused before anything changes", 503, registry_replicas(1))
 
     print("PASS failures at each step were undone")
+
+    keycloak_step(connect)
+    half_finished_client(connect)
+    failed_re_registration(connect, restart_with)
+
+
+def keycloak_step(connect) -> None:
+    """A real token with the admin role and no rights in Keycloak is refused before anything is made."""
+    with lc.port_forward("dataspace", "management", 3000) as management:
+        check = connect(management)
+        keycloak = lc.KeycloakAdmin(check.keycloak)
+        name = "mgmt-check-weak-admin"
+        status, answer = keycloak._call(
+            "POST", "/clients", {"clientId": name, "publicClient": False, "serviceAccountsEnabled": True}
+        )
+        assert status == 201, answer
+        uuid = keycloak.client_uuid(name)
+        try:
+            _, account = keycloak._call("GET", f"/clients/{uuid}/service-account-user")
+            _, role = keycloak._call("GET", "/roles/dataspace-admin")
+            keycloak._call("POST", f"/users/{account['id']}/role-mappings/realm", [role])
+            _, secret = keycloak._call("GET", f"/clients/{uuid}/client-secret")
+            status, token = lc.http(
+                "POST", f"{management}/api/admin/token", {"client_id": name, "client_secret": secret["value"]}
+            )
+            expect("a token with the role and no Keycloak rights", status, 200, token)
+            weak = Check(management, check.keycloak, check.gateway, token["access_token"])
+            status, answer = weak.register(SPARE, "factory_owner")
+            expect("Keycloak step: no rights in Keycloak fails", status, 403, answer)
+            check.assert_gone(SPARE)
+        finally:
+            keycloak._call("DELETE", f"/clients/{uuid}")
+
+
+def half_finished_client(connect) -> None:
+    with lc.port_forward("dataspace", "management", 3000) as management:
+        check = connect(management)
+        keycloak = lc.KeycloakAdmin(check.keycloak)
+        status, answer = keycloak._call(
+            "POST",
+            "/clients",
+            {
+                "clientId": SPARE,
+                "publicClient": False,
+                "serviceAccountsEnabled": False,
+                "attributes": {"dataspace.participant_id": SPARE},
+            },
+        )
+        assert status == 201, answer
+        try:
+            status, record = check.register(SPARE, "factory_owner")
+            expect("a half-finished client is completed", status, 200, record)
+            claims = check.agent_headers(SPARE, record["client_secret"])["Authorization"].split(".")[1]
+            decoded = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))
+            assert decoded["participant_id"] == SPARE, decoded
+            assert f"participant:{SPARE}" in decoded["realm_access"]["roles"], decoded
+            print("PASS its token carries the claim and the role")
+        finally:
+            status, answer = check.api("DELETE", f"/api/participants/{quoted(SPARE)}")
+            expect("removing it", status, 204, answer)
+        check.assert_gone(SPARE)
+
+
+def failed_re_registration(connect, restart_with) -> None:
+    """A real participant, its pods running, and a registration that fails on a wrong image."""
+    with lc.port_forward("dataspace", "management", 3000) as management:
+        status, record = connect(management).register(SPARE, "factory_owner")
+        expect("a participant to register again", status, 200, record)
+    name = lc.slug(SPARE)
+    deployment = f"adapter-{name}"
+    image = (
+        "-n",
+        lc.PARTICIPANTS,
+        "get",
+        "deployment",
+        deployment,
+        "-o",
+        "jsonpath={.spec.template.spec.containers[0].image}",
+    )
+    before = lc.kubectl(*image)
+    restart_with("MAIN_VERSION=does-not-exist", "PROVISION_READY_SECONDS=15")()
+    try:
+        with lc.port_forward("dataspace", "management", 3000) as management:
+            status, answer = connect(management).register(SPARE, "factory_owner")
+            expect("registering again with a wrong image fails", status, 502, answer)
+    finally:
+        restart_with("MAIN_VERSION=dev", "PROVISION_READY_SECONDS=300")()
+    assert lc.kubectl(*image) == before, "the image was not put back"
+    lc.wait_ready(lc.PARTICIPANTS, deployment)
+    with lc.port_forward("dataspace", "management", 3000) as management:
+        check = connect(management)
+        user = lc.credentials()["POSTGRES_USER"]
+        query = f"SELECT count(*) FROM pg_database WHERE datname IN ('adapter_{name}', 'edc_{name}')"
+        kept = lc.kubectl(
+            "-n", "iff", "exec", "deploy/acid-cluster", "--", "psql", "-U", user, "-d", "postgres", "-Atc", query
+        )
+        assert kept.strip() == "2", kept
+        print("PASS the databases and image of the existing participant remain")
+        again = lc.http("GET", f"{management}/api/participants/{quoted(SPARE)}/credentials", headers=check.admin)[1]
+        assert again["client_secret"] == record["client_secret"], "the credentials changed"
+        print("PASS its credentials remain")
+        status, answer = check.api("DELETE", f"/api/participants/{quoted(SPARE)}")
+        expect("removing it", status, 204, answer)
+        check.assert_gone(SPARE)
 
 
 if __name__ == "__main__":
