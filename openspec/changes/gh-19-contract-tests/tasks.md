@@ -2,26 +2,26 @@
 
 ## 1. Client and mock agent
 
-- [ ] 1.1 Add the client; verify each subcommand against the local environment
-- [ ] 1.2 Add the mock agent; verify it answers a request and a close against the local environment
+- [x] 1.1 Add the client; verify each subcommand against the local environment
+- [x] 1.2 Add the mock agent; verify it answers a request and a close against the local environment
 
 ## 2. Suite
 
-- [ ] 2.1 Add a shape table for each answer in `gateway-api.md`; verify with `--self-test`, which also runs in CI
-- [ ] 2.2 Check each route, status value and error; verify against the local environment
-- [ ] 2.3 Add the flows in `flow.md`, and the worked scenario; verify against the local environment
-- [ ] 2.4 Show a wrong shape fails with `--tamper`; verify against the local environment, naming the route and field
+- [x] 2.1 Add a shape table for each answer in `gateway-api.md`; verify with `--self-test`, which also runs in CI
+- [x] 2.2 Check each route, status value and error; verify against the local environment
+- [x] 2.3 Add the flows in `flow.md`, and the worked scenario; verify against the local environment
+- [x] 2.4 Show a wrong shape fails with `--tamper`; verify against the local environment, naming the route and field
 
 ## 3. Deployments
 
-- [ ] 3.1 Pass against the local environment from `scripts/local-env.sh services`; verify a run
-- [ ] 3.2 Pass against a Helm install from `deploy/README.md`; verify a run
+- [x] 3.1 Pass against the local environment from `scripts/local-env.sh services`; verify a run
+- [x] 3.2 Pass against a Helm install from `deploy/README.md`; verify a run
 - [ ] 3.3 Pass through an Ingress. Needs an Ingress controller, whose install was refused here. The suite goes to the gateway's Service instead
 
 ## 4. Running it
 
-- [ ] 4.1 Add the workflow and the instructions; verify the workflow's steps by running the same commands by hand. It can't be started until it is on the default branch
+- [x] 4.1 Add the workflow and the instructions; verify the workflow's steps by running the same commands by hand. It can't be started until it is on the default branch
 
 ## 5. Report
 
-- [ ] 5.1 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
+- [x] 5.1 Check each scenario in the delta specs and report the result per scenario in the Pull Request; verify the report covers every scenario
