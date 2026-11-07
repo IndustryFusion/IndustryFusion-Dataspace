@@ -125,7 +125,7 @@ If MB, the escalator, then sends `close` with outcome `failed`, both are closed,
 | `state` | `CLOSED_` with MB's outcome | `OPEN` |
 | What moved it last | MB's `close`, on FO's `OPEN` | FO's `reopen` |
 
-Every message reads `notified`. Either side can then send a further step, under the rules for what its own copy holds.
+Every message reads `notified`. If MB's `close` arrives before FO has accepted its `reopen`, the two agree on `OPEN` instead. Either side can then send a further step, under the rules for what its own copy holds.
 
 **A notification that fails, or is refused.** A step's sender moves its own copy when it accepts the message, and doesn't move it back. If the notification then fails, with status `error`, or is refused, with status `rejected`, the receiver's copy hasn't moved. There is no automatic retry. Both statuses are final for that message: its row doesn't change afterwards.
 
