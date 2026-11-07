@@ -14,10 +14,21 @@
 # limitations under the License.
 #
 
+# Built from the folder above, for both parts: docker build -f management/api/Dockerfile management
+
+FROM node:22-slim AS ui
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY ui/index.html ui/vite.config.js ./
+COPY ui/src ./src
+RUN npm run build
+
 FROM python:3.12-slim
 WORKDIR /srv
-COPY pyproject.toml ./
-COPY app ./app
+COPY api/pyproject.toml ./
+COPY api/app ./app
+COPY --from=ui /ui/dist ./ui
 RUN pip install --no-cache-dir .
 USER 65534
 EXPOSE 3000

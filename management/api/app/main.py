@@ -17,6 +17,7 @@
 """Management API: onboarding participants, and administering their capabilities."""
 
 import asyncio
+import pathlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -25,7 +26,7 @@ from typing import Literal
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, field_validator
 
 from app import roles
@@ -295,3 +296,18 @@ async def read_policy(
         else:
             unavailable.append(provider["participant_id"])
     return {"factory_owner": fo, "machine_builder": mb, "capabilities": entries, "unavailable": unavailable}
+
+
+@app.get("/{path:path}", include_in_schema=False)
+async def user_interface(path: str, services: Services = Depends(services_of)) -> FileResponse:
+    """The built UI. A path it doesn't have gets its page, as the page has the screens. Declared last."""
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not found")
+    root = pathlib.Path(services.settings.ui_dir).resolve()
+    wanted = (root / path).resolve()
+    if wanted.is_relative_to(root) and wanted.is_file():
+        return FileResponse(wanted)
+    page = root / "index.html"
+    if not page.is_file():
+        raise HTTPException(status_code=404, detail="The management UI is not part of this installation")
+    return FileResponse(page)

@@ -17,3 +17,9 @@ connector/build/
 # Deployment secrets and downloaded tools
 deploy/helm/values/secrets.yaml
 deploy/helm/.tools/
+
+# Management UI
+management/ui/node_modules/
+management/ui/dist/
+management/ui/test-results/
+management/ui/playwright-report/

@@ -76,7 +76,37 @@ jobs:
         env:
           TEST_POSTGRES_HOST: localhost
       - name: Build image
-        run: docker build .
+        run: |
+          if [ "${{ matrix.service }}" = management/api ]; then
+            docker build -f Dockerfile ..
+          else
+            docker build .
+          fi
+
+  management-ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: management/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: |
+          pip install "../api[dev]"
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Build
+        run: npm run build
+      - name: Browser tests
+        run: npm test
+        env:
+          PYTHONPATH: ../api
 
   scripts:
     runs-on: ubuntu-latest

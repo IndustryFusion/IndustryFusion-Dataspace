@@ -61,6 +61,7 @@ class FakeKeycloak:
         self.fail: re.Pattern | None = None
         self.refuse_admin = False
         self.up = True
+        self.token_seconds = 300
 
     def add_foreign_client(self, client_id: str) -> None:
         self.clients["foreign"] = {"id": "foreign", "clientId": client_id, "attributes": {}, "protocolMappers": []}
@@ -78,7 +79,8 @@ class FakeKeycloak:
         if path == "/auth/realms/dataspace/protocol/openid-connect/token":
             form = parse_qs(request.content.decode())
             if form.get("client_secret") == ["right"]:
-                return json_response(200, {"access_token": make_token(), "expires_in": 300, "token_type": "Bearer"})
+                answer = {"access_token": make_token(), "expires_in": self.token_seconds, "token_type": "Bearer"}
+                return json_response(200, answer)
             return json_response(401, {"error": "unauthorized_client"})
         if path == "/auth/realms/dataspace":
             return json_response(200, {"realm": "dataspace"})
