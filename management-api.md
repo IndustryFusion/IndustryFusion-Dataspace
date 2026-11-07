@@ -72,15 +72,27 @@ Returns the participant record with `client_id` and `client_secret`.
 
 **An external participant** gets steps 2 and 4 only, as it runs its own adapter and connector.
 
+The registry entry is written once the participant's pods are available, so a registration can take minutes. Allow for that in any proxy in front of this service. A participant that peers can find is one that can receive.
+
 Completed steps are undone if a later one fails. A failed re-registration does not drop an existing participant's databases, and a half-finished Keycloak client from an earlier failure is completed. Existing participants need no reconfiguration.
+
+Registering an existing participant again updates it and keeps its credentials. This is how to change `externally_reachable` or an external participant's addresses. A hosted participant's `peer_notify_url` is the gateway's peer route when `externally_reachable` is true, and `null` otherwise. It gives `409`:
+
+- if `hosted` or `participant_type` would change. Delete the participant first.
+- if the id equals a client in the realm that this service did not create.
+- if the id's slug is held by another participant.
+
+`participant_id` has up to 200 characters, with no whitespace or control characters. Requests for one participant are handled one at a time, so run one replica of this service.
 
 ### `POST /api/demo`
 
-Creates the demo participants named in `DEMO_PARTICIPANTS` through the same steps. Returns a list of the same records.
+Creates the demo participants named in `DEMO_PARTICIPANTS` through the same steps, at the same time. Returns a list of the same records. If one fails its steps are undone, the others stay, and the call can be repeated.
 
 ### `DELETE /api/participants/{id}`
 
-Removes the registry entry, the Keycloak client and role, the pods and the databases, leaving no orphaned Deployments.
+Removes the registry entry, the Keycloak client and role, the pods and every other Kubernetes object, the databases and the participant's bucket, leaving no orphaned Deployments.
+
+Every step is tried. If one fails the answer is `502` naming it, and repeating the call finishes the removal. `404` means nothing was found.
 
 ### `GET /api/participants/{id}/credentials`
 
@@ -104,11 +116,23 @@ External adapters can use these read routes as their `REGISTRY_URL`.
 
 ## Capabilities and policies
 
-Access is advisory. See [protocol.md](protocol.md). These routes use the adapter's internal capability routes, with `ADAPTER_INTERNAL_KEY`. A decision on a resolved request gives `409`, as on the agent route: reset first, or use `POST /api/participants/{id}/approvals`, which replaces it.
+Access is advisory. See [protocol.md](protocol.md). These routes use the adapter's internal capability routes, with `ADAPTER_INTERNAL_KEY`. That key is only sent to hosted adapters, so these routes give `409` for an external participant. A decision on a resolved request gives `409`, as on the agent route: reset first, or use `POST /api/participants/{id}/approvals`, which replaces it.
 
 ### `GET /api/participants/{id}/capabilities`
 
 The participant's capabilities, with their default policy and approvals.
+
+```json
+{
+  "capabilities": [
+    { "capability": "twin:history", "label": "...", "description": "...", "data_classification": "operational", "default_policy": "on-request" }
+  ],
+  "approvals": [
+    { "id": "...", "consumer_id": "...", "capability": "twin:history", "status": "pending", "conversation_id": null,
+      "purpose": null, "note": null, "decision_note": null, "requested_at": "...", "resolved_at": null }
+  ]
+}
+```
 
 ### `PATCH /api/participants/{id}/capabilities/{capability}`
 
@@ -138,13 +162,41 @@ Records a decision for a consumer.
 
 ### `GET /api/policy?fo=&mb=`
 
-The capability view for one factory owner and machine builder pair, as shown on the Policies tab.
+The capability view for one factory owner and machine builder pair, in both directions, as shown on the Policies tab. Gives `404` for an unregistered side, and `422` if `fo` and `mb` aren't of those types.
+
+```json
+{
+  "factory_owner": "...", "machine_builder": "...",
+  "capabilities": [
+    { "provider": "...", "consumer": "...", "capability": "twin:history", "label": "...", "description": "...",
+      "data_classification": "operational", "default_policy": "on-request", "status": "approved", "source": "explicit",
+      "approval_id": "...", "decision_note": null }
+  ],
+  "unavailable": []
+}
+```
+
+An external side's capabilities are held by its own adapter, so it is listed in `unavailable`.
 
 ## Health
 
 ### `GET /api/health`
 
-The status of each component, with a detail message for any that is not healthy. The Health tab refreshes it every 15 seconds.
+The status of each component, with a detail message for any that is not healthy. The answer is `200` either way. The Health tab refreshes it every 15 seconds.
+
+```json
+{
+  "status": "degraded",
+  "components": [
+    { "name": "registry", "status": "ok", "detail": null },
+    { "name": "gateway", "status": "unhealthy", "detail": "It could not be reached" }
+  ]
+}
+```
+
+The components are `registry`, `gateway`, `dsp-gateway`, `keycloak`, `postgresql` and `storage`. A top-level `status` is `ok` or `degraded`. A component with no address configured has the status `not configured`.
+
+`GET /health` is the service's own probe.
 
 ## IFRIC details
 
@@ -154,4 +206,12 @@ If configured, the API reads `GET /company/get-all-companies` from the [IFRIC re
 
 `POSTGRES_*`, `SEAWEEDFS_*`, `KEYCLOAK_URL`, `KEYCLOAK_HEALTH_URL`, `KEYCLOAK_REALM`, `REGISTRY_URL`, `GATEWAY_URL`, `GATEWAY_PEER_URL`, `DSP_GATEWAY_URL`, `ADAPTER_INTERNAL_KEY`, `PARTICIPANTS_NAMESPACE`, `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION`, `RESOURCES_PARTICIPANT_*`, `DEMO_PARTICIPANTS`, `IFRIC_BACKEND_URL`, `IFRIC_READER_CLIENT_ID`, `IFRIC_READER_CLIENT_SECRET`, `IFRIC_LOOKUP_CACHE_SECONDS`.
 
-The service needs a PostgreSQL user that can create databases, and RBAC in the participants namespace.
+Also `MAX_UPLOAD_BYTES` and `MAX_JSON_BYTES`, passed on to adapters, which must match the gateway's, and `PROVISION_READY_SECONDS` (default 300), how long a registration waits for pods.
+
+| Setting | Holds |
+|---|---|
+| `DEMO_PARTICIPANTS` | Comma-separated `<id>=<type>` |
+| `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION` | Participant images are `[<registry>/]<repo>/adapter:<version>` and `.../connector:<version>` |
+| `RESOURCES_PARTICIPANT_CPU_REQUEST`, `_CPU_LIMIT`, `_MEMORY_REQUEST`, `_MEMORY_LIMIT` | Per participant container. Unset ones are left out, except the memory limit, which defaults to `2Gi` |
+
+The service needs a PostgreSQL user that can create databases, and RBAC in the participants namespace. It can read Secrets there, so it holds what they hold.

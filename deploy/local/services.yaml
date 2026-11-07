@@ -88,3 +88,125 @@ metadata:
 spec:
   selector: { app: gateway }
   ports: [{ port: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dsp-gateway
+  namespace: dataspace
+spec:
+  selector:
+    matchLabels: { app: dsp-gateway }
+  template:
+    metadata:
+      labels: { app: dsp-gateway }
+    spec:
+      containers:
+        - name: dsp-gateway
+          image: dataspace/dsp-gateway:dev
+          imagePullPolicy: Never
+          ports: [{ containerPort: 8085 }]
+          readinessProbe:
+            httpGet: { path: /health, port: 8085 }
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dsp-gateway
+  namespace: dataspace
+spec:
+  selector: { app: dsp-gateway }
+  ports: [{ port: 8085 }]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: management
+  namespace: dataspace
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: management
+  namespace: dataspace-participants
+rules:
+  - apiGroups: [""]
+    resources: [secrets, configmaps, services]
+    verbs: [get, create, update, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, create, update, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: management
+  namespace: dataspace-participants
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: management
+subjects:
+  - kind: ServiceAccount
+    name: management
+    namespace: dataspace
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: management
+  namespace: dataspace
+spec:
+  selector:
+    matchLabels: { app: management }
+  template:
+    metadata:
+      labels: { app: management }
+    spec:
+      serviceAccountName: management
+      containers:
+        - name: management
+          image: dataspace/management:dev
+          imagePullPolicy: Never
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: POSTGRES_HOST, value: acid-cluster.iff }
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: service-credentials, key: postgres-user } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: service-credentials, key: postgres-password } }
+            - { name: SEAWEEDFS_ENDPOINT, value: "http://seaweedfs.iff:80" }
+            - name: SEAWEEDFS_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: service-credentials, key: s3-access-key } }
+            - name: SEAWEEDFS_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: service-credentials, key: s3-secret-key } }
+            - { name: KEYCLOAK_URL, value: "http://keycloak-service.iff:8080/auth" }
+            - { name: KEYCLOAK_REALM, value: dataspace }
+            - { name: REGISTRY_URL, value: "http://registry.dataspace:19000" }
+            - { name: GATEWAY_URL, value: "http://gateway.dataspace:8080" }
+            - { name: GATEWAY_PEER_URL, value: "http://gateway.dataspace:8080" }
+            - { name: DSP_GATEWAY_URL, value: "http://dsp-gateway.dataspace:8085" }
+            - name: ADAPTER_INTERNAL_KEY
+              valueFrom: { secretKeyRef: { name: service-credentials, key: adapter-internal-key } }
+            - { name: PARTICIPANTS_NAMESPACE, value: dataspace-participants }
+            - { name: MAIN_REPO, value: dataspace }
+            - { name: MAIN_VERSION, value: dev }
+            - { name: MAX_UPLOAD_BYTES, value: "1073741824" }
+            - { name: MAX_JSON_BYTES, value: "4194304" }
+            - { name: DEMO_PARTICIPANTS, value: "urn:demo:factory-owner=factory_owner,urn:demo:machine-builder=machine_builder" }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: management
+  namespace: dataspace
+spec:
+  selector: { app: management }
+  ports: [{ port: 3000 }]
