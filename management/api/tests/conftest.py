@@ -288,6 +288,23 @@ class FakeAdapters:
         return json_response(200, {"ok": True, **(body or {})})
 
 
+class FakeIfric:
+    def __init__(self) -> None:
+        self.companies: object = []
+        self.status = 200
+        self.up = True
+        self.calls = 0
+        self.authorizations: list[str] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/company/get-all-companies"
+        self.calls += 1
+        self.authorizations.append(request.headers.get("Authorization", ""))
+        if not self.up:
+            raise httpx.ConnectError("down")
+        return json_response(self.status, self.companies)
+
+
 class FakeDatabases:
     def __init__(self) -> None:
         self.names: set[str] = set()
@@ -329,6 +346,7 @@ class World:
     def __init__(self, **settings) -> None:
         self.keycloak, self.kubernetes, self.registry = FakeKeycloak(), FakeKubernetes(), FakeRegistry()
         self.adapters = FakeAdapters()
+        self.ifric = FakeIfric()
         self.settings = Settings(
             keycloak_url=KEYCLOAK,
             registry_url=REGISTRY,
@@ -355,6 +373,8 @@ class World:
                 return self.keycloak.handle(request)
             if host == "registry.test":
                 return self.registry.handle(request)
+            if host == "ifric.test":
+                return self.ifric.handle(request)
             if host in ("gateway.test", "dsp.test", "storage.test"):
                 return json_response(200, {})
             return self.adapters.handle(request)

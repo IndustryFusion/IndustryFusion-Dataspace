@@ -728,3 +728,5 @@ pods — no orphaned Deployments left behind.
 No existing participants need to be reconfigured. The registry and gateway handle discovery automatically.
 
 An external participant runs its own adapter and connector, so registering one creates only its Keycloak client and registry entry. See [management-api.md](management-api.md).
+
+A participant onboarded from the [IFRIC registry](https://github.com/IndustryFusion/ifric-registry-service-oss) has a `participant_id` equal to its `company_ifric_id`, with no mapping table. So the management API can add its company details to reads, and the two can share a realm. Any other participant id must never equal a real `company_ifric_id`, as it would be taken for that company. See [keycloak.md](keycloak.md).

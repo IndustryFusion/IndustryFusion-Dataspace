@@ -27,6 +27,8 @@ stringData:
   s3-access-key: {{ required "secrets.s3.accessKey is required" .Values.secrets.s3.accessKey | quote }}
   s3-secret-key: {{ required "secrets.s3.secretKey is required" .Values.secrets.s3.secretKey | quote }}
   adapter-internal-key: {{ required "secrets.adapterInternalKey is required" .Values.secrets.adapterInternalKey | quote }}
+  ifric-reader-client-id: {{ .Values.secrets.ifricReaderClientId | default "" | quote }}
+  ifric-reader-client-secret: {{ .Values.secrets.ifricReaderClientSecret | default "" | quote }}
   admin-client-secret: {{ required "secrets.adminClientSecret is required" .Values.secrets.adminClientSecret | quote }}
 ---
 apiVersion: v1

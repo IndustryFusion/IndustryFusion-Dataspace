@@ -82,6 +82,7 @@ ingress:
 # How a service's own containers are sized. Empty leaves it to the cluster.
 resources: {}
 
+# Optional. Without it, participant reads have no company details. See keycloak.md.
 ifric:
   backendUrl: ""
   lookupCacheSeconds: 300

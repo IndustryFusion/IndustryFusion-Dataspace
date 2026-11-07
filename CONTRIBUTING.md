@@ -145,7 +145,7 @@ scripts/local-env.sh down     # remove the cluster and generated files
 
 It uses only its own kubeconfig, `.local/kubeconfig`, so your other clusters aren't touched. Generated credentials are in `.local/`, which git ignores.
 
-With the services deployed, `scripts/message-exchange-check.py` runs two agents exchanging messages through the gateway, `scripts/connector-transfer-check.py` tests two connectors on their own, and `scripts/management-check.py` onboards and removes participants through the management API, with real failures at each step.
+With the services deployed, `scripts/message-exchange-check.py` runs two agents exchanging messages through the gateway, `scripts/connector-transfer-check.py` tests two connectors on their own, `scripts/management-check.py` onboards and removes participants through the management API, with real failures at each step, and `scripts/ifric-check.py` checks company details with real Keycloak tokens and a stand-in for the IFRIC registry.
 
 To try the Helm install from [deploy/README.md](deploy/README.md) instead of `services`, run `scripts/local-env.sh images`, install an Ingress controller, and use `-e local` with the file that `scripts/local-env.sh helm-secrets` writes as `DATASPACE_SECRETS_FILE`. `scripts/ingress-check.py` then checks the install through the Ingress, including an upload at the limit.
 
