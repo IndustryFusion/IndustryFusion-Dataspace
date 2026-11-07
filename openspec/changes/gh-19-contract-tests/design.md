@@ -33,6 +33,8 @@ A suite run creates new conversations, so it can repeat against the same partici
 
 ### What is not run
 
+A shape also holds values: each state and outcome the documents name, a whole date-time, and a reason exactly where a status says something failed. So that a run can't pass on a system that gives well-formed nonsense, what each side's view says has to fit together: who sent what, against which side reads it, and the same state on both. A `--tamper` rule can set a value, and a rule that matches nothing fails the run, as it proves nothing.
+
 External flows are listed as not run, and don't count as a pass or a failure. A report line says so, as those flows need #18.
 
 ### CI job
