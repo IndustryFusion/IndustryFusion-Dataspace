@@ -20,6 +20,7 @@ import dataclasses
 import json
 import pathlib
 import re
+import time
 
 import httpx
 import pytest
@@ -599,17 +600,16 @@ def test_undo_runs_latest_first_and_waits_for_pods_before_what_they_use(world):
 
 def test_a_registration_has_one_deadline(world):
     world.services.provisioner.settings = dataclasses.replace(world.settings, ready_seconds=0.5)
-    world.kubernetes.never_available.update({f"connector-{NAME}", f"adapter-{NAME}"})
-    began = asyncio.run(_timed(world))
-    assert began < 1.0, f"It took {began}s, with a deadline of 0.5s"
+    real = world.services.provisioner.kubernetes.wait_available
 
+    async def slow_then_never(name, limit):
+        await asyncio.sleep(0.4)
+        await real(name, limit) if name.startswith("connector") else await asyncio.sleep(limit)
 
-async def _timed(world) -> float:
-    import time
-
-    start = time.monotonic()
-    await asyncio.to_thread(world.register)
-    return time.monotonic() - start
+    world.services.provisioner.kubernetes.wait_available = slow_then_never
+    began = time.monotonic()
+    assert world.register().status_code == 502
+    assert time.monotonic() - began < 0.8
 
 
 def test_an_undo_with_no_time_left_names_what_it_did_not_do(world, monkeypatch):
