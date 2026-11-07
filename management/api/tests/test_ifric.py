@@ -17,11 +17,13 @@
 import asyncio
 import dataclasses
 import re
+import time
 
 import httpx
 import pytest
 from conftest import World
 
+from app.config import Settings
 from app.ifric import CompanyDirectory
 from app.main import app
 
@@ -251,3 +253,63 @@ def test_the_token_never_appears_in_a_read(world):
     read(world)
     text = world.client.get(f"/api/participants/{KNOWN}").text
     assert not re.search(r"eyJ[A-Za-z0-9_-]+\.", text)
+
+
+def test_a_company_field_that_is_not_text_is_left_out(world):
+    world.ifric.companies = [{"company_ifric_id": KNOWN, "company_name": {"html": "<b>"}, "company_city": ["a"]}]
+    record = read(world)
+    assert "company_name" not in record and "city" not in record
+
+
+def test_a_bad_address_leaves_details_out(world, clock):
+    settings = dataclasses.replace(world.settings, ifric_backend_url="http://ifric:notaport")
+    world.services.companies = CompanyDirectory(settings, world.http, clock)
+    answer = world.client.get("/api/participants")
+    assert answer.status_code == 200
+    assert not set(DETAILS) & set(answer.json()[0])
+
+
+class Dripping:
+    """Answers a piece at a time, each within any timeout per call, and never finishes."""
+
+    def __init__(self) -> None:
+        self.fetches = 0
+        self.started = asyncio.Event()
+
+    async def get(self, url, **_):
+        self.fetches += 1
+        await asyncio.sleep(3600)
+
+    async def post(self, url, **_):
+        return httpx.Response(200, json={"access_token": "t"}, request=httpx.Request("POST", url))
+
+
+def test_a_dripping_registry_holds_up_no_read_for_long(monkeypatch, clock):
+    from app import ifric
+
+    monkeypatch.setattr(ifric, "READ_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(ifric, "FETCH_SECONDS", 0.2)
+    settings = Settings(
+        ifric_backend_url="http://ifric.test", ifric_reader_client_id="r", ifric_reader_client_secret="s"
+    )
+    dripping = Dripping()
+    directory = CompanyDirectory(settings, dripping, clock)
+
+    async def scenario():
+        began = time.monotonic()
+        first = await directory.add_details([{"participant_id": KNOWN}])
+        second = await directory.add_details([{"participant_id": KNOWN}])
+        took = time.monotonic() - began
+        await directory.fetching
+        return first, second, took
+
+    first, second, took = asyncio.run(scenario())
+    assert first == second == [{"participant_id": KNOWN}]
+    assert took < 0.15
+    assert dripping.fetches == 1, "Reads during a fetch share it"
+    assert directory.good_until == clock() + ifric.SECONDS_AFTER_A_FAILURE, "It was given up, and counts as failed"
+
+
+def test_a_read_gets_what_a_quick_fetch_found(world):
+    assert read(world)["company_name"] == FULL["company_name"]
+
