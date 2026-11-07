@@ -967,6 +967,8 @@ def file_crosses(run: Run, what: str, sender: DataspaceClient, receiver: Dataspa
         RECEIVED,
     )
     report.that(f"{what}: the message reads has_files", message["has_files"] is True, message)
+    if message["status"] != "received":
+        raise AssertionError(f"{what}: it ended as {message['status']}: {message['error_message']}")
     target = os.path.join(folder, f"{uuid.uuid4().hex}.zip")
     receiver.download(accepted["message_id"], target)
     with zipfile.ZipFile(target) as archive:
