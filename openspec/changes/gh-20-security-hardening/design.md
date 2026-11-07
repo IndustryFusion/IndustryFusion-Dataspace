@@ -75,7 +75,9 @@ Each participant's Secret has its own generated `internal-key`, and management r
 
 - Signature against the realm's published keys, RS256 only, the exact issuer, and an expiry.
 - A `participant_id` claim, and the role `participant:<id>`, as an adapter requires.
-- The result is the connector's identity for the counterparty, `edc.agent.identity.key=participant_id`. The connector then compares it with the participant the negotiation names. So a connector claiming to be another participant fails, as does one with no valid token.
+- The result is the connector's identity for the counterparty, `edc.agent.identity.key=participant_id`. So one with no valid token is refused, and an agreement has to come from the identity it names, and match the offer, which names the expected participant.
+
+`scripts/security-check.py` shows a real connector, named in a notification as another participant's, failing: the consumer refuses its agreement as not matching the offer, and the negotiation stays unfinished until the budget runs out, while the same connectors complete the same asset for its real owner. It doesn't show a connector built to lie in its own messages, as it uses this project's connector.
 
 | Alternative | Why not |
 |---|---|
