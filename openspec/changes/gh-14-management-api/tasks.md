@@ -10,7 +10,7 @@
 - [ ] 1.6 Serialise requests per participant; verify a test with two concurrent registrations, one failing
 - [ ] 1.7 Add removal; verify tests for hosted, external, unknown, a failing step and a repeat
 - [ ] 1.8 Add reads and credentials; verify tests
-- [ ] 1.9 Add capability routes and the policy view; verify tests with a real adapter app where it matters, including that the internal key never goes to an external address
+- [ ] 1.9 Add capability routes and the policy view; verify tests, including that the internal key never goes to an external address, and against real adapters in 3.4
 - [ ] 1.10 Add health; verify tests with a component down, and that details hold no credentials
 
 ## 2. Local environment

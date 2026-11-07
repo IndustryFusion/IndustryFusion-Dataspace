@@ -52,7 +52,7 @@ The bucket is not named in the issue's list. It is removed because the issue req
 
 ### Kubernetes and Keycloak access
 
-Plain HTTP with the existing `httpx` dependency, using the service account's token in the cluster, or a URL and token given by configuration outside it. A Kubernetes client library would add a large dependency for six object kinds. New dependencies: `asyncpg` to create databases, `PyJWT[crypto]` to check tokens as the gateway does, and `boto3` to remove a bucket, as the adapter does.
+Plain HTTP with the existing `httpx` dependency, using the service account's token in the cluster. A Kubernetes client library would add a large dependency for six object kinds. New dependencies: `asyncpg` to create databases, `PyJWT[crypto]` to check tokens as the gateway does, and `boto3` to remove a bucket, as the adapter does.
 
 ### Configuration the contract names but doesn't define
 
