@@ -22,6 +22,12 @@
 
 set -euo pipefail
 
+# Associative arrays and [[ -v ]] on their elements need bash 4.3. Checked first, with nothing newer used before.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 3 ]; }; then
+  echo "build-images: needs bash 4.3 or later, and this is bash $BASH_VERSION. On macOS, install a newer bash, for example with Homebrew, and run: bash scripts/build-images.sh" >&2
+  exit 1
+fi
+
 usage() {
   local line
   while IFS= read -r line; do printf '%s\n' "$line"; done <<'TEXT'
@@ -37,9 +43,10 @@ Builds the dataspace images and pushes each as <REGISTRY>/<REPO>/<name>:<VERSION
 
 Settings, from the shell first, then the config file, then the defaults:
 
-  REGISTRY  k3d-iff.localhost:12345   Empty means no prefix. Pushing needs one.
-  REPO      dataspace
-  VERSION   latest
+  REGISTRY  k3d-iff.localhost:12345   host[:port], with an optional path. Empty means no prefix.
+                                      Pushing needs one.
+  REPO      dataspace                 Lowercase path parts, such as team/dataspace.
+  VERSION   latest                    A tag: letters, digits, _ . and -, up to 128, not starting with . or -.
 
 The config file is scripts/build-images.env, or the file BUILD_IMAGES_CONFIG names. It holds KEY=value
 lines for those three keys, with blank lines and # comments. It is read, never run.
@@ -100,6 +107,7 @@ for key in REGISTRY REPO VERSION; do
 done
 
 declare -A from_file=()
+declare -A file_line=()
 if [[ -v BUILD_IMAGES_CONFIG ]]; then
   config="$BUILD_IMAGES_CONFIG"
   [[ -e "$config" ]] || stop "The config file BUILD_IMAGES_CONFIG names doesn't exist: $config"
@@ -122,6 +130,7 @@ if [[ -e "$config" ]]; then
       if [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]]; then value="${BASH_REMATCH[1]}"; fi
       key="${trimmed%%=*}"
       from_file[$key]="$value"
+      file_line[$key]="$number"
     else
       stop "$config, line $number: expected REGISTRY=, REPO= or VERSION=, not: $trimmed"
     fi
@@ -138,15 +147,57 @@ setting() {
     printf '%s' "$default"
   fi
 }
+# Where a setting came from, for messages about it.
+origin() {
+  local key="$1"
+  if [[ -n "${from_shell[$key]:-}" ]]; then
+    printf 'set in the shell'
+  elif [[ -v "from_file[$key]" ]]; then
+    printf 'from %s, line %s' "$config" "${file_line[$key]}"
+  else
+    printf 'the default'
+  fi
+}
 registry="$(setting REGISTRY k3d-iff.localhost:12345)"
 repo="$(setting REPO dataspace)"
 version="$(setting VERSION latest)"
 
-[[ -n "$repo" ]] || stop "REPO is empty. It names the repository, such as dataspace."
-[[ -n "$version" ]] || stop "VERSION is empty. It is the tag, such as latest or 1.2.3."
-if [[ -z "$registry" && "$mode" == push ]]; then
-  stop "REGISTRY is empty, and pushing needs one: without it, docker would push to Docker Hub. Set REGISTRY, or use --build-only."
+[[ -n "$repo" ]] || stop "REPO is empty ($(origin REPO)). It names the repository, such as dataspace."
+[[ -n "$version" ]] || stop "VERSION is empty ($(origin VERSION)). It is the tag, such as latest or 1.2.3."
+
+# The forms Docker accepts in an image reference. A path part is lowercase letters and digits, joined by
+# one . or _, two _, or any number of -.
+path_part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
+host_part='[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
+registry_form="^${host_part}(\.${host_part})*(:[0-9]+)?(/${path_part})*\$"
+repo_form="^${path_part}(/${path_part})*\$"
+version_form='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
+
+if [[ -n "$registry" ]]; then
+  if [[ ! "$registry" =~ $registry_form ]]; then
+    stop "REGISTRY is not a registry address ($(origin REGISTRY)): '$registry'. Use host or host:port, optionally with a lowercase path, without a trailing slash or spaces, such as registry.example.com:5000."
+  fi
+  if [[ "$registry" =~ :([0-9]+)(/|$) ]] && { [[ ${#BASH_REMATCH[1]} -gt 5 ]] || ((10#${BASH_REMATCH[1]} < 1 || 10#${BASH_REMATCH[1]} > 65535)); }; then
+    stop "REGISTRY has a port outside 1 to 65535 ($(origin REGISTRY)): '$registry'."
+  fi
 fi
+if [[ ! "$repo" =~ $repo_form ]]; then
+  stop "REPO is not a repository path ($(origin REPO)): '$repo'. Use lowercase letters, digits and . _ - in parts joined by /, such as team/dataspace."
+fi
+if [[ ! "$version" =~ $version_form ]]; then
+  stop "VERSION is not a tag ($(origin VERSION)): '$version'. Use up to 128 letters, digits, _ . and -, not starting with . or -, such as 1.2.3."
+fi
+if [[ -z "$registry" && "$mode" == push ]]; then
+  stop "REGISTRY is empty ($(origin REGISTRY)), and pushing needs one: without it, docker would push to Docker Hub. Set REGISTRY, or use --build-only."
+fi
+
+# Docker refuses a name, without its tag, of more than 255 characters.
+for image in "${chosen[@]}"; do
+  if [[ -n "$registry" ]]; then name="$registry/$repo/$image"; else name="$repo/$image"; fi
+  if [[ ${#name} -gt 255 ]]; then
+    stop "The image name $name is ${#name} characters long, and Docker allows 255. Shorten REGISTRY ($(origin REGISTRY)) or REPO ($(origin REPO))."
+  fi
+done
 
 full_name() {
   if [[ -n "$registry" ]]; then

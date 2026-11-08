@@ -16,7 +16,7 @@ This installs the dataspace on Kubernetes with [Helmfile](https://helmfile.readt
 
 ## Building and pushing the images
 
-`scripts/build-images.sh` builds the six images, and pushes each as `<REGISTRY>/<REPO>/<name>:<VERSION>`. It needs Docker and bash 4.3 or later, and the registry has to accept your pushes, for example after `docker login`. Run it from the repository's root folder:
+`scripts/build-images.sh` builds the six images, and pushes each as `<REGISTRY>/<REPO>/<name>:<VERSION>`. It needs Docker and bash 4.3 or later (macOS ships 3.2: install a newer one, for example with Homebrew), and the registry has to accept your pushes, for example after `docker login`. Run it from the repository's root folder:
 
 ```bash
 REGISTRY=registry.example.com:5000 REPO=dataspace VERSION=1.2.3 ./scripts/build-images.sh
@@ -33,6 +33,12 @@ REGISTRY=registry.example.com:5000 REPO=dataspace VERSION=1.2.3 ./scripts/build-
 - `--build-only` builds without pushing. `--list` prints the names and builds nothing.
 - An empty `REGISTRY` means no prefix, as in the chart. It works with `--build-only`, but the script won't push without a registry.
 - The script stops at the first failed build or push, and says which image and which step failed. Images it pushed before that stay in the registry.
+- `REGISTRY` is checked before anything is built or listed: `host` or `host:port`, optionally with a lowercase path, without a trailing slash or spaces. `REPO` is lowercase parts joined by `/`, and `VERSION` is a Docker tag. An invalid value stops the script, which says where the value came from.
+- A registry that speaks plain HTTP, such as the default `k3d-iff.localhost:12345` from k3d, has to be listed in Docker's `insecure-registries`, unless it is `localhost` or an address Docker resolves to loopback. Otherwise the push fails with `server gave HTTP response to HTTPS client`. On Linux, add it to `/etc/docker/daemon.json` and restart Docker. With Docker Desktop, add it under Settings, Docker Engine:
+
+  ```json
+  { "insecure-registries": ["k3d-iff.localhost:12345"] }
+  ```
 
 Then set the same three values in your environment's values file, step 3 below:
 

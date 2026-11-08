@@ -202,10 +202,10 @@ def the_file_is_read_not_run(h: Harness) -> None:
     assert run.code != 0, run
     assert "build-images.env, line 1" in run.err and "echo ran > marker" in run.err, run
     assert "marker" not in run.files and run.calls == [], run
+    # Nothing in a value is expanded: it is taken as written, and this one isn't a registry.
     expanded = h.run("--list", config="REGISTRY=$(echo ran > marker)\n")
-    assert expanded.code == 0, expanded
+    assert expanded.code != 0 and "'$(echo ran > marker)'" in expanded.err, expanded
     assert "marker" not in expanded.files, expanded
-    assert expanded.out.splitlines()[0] == "$(echo ran > marker)/dataspace/gateway:latest", expanded
 
 
 @test
@@ -307,6 +307,97 @@ def an_empty_repository_or_version_is_refused(h: Harness) -> None:
         assert run.calls == [], run
     from_file = h.run("--list", config="VERSION=\n")
     assert from_file.code != 0 and "VERSION is empty" in from_file.err, from_file
+
+
+BAD_REGISTRIES = [
+    "reg:5000/",
+    "reg:5000 # comment",
+    '"unterminated',
+    "reg:5000/Team",
+    "reg:5000//x",
+    "a..b",
+    "-reg:5000",
+    "reg:port",
+    "https://reg:5000",
+    "reg:5000/x/",
+]
+GOOD_REGISTRIES = [
+    "reg",
+    "reg.example.com",
+    "reg.example.com:5000",
+    "Reg.Example:5000",
+    "10.0.0.1:5000",
+    "reg:5000/team/x",
+]
+
+
+@test
+def a_registry_that_is_not_one_is_refused_even_for_listing(h: Harness) -> None:
+    for value in BAD_REGISTRIES:
+        for mode in ("--list", "--build-only"):
+            run = h.run(mode, env={"REGISTRY": value})
+            assert run.code != 0, (value, run)
+            assert f"REGISTRY is not a registry address (set in the shell): '{value}'" in run.err, (value, run)
+            assert run.out == "" and run.calls == [], (value, run)
+
+
+@test
+def a_port_outside_the_range_is_refused(h: Harness) -> None:
+    for value in ("reg:0", "reg:65536", "reg:123456", "reg:99999/team"):
+        run = h.run("--list", env={"REGISTRY": value})
+        assert run.code != 0 and "port outside 1 to 65535" in run.err and run.out == "", (value, run)
+    edge = h.run("--list", "adapter", env={"REGISTRY": "reg:65535"})
+    assert edge.code == 0 and edge.out.split() == ["reg:65535/dataspace/adapter:latest"], edge
+
+
+@test
+def registry_addresses_are_accepted(h: Harness) -> None:
+    for value in GOOD_REGISTRIES:
+        run = h.run("--list", "adapter", env={"REGISTRY": value})
+        assert run.code == 0 and run.out.split() == [f"{value}/dataspace/adapter:latest"], (value, run)
+
+
+@test
+def a_repository_that_is_not_one_is_refused(h: Harness) -> None:
+    for value in ("Data/Space", "data//space", "data/", "/data", "a___b", "a-.b", "a.", "data space", "a:b"):
+        run = h.run("--list", env={"REPO": value})
+        assert run.code != 0, (value, run)
+        assert f"REPO is not a repository path (set in the shell): '{value}'" in run.err and run.out == "", (value, run)
+    for value in ("data/space", "a__b", "a--b", "a.b_c", "team/data-space/x"):
+        run = h.run("--list", "adapter", env={"REPO": value})
+        assert run.code == 0 and run.out.split() == [f"k3d-iff.localhost:12345/{value}/adapter:latest"], (value, run)
+
+
+@test
+def a_version_that_is_not_a_tag_is_refused(h: Harness) -> None:
+    for value in ("bad tag", ".1", "-x", "1/2", "v1:2", "a" * 129, "1.2.3 "):
+        run = h.run("--list", env={"VERSION": value})
+        assert run.code != 0, (value, run)
+        assert f"VERSION is not a tag (set in the shell): '{value}'" in run.err and run.out == "", (value, run)
+    for value in ("1.2.3", "v1_2-rc.1", "_x", "a" * 128):
+        run = h.run("--list", "adapter", env={"VERSION": value})
+        assert run.code == 0 and run.out.split() == [f"k3d-iff.localhost:12345/dataspace/adapter:{value}"], run
+
+
+@test
+def a_value_from_the_file_is_named_with_its_line(h: Harness) -> None:
+    run = h.run("--list", config="# settings\nREPO=dataspace\nREGISTRY=reg:5000/\n")
+    assert run.code != 0, run
+    assert (
+        "REGISTRY is not a registry address (from " in run.err and "build-images.env, line 3): 'reg:5000/'" in run.err
+    )
+    assert run.out == "", run
+    quoted = h.run("--list", config='VERSION="1.0 # not a comment"\n')
+    assert quoted.code != 0 and "build-images.env, line 1): '1.0 # not a comment'" in quoted.err, quoted
+
+
+@test
+def a_name_longer_than_docker_allows_is_refused(h: Harness) -> None:
+    # k3d-iff.localhost:12345/<repo>/dsp-gateway is 36 characters beside the repository.
+    run = h.run("--list", env={"REPO": "a" * 220})
+    assert run.code != 0 and "Docker allows 255" in run.err and run.out == "", run
+    fits = h.run("--list", env={"REPO": "a" * 219})
+    assert fits.code == 0 and len(fits.out.splitlines()) == 6, fits
 
 
 @test
