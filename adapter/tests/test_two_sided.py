@@ -548,3 +548,53 @@ def test_both_sides_opening_the_same_conversation():
         assert len(shown["messages"]) == 2
 
     two_sided(scenario)
+
+
+async def retain(side: Side, *message_ids: str) -> None:
+    """Make these messages and the conversations old enough for retention, and run it."""
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from app.db import Conversation, now
+    from app.retention import purge_expired
+
+    old = now() - timedelta(days=31)
+    async with side.services.db.session() as session:
+        for model in (OutboxMessage, InboxMessage):
+            values = {"created_at": old, "payload_ref": None}
+            if model is InboxMessage:
+                values["status"] = "acked"
+            await session.execute(update(model).where(model.message_id.in_(message_ids)).values(**values))
+        await session.execute(update(Conversation).values(last_message_at=old))
+        await session.commit()
+    await purge_expired(side.services)
+
+
+def test_answered_requests_and_conversations_outlive_retention_on_both_sides():
+    async def scenario(fo: Side, mb: Side, _: Mesh) -> None:
+        request = await fo.send(conversation_id="c", performative="request", payload={"q": 1})
+        await settle(fo, mb)
+        reply = await mb.send(conversation_id="c", in_reply_to=request["message_id"], payload={"a": 2})
+        await settle(fo, mb)
+        await retain(fo, reply["message_id"])
+        await retain(mb, reply["message_id"])
+        for side in (fo, mb):
+            shown = await side.conversation("c")
+            assert [m["message_id"] for m in shown["messages"]] == [request["message_id"]], side.participant
+            assert shown["messages"][0]["replied_at"] is not None
+            assert shown["outstanding_requests"] == []
+
+        await retain(fo, request["message_id"])
+        await retain(mb, request["message_id"])
+        for side in (fo, mb):
+            shown = await side.conversation("c")
+            assert shown["state"] == "OPEN" and shown["messages"] == [] and shown["outstanding_requests"] == []
+        before = (await fo.conversation("c"))["last_message_at"]
+
+        later = await mb.send(conversation_id="c", performative="close", outcome="resolved")
+        closed = await assert_same(fo, mb, "c", "CLOSED_RESOLVED", "resolved")
+        assert closed["last_message_at"] > before
+        assert (await fo.inbox_message(later["message_id"]))["conversation_id"] == "c"
+
+    two_sided(scenario)
