@@ -83,7 +83,7 @@ The script's tests are a Python script in `scripts/`. They run the script with a
 
 The existing per-service image builds stay as they are, so this change doesn't alter what fails when a service's image breaks. That builds each image twice in CI.
 
-Alternative: replacing the per-service builds with the new job. This would save CI time but change the existing "CI for services" checks, so it is left for the maintainer to decide.
+Alternative: replacing the per-service builds with the new job. This would save CI time but change the existing "CI for services" checks. The maintainer decided to keep the per-service builds and accept building each image twice.
 
 ### Pushing in tests
 
