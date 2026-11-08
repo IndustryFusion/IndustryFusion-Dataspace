@@ -14,7 +14,7 @@
 
 ## 3. End to end
 
-- [ ] 3.1 With no settings, run the script against a `registry:2` container reachable as `k3d-iff.localhost:12345`, and list the six `latest` tags in the registry; verify on a local machine. Not done: port 12345 on the test machine belongs to another registry. The default names are covered by the stand-in tests and `--list`
+- [ ] 3.1 With no settings, run the script against a `registry:2` container reachable as `k3d-iff.localhost:12345`, and list the six `latest` tags in the registry; verify on a local machine. Not done: on the test machine, port 12345 is held by another agent's registry container, which this work must not use, so no registry of its own could listen there. A push to that name also needs Docker to allow plain HTTP for it, through `insecure-registries` unless it resolves to loopback, as `deploy/README.md` says. The default names are covered by the stand-in tests and `--list`
 - [x] 3.2 With `REGISTRY`, `REPO` and `VERSION=1.2.3`, push to a local `registry:2` container, pull each image back, start the `management` image and read the UI from it; verify on a local machine
 - [x] 3.3 Stop the registry and run the script; check it exits non-zero, naming the first image's push; verify on a local machine
 
