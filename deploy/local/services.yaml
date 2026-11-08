@@ -204,7 +204,6 @@ spec:
             - { name: MAIN_VERSION, value: dev }
             - { name: MAX_UPLOAD_BYTES, value: "1073741824" }
             - { name: MAX_JSON_BYTES, value: "4194304" }
-            - { name: DEMO_PARTICIPANTS, value: "urn:demo:factory-owner=factory_owner,urn:demo:machine-builder=machine_builder" }
           readinessProbe:
             httpGet: { path: /health, port: 3000 }
             periodSeconds: 3

@@ -58,6 +58,8 @@ class FakeKeycloak:
         self.clients: dict[str, dict] = {}
         self.assignments: dict[str, list[dict]] = {}
         self.seen_tokens: list[str] = []
+        # The client id of each token request, in order.
+        self.token_requests: list[str] = []
         self.fail: re.Pattern | None = None
         self.refuse_admin = False
         self.up = True
@@ -85,6 +87,7 @@ class FakeKeycloak:
             return json_response(200, {"keys": [{**public, "kid": "k1", "use": "sig"}]})
         if path == "/auth/realms/dataspace/protocol/openid-connect/token":
             form = parse_qs(request.content.decode())
+            self.token_requests.append(form.get("client_id", [""])[0])
             if form.get("client_secret") == ["right"]:
                 token = make_token(expires_in=300 + self.seconds_ahead)
                 answer = {"access_token": token, "expires_in": self.token_seconds, "token_type": "Bearer"}

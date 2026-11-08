@@ -20,6 +20,7 @@ Usage: ui_test_server.py <port> <built UI folder>. The /test/ routes set up what
 """
 
 import asyncio
+import dataclasses
 import json
 import pathlib
 import sys
@@ -136,6 +137,10 @@ def external_builder() -> None:
     )
 
 
+def no_peer_addresses() -> None:
+    world().services.provisioner.settings = dataclasses.replace(world().settings, gateway_peer_url="")
+
+
 def short_tokens() -> None:
     world().keycloak.token_seconds = 40
 
@@ -165,6 +170,7 @@ ROUTES = {
     "pair": pair,
     "registry-down": registry_down,
     "external-builder": external_builder,
+    "no-peer-addresses": no_peer_addresses,
     "short-tokens": short_tokens,
     "foreign-client": foreign_client,
     "adapter-refuses": adapter_refuses,
