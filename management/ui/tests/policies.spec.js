@@ -73,15 +73,80 @@ test('approve, deny and reset', async ({ page }) => {
   await expect(row.getByRole('button', { name: 'Reset' })).toBeDisabled();
 });
 
-test('an external side is noted as held elsewhere', async ({ page, request }) => {
+async function showExternalPair(page, request) {
   await request.post('/test/external-builder');
   await open(page, 'Policies');
   await enterAdminMode(page);
   await page.getByLabel('Factory owner').selectOption('urn:ui:fo');
   await page.getByLabel('Machine builder').selectOption('urn:ui:ext');
   await page.getByRole('button', { name: 'Show' }).click();
+}
+
+test("an external side's policies are shown, without actions", async ({ page, request }) => {
+  await showExternalPair(page, request);
+  const external = rowOf(page, 'Vendor confidential');
+  await expect(external.getByRole('cell').first()).toHaveText('urn:ui:ext');
+  await expect(external.getByRole('cell').nth(1)).toHaveText('urn:ui:fo');
+  await expect(external.getByRole('cell').nth(7)).toHaveText('confidential');
+  await expect(external).toContainText('Held by its own adapter');
+  await expect(external.getByRole('button')).toHaveCount(0);
+  await expect(rowOf(page, 'Machine history').getByRole('button', { name: 'Approve' })).toBeVisible();
+  await expect(page.getByRole('note')).toHaveCount(0);
+});
+
+test("an external side that can't be read is named, with the reason", async ({ page, request }) => {
+  await request.post('/test/gateway-refuses');
+  await showExternalPair(page, request);
   await expect(page.getByRole('note')).toContainText('urn:ui:ext');
+  await expect(page.getByRole('note')).toContainText("refused the other participant's token (403)");
   await expect(rowOf(page, 'Machine history')).toBeVisible();
+  await expect(rowOf(page, 'Vendor confidential')).toHaveCount(0);
+});
+
+test('each row shows its classification and the conversation of its decision', async ({ page, request }) => {
+  const token = (await (await request.post('/api/admin/token', {
+    data: { client_id: 'dataspace-admin-cli', client_secret: 'right' },
+  })).json()).access_token;
+  const decided = await request.post(`/api/participants/${encodeURIComponent('urn:ui:fo')}/approvals`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { consumer_id: 'urn:ui:mb', capability: 'twin:history', action: 'approve', conversation_id: 'conv-42' },
+  });
+  expect(decided.ok()).toBeTruthy();
+  await open(page, 'Policies');
+  await enterAdminMode(page);
+  await showPair(page);
+  const history = rowOf(page, 'Machine history');
+  await expect(history.getByRole('cell').nth(7)).toHaveText('operational');
+  await expect(history.getByRole('cell').nth(8)).toHaveText('conv-42');
+  await expect(page.getByRole('columnheader', { name: 'Classification' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Conversation' })).toBeVisible();
+  const vendor = rowOf(page, 'Vendor confidential');
+  await expect(vendor.getByRole('cell').nth(8)).toHaveText('');
+});
+
+test('fields of an unexpected type do not blank the screen', async ({ page, request }) => {
+  await page.route('**/api/policy?*', async (route) => {
+    const answer = await route.fetch();
+    const body = await answer.json();
+    for (const entry of body.capabilities) {
+      entry.data_classification = {};
+      entry.decision_note = { html: 'x' };
+      entry.conversation_id = ['x'];
+      entry.description = {};
+    }
+    body.capabilities[0].label = {};
+    await route.fulfill({ response: answer, json: body });
+  });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await open(page, 'Policies');
+  await enterAdminMode(page);
+  await showPair(page);
+  await expect(rowOf(page, 'Vendor confidential')).toContainText('on-request');
+  // The first row's label is not text, so its capability id is shown in its place.
+  await expect(page.getByRole('row').nth(1).getByRole('cell').nth(2)).not.toHaveText('');
+  await expect(page.getByRole('row').nth(1).getByRole('cell').nth(7)).toHaveText('');
+  expect(errors).toEqual([]);
 });
 
 test('an error from an action is shown', async ({ page, request }) => {

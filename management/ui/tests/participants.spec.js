@@ -235,6 +235,68 @@ test('the registration form starts reachable, and sends what it shows', async ({
   ]);
 });
 
+test('addresses and the external marker, without admin mode', async ({ page, request }) => {
+  test.skip(!STAND_INS, 'Needs participants to look at');
+  await request.post('/test/pair');
+  await request.post('/test/external-builder');
+  await open(page, 'Participants');
+  const hosted = rowOf(page, 'urn:ui:fo');
+  await expect(hosted.getByRole('cell').first()).toHaveText('urn:ui:fo');
+  await expect(hosted.getByRole('cell').nth(4)).toHaveText('Not public');
+  // Reachable, so its connector's public address is published.
+  await expect(hosted.getByRole('cell').nth(5)).toContainText('/api/v1/dsp');
+  const external = rowOf(page, 'urn:ui:ext');
+  await expect(external.getByRole('cell').first()).toHaveText('urn:ui:ext (external)');
+  await expect(external.getByRole('cell').nth(4)).toHaveText('http://ext.example:1');
+  await expect(external.getByRole('cell').nth(5)).toHaveText('http://d.example');
+  await expect(page.getByText('(external)')).toHaveCount(1);
+});
+
+test('addresses in admin mode', async ({ page, request }) => {
+  test.skip(!STAND_INS, 'Needs participants to look at');
+  await request.post('/test/pair');
+  await open(page, 'Participants');
+  await enterAdminMode(page);
+  await expect(rowOf(page, 'urn:ui:fo').getByRole('cell').nth(4)).toContainText('adapter-');
+});
+
+test('Refresh reads the list again', async ({ page, request }) => {
+  test.skip(!STAND_INS, 'Needs another client to add a participant');
+  await open(page, 'Participants');
+  await expect(page.getByText('No participants are registered.')).toBeVisible();
+  await request.post('/test/pair');
+  await expect(page.getByRole('cell', { name: 'urn:ui:fo', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect(page.getByRole('cell', { name: 'urn:ui:fo', exact: true })).toBeVisible();
+});
+
+test('credentials can be copied, and no secret is shown until asked for', async ({ page, context, request }) => {
+  test.skip(!STAND_INS, 'Needs participants with known secrets');
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await request.post('/test/pair');
+  await open(page, 'Participants');
+  await expect(page.getByRole('button', { name: /^Copy/ })).toHaveCount(0);
+  await enterAdminMode(page);
+  await expect(rowOf(page, 'urn:ui:fo')).toBeVisible();
+  // The stand-in Keycloak's secrets all start this way.
+  expect(await page.content()).not.toContain('secret-');
+  await expect(page.getByRole('button', { name: /^Copy/ })).toHaveCount(0);
+
+  await rowOf(page, 'urn:ui:fo').getByRole('button', { name: 'Show credentials' }).click();
+  const credentials = page.getByRole('region', { name: 'Credentials' });
+  const secret = await credentials.locator('code').textContent();
+  expect(secret).toMatch(/^secret-/);
+  await credentials.getByRole('button', { name: 'Copy client secret' }).click();
+  await expect(credentials.getByRole('status').first()).toHaveText('Copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(secret);
+  await credentials.getByRole('button', { name: 'Copy client id' }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('urn:ui:fo');
+
+  await credentials.getByRole('button', { name: 'Close' }).click();
+  expect(await page.content()).not.toContain(secret);
+  await expect(page.getByRole('button', { name: /^Copy/ })).toHaveCount(0);
+});
+
 test('a registration that cannot be reachable shows the warning with the participant', async ({ page, request }) => {
   test.skip(!STAND_INS, 'Needs a hub without peer addresses');
   await request.post('/test/no-peer-addresses');

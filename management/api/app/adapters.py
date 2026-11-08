@@ -102,7 +102,8 @@ def policy_entries(provider: dict, consumer_id: str, state: dict) -> list[dict]:
                 "status": decision["status"] if decision else capability["default_policy"],
                 "source": "explicit" if decision else "default",
                 "approval_id": decision["id"] if decision else None,
-                "decision_note": decision["decision_note"] if decision else None,
+                "decision_note": decision.get("decision_note") if decision else None,
+                "conversation_id": decision.get("conversation_id") if decision else None,
             }
         )
     return entries

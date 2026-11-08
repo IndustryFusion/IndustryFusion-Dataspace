@@ -24,6 +24,8 @@ const companyOf = (entry) =>
   typeof entry.company_name === 'string' && entry.company_name
     ? `${entry.participant_id} (${entry.company_name})`
     : entry.participant_id;
+// Text from an external adapter is shown only if it is text, so an unexpected value can't blank the screen.
+const asText = (value) => (typeof value === 'string' || typeof value === 'number' ? value : '');
 
 export default function Policies() {
   const admin = useAdmin();
@@ -39,6 +41,9 @@ export default function Policies() {
       .then(setParticipants)
       .catch((failure) => setError(failure.message));
   }, []);
+
+  // The hub decides only for its own participants. An external one keeps its policy in its own adapter.
+  const hosted = new Set(participants.filter((entry) => entry.hosted).map((entry) => entry.participant_id));
 
   const read = async (fo, mb) => {
     const query = new URLSearchParams({ fo, mb }).toString();
@@ -123,9 +128,14 @@ export default function Policies() {
         {admin.active && <button type="submit">Show</button>}
       </form>
       {!admin.active && <p role="note">Reading who has access needs admin mode.</p>}
-      {admin.active && view && view.unavailable.length > 0 && (
-        <p role="note">Held by its own adapter, so not shown here: {view.unavailable.join(', ')}</p>
-      )}
+      {admin.active &&
+        view &&
+        view.unavailable.map((id) => (
+          <p role="note" key={id}>
+            Could not read the policies of {id}, which runs its own adapter:{' '}
+            {(view.unavailable_reasons || {})[id] || 'no reason was given'}
+          </p>
+        ))}
       {admin.active && view && (
         <table>
           <thead>
@@ -137,20 +147,29 @@ export default function Policies() {
               <th>Status</th>
               <th>Source</th>
               <th>Note</th>
+              <th>Classification</th>
+              <th>Conversation</th>
               {admin.active && <th>Actions</th>}
             </tr>
           </thead>
           <tbody>
             {view.capabilities.map((entry) => (
-              <tr key={`${entry.provider}/${entry.capability}`}>
-                <td>{entry.provider}</td>
-                <td>{entry.consumer}</td>
-                <td title={entry.description}>{entry.label || entry.capability}</td>
-                <td>{entry.default_policy}</td>
-                <td>{entry.status}</td>
-                <td>{entry.source}</td>
-                <td>{entry.decision_note}</td>
-                {admin.active && (
+              <tr key={`${asText(entry.provider)}/${asText(entry.capability)}`}>
+                <td>{asText(entry.provider)}</td>
+                <td>{asText(entry.consumer)}</td>
+                <td title={asText(entry.description) || undefined}>
+                  {asText(entry.label) || asText(entry.capability)}
+                </td>
+                <td>{asText(entry.default_policy)}</td>
+                <td>{asText(entry.status)}</td>
+                <td>{asText(entry.source)}</td>
+                <td>{asText(entry.decision_note)}</td>
+                <td>{asText(entry.data_classification)}</td>
+                <td>{asText(entry.conversation_id)}</td>
+                {admin.active && !hosted.has(entry.provider) && (
+                  <td className="actions">Held by its own adapter</td>
+                )}
+                {admin.active && hosted.has(entry.provider) && (
                   <td className="actions">
                     <button type="button" disabled={busy} onClick={() => decide(entry, 'approve')}>
                       Approve

@@ -145,7 +145,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
      "adapter_url": "https://mb.example/adapter", "dsp_url": "https://mb.example/connector/api/v1/dsp" }
    ```
 
-3. Set `externally_reachable` on each hosted participant it will talk to, by registering it again. A hosted participant that isn't reachable can't be reached from outside, and a message to it ends with status `error`.
+3. Make sure each hosted participant it will talk to is `externally_reachable`, as it is unless registered with `false`. A hosted participant that isn't reachable can't be reached from outside, and a message to it ends with status `error`.
 4. Configure its adapter:
 
    | Setting | Value |
@@ -158,7 +158,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
 
    Leave `PEER_NOTIFY_URL` empty, as its `adapter_url` is already reachable. Its connector's `edc.participant.id` is its `participant_id`, its callback address is its `dsp_url`, and it needs the same Keycloak settings and client secret: hosted connectors refuse one without a token from that client.
 
-**What it needs to reach:** the gateway, the DSP gateway, these read routes and Keycloak. **What has to reach it:** hosted connectors, on its connector's DSP port and its adapter's `/internal/inbox-receive`, and hosted adapters, on its `/internal/transfer-request` and `/internal/capabilities`. Keep its connector's management and control ports closed.
+**What it needs to reach:** the gateway, the DSP gateway, these read routes and Keycloak. **What has to reach it:** hosted connectors, on its connector's DSP port and its adapter's `/internal/inbox-receive`, and hosted adapters, on its `/internal/transfer-request` and `/internal/capabilities`. The hub's gateway reads its `/internal/capabilities` too, for the policy view below, so let the gateway reach its adapter, or the Policies tab says it couldn't be read. Keep its connector's management and control ports closed.
 
 `scripts/external-demo.py` deploys two like this on a local environment, each with a NetworkPolicy to these limits.
 
@@ -166,7 +166,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
 
 ## Capabilities and policies
 
-Access is advisory. See [protocol.md](protocol.md). These routes need an administrator, and show who asked for what. They use the adapter's internal capability routes, with the key that participant alone has, read from its Secret. It is only sent to its own hosted adapter, so these routes give `409` for an external participant. A decision on a resolved request gives `409`, as on the agent route: reset first, or use `POST /api/participants/{id}/approvals`, which replaces it.
+Access is advisory. See [protocol.md](protocol.md). These routes need an administrator, and show who asked for what. They use the adapter's internal capability routes, with the key that participant alone has, read from its Secret. It is only sent to its own hosted adapter, so these routes give `409` for an external participant. Only `GET /api/policy` reads an external participant's capabilities, as below. A decision on a resolved request gives `409`, as on the agent route: reset first, or use `POST /api/participants/{id}/approvals`, which replaces it.
 
 ### `GET /api/participants/{id}/capabilities`
 
@@ -220,13 +220,16 @@ The capability view for one factory owner and machine builder pair, in both dire
   "capabilities": [
     { "provider": "...", "consumer": "...", "capability": "twin:history", "label": "...", "description": "...",
       "data_classification": "operational", "default_policy": "on-request", "status": "approved", "source": "explicit",
-      "approval_id": "...", "decision_note": null }
+      "approval_id": "...", "decision_note": null, "conversation_id": "..." }
   ],
-  "unavailable": []
+  "unavailable": [],
+  "unavailable_reasons": {}
 }
 ```
 
-An external side's capabilities are held by its own adapter, so it is listed in `unavailable`. This shows who has access to what, so it needs an administrator.
+`conversation_id` is the conversation the decision was asked for in, and `null` for a default. This shows who has access to what, so it needs an administrator.
+
+An external provider's capabilities are held by its own adapter, so they are read the way the other side of the pair would read them: this service reads that side's client secret with the caller's token, gets a token for it from Keycloak, and calls `GET {GATEWAY_URL}/peer/{provider}/internal/capabilities`. The adapter answers with that side's approvals only. The token is used for this one read and isn't kept, logged or returned, and the internal key is never sent. The adapter has to accept tokens from this service's `KEYCLOAK_URL`, as the issuers must match. If the read fails, the provider is listed in `unavailable`, and `unavailable_reasons` gives the reason by id, with no secret, token or address. The rest of the answer is still `200`.
 
 ## Health
 
@@ -237,14 +240,15 @@ The status of each component, with a detail message for any that is not healthy.
 ```json
 {
   "status": "degraded",
+  "checked_at": "2026-11-07T10:00:00.000000+00:00",
   "components": [
-    { "name": "registry", "status": "ok", "detail": null },
-    { "name": "gateway", "status": "unhealthy", "detail": "It could not be reached" }
+    { "name": "registry", "status": "ok", "detail": null, "response_ms": 12 },
+    { "name": "gateway", "status": "unhealthy", "detail": "It could not be reached", "response_ms": 5003 }
   ]
 }
 ```
 
-The components are `registry`, `gateway`, `dsp-gateway`, `keycloak`, `postgresql` and `storage`. A top-level `status` is `ok` or `degraded`. A component with no address configured has the status `not configured`.
+`checked_at` is when the check started. `response_ms` is how long a component's probe took in whole milliseconds, whether or not it succeeded, and `null` for one that isn't configured. The components are `registry`, `gateway`, `dsp-gateway`, `keycloak`, `postgresql` and `storage`. A top-level `status` is `ok` or `degraded`. A component with no address configured has the status `not configured`.
 
 `GET /health` is the service's own probe.
 

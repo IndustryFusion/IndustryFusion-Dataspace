@@ -84,6 +84,20 @@ spec:
         - { protocol: TCP, port: 8000 }
         - { protocol: TCP, port: 8082 }
         - { protocol: TCP, port: 8084 }
+    # The gateway's peer route reaches this adapter, as the hub reads its capabilities for the Policies tab.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dataspace }
+          podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [gateway] }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dataspace }
+          podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [gateway] }
+      ports:
+        - { protocol: TCP, port: 8000 }
   egress:
     - to:
         - podSelector: {}

@@ -20,9 +20,18 @@ import { request } from '../api.js';
 
 const REFRESH_MILLISECONDS = 15000;
 
+const isOk = (component) => component.status === 'ok';
+const timeOf = (value) => (typeof value === 'number' ? `${value} ms` : '');
+const clockOf = (value) => {
+  const when = new Date(value);
+  return Number.isNaN(when.getTime()) ? '' : when.toLocaleTimeString();
+};
+
 export default function Health() {
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
+  // Pressing Refresh starts the cycle again: a check at once, and the next one 15 seconds later.
+  const [cycle, setCycle] = useState(0);
 
   useEffect(() => {
     let current = true;
@@ -43,11 +52,18 @@ export default function Health() {
       current = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [cycle]);
+
+  const healthy = health ? health.components.filter(isOk).length : 0;
 
   return (
     <section>
       <h2>Health</h2>
+      <p>
+        <button type="button" onClick={() => setCycle((count) => count + 1)}>
+          Refresh
+        </button>
+      </p>
       {error && (
         <p role="alert" className="error">
           {error}
@@ -55,14 +71,17 @@ export default function Health() {
       )}
       {health && (
         <>
-          <p>
-            Overall: <span className={`badge ${health.status === 'ok' ? 'ok' : 'bad'}`}>{health.status}</span>
+          <p role="status" aria-label="Summary">
+            Overall: <span className={`badge ${health.status === 'ok' ? 'ok' : 'bad'}`}>{health.status}</span>{' '}
+            {healthy} of {health.components.length} components ok
           </p>
+          <p aria-label="Checked at">Checked at {clockOf(health.checked_at)}</p>
           <table>
             <thead>
               <tr>
                 <th>Component</th>
                 <th>Status</th>
+                <th>Response time</th>
                 <th>Detail</th>
               </tr>
             </thead>
@@ -71,8 +90,9 @@ export default function Health() {
                 <tr key={component.name}>
                   <td>{component.name}</td>
                   <td>
-                    <span className={`badge ${component.status === 'ok' ? 'ok' : 'bad'}`}>{component.status}</span>
+                    <span className={`badge ${isOk(component) ? 'ok' : 'bad'}`}>{component.status}</span>
                   </td>
+                  <td>{timeOf(component.response_ms)}</td>
                   <td>{component.detail}</td>
                 </tr>
               ))}

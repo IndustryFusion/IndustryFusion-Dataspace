@@ -172,3 +172,8 @@ dt {
 dd {
   margin: 0 0 0.4rem;
 }
+
+.marker {
+  color: #52606d;
+  font-size: 0.85rem;
+}

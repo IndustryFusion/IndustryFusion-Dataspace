@@ -193,6 +193,11 @@ def check() -> int:
                 expect(lc.PARTICIPANTS, hosted, f"connector.{namespace}", 8083, False)
                 expect(lc.PARTICIPANTS, hosted, f"postgres.{namespace}", 5432, False)
                 expect(lc.PARTICIPANTS, hosted, f"storage.{namespace}", 80, False)
+            for namespace in PARTICIPANTS:
+                # The gateway's peer route reaches the adapter, and nothing else of it.
+                expect("dataspace", "gateway", f"adapter.{namespace}", 8000, True)
+                expect("dataspace", "gateway", f"connector.{namespace}", 8081, False)
+                expect("dataspace", "gateway", f"postgres.{namespace}", 5432, False)
             # One demo participant to the other: the same limits.
             one, two = list(PARTICIPANTS)
             expect(one, "adapter", f"adapter.{two}", 8000, True)

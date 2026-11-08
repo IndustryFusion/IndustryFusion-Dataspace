@@ -88,6 +88,7 @@ class Adapters:
                 "capability": body["capability"],
                 "status": status,
                 "decision_note": body.get("note"),
+                "conversation_id": body.get("conversation_id"),
             }
             held.append(entry)
             return json_response(200, entry)
@@ -157,6 +158,10 @@ def adapter_down() -> None:
     world().adapters.down = True
 
 
+def gateway_refuses() -> None:
+    world().gateway.answer = json_response(403, {"detail": "The token does not belong to a participant"})
+
+
 def route(action):
     async def endpoint(_):
         await asyncio.to_thread(action)
@@ -175,6 +180,7 @@ ROUTES = {
     "foreign-client": foreign_client,
     "adapter-refuses": adapter_refuses,
     "adapter-down": adapter_down,
+    "gateway-refuses": gateway_refuses,
 }
 # Ahead of the UI's route, which would otherwise answer these paths.
 for position, (name, action) in enumerate(ROUTES.items()):

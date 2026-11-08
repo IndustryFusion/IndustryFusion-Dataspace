@@ -38,6 +38,7 @@ from app.health import component_health
 from app.ifric import CompanyDirectory
 from app.keycloak import KeycloakAdmin
 from app.kubernetes import Kubernetes, in_cluster_client
+from app.peers import ExternalPolicies, Unreadable
 from app.provisioning import Provisioner, Registration
 from app.registry import Registry
 from app.storage import Buckets, StorageIdentities
@@ -106,6 +107,7 @@ class Services:
     databases: Databases
     provisioner: Provisioner
     companies: CompanyDirectory
+    external_policies: ExternalPolicies
 
     def keycloak(self, token: str) -> KeycloakAdmin:
         return KeycloakAdmin(self.http, self.settings.keycloak_url, self.settings.keycloak_realm, token)
@@ -126,6 +128,7 @@ def build_services(settings: Settings, http: httpx.AsyncClient, kubernetes: Kube
         databases=databases,
         provisioner=Provisioner(settings, databases, kubernetes, registry, Buckets(settings), identities),
         companies=CompanyDirectory(settings, http),
+        external_policies=ExternalPolicies(settings, http),
     )
 
 
@@ -318,9 +321,12 @@ async def delete_participant(
     return Response(status_code=204)
 
 
-@app.get("/api/policy", dependencies=[Depends(admin_token)])
+@app.get("/api/policy")
 async def read_policy(
-    fo: str = Query(min_length=1), mb: str = Query(min_length=1), services: Services = Depends(services_of)
+    fo: str = Query(min_length=1),
+    mb: str = Query(min_length=1),
+    services: Services = Depends(services_of),
+    token: str = Depends(admin_token),
 ) -> dict:
     owner = await participant_or_404(services, fo)
     builder = await participant_or_404(services, mb)
@@ -328,15 +334,36 @@ async def read_policy(
         raise HTTPException(status_code=422, detail="fo is not a factory owner")
     if roles.bare_name(builder["participant_type"]) != roles.MACHINE_BUILDER:
         raise HTTPException(status_code=422, detail="mb is not a machine builder")
+    keycloak = services.keycloak(token)
+
+    async def one_direction(provider: dict, consumer: dict) -> tuple[list[dict], str | None]:
+        """A hosted provider is asked with its own key. An external one is read as the consumer would read it."""
+        if provider.get("hosted"):
+            return policy_entries(provider, consumer["participant_id"], await services.adapters.state(provider)), None
+        try:
+            state = await services.external_policies.state(
+                provider["participant_id"], consumer["participant_id"], keycloak
+            )
+        except Unreadable as reason:
+            return [], str(reason)
+        return policy_entries(provider, consumer["participant_id"], state), None
+
+    directions = await asyncio.gather(one_direction(owner, builder), one_direction(builder, owner))
     entries: list[dict] = []
     unavailable: list[str] = []
-    for provider, consumer in ((owner, builder), (builder, owner)):
-        if provider.get("hosted"):
-            state = await services.adapters.state(provider)
-            entries.extend(policy_entries(provider, consumer["participant_id"], state))
-        else:
+    reasons: dict[str, str] = {}
+    for provider, (found, reason) in zip((owner, builder), directions, strict=True):
+        entries.extend(found)
+        if reason is not None:
             unavailable.append(provider["participant_id"])
-    return {"factory_owner": fo, "machine_builder": mb, "capabilities": entries, "unavailable": unavailable}
+            reasons[provider["participant_id"]] = reason
+    return {
+        "factory_owner": fo,
+        "machine_builder": mb,
+        "capabilities": entries,
+        "unavailable": unavailable,
+        "unavailable_reasons": reasons,
+    }
 
 
 @app.get("/{path:path}", include_in_schema=False)

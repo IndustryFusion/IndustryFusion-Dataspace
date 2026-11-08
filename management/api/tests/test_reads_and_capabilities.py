@@ -303,9 +303,10 @@ def test_policy_with_an_external_side_as_admin(world):
     )
     answer = world.client.get("/api/policy", params={"fo": FO, "mb": "urn:test:ext"}, headers=world.admin)
     assert answer.status_code == 200
-    assert answer.json()["unavailable"] == ["urn:test:ext"]
-    assert {entry["provider"] for entry in answer.json()["capabilities"]} == {FO}
+    assert answer.json()["unavailable"] == [] and answer.json()["unavailable_reasons"] == {}
+    assert {entry["provider"] for entry in answer.json()["capabilities"]} == {FO, "urn:test:ext"}
     assert all("ext.example" not in call[1] for call in world.adapters.calls)
+    assert [call["path"] for call in world.gateway.calls] == ["/peer/urn:test:ext/internal/capabilities"]
 
 
 def test_policy_for_a_wrong_pair(world):
