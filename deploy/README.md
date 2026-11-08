@@ -12,7 +12,38 @@ This installs the dataspace on Kubernetes with [Helmfile](https://helmfile.readt
 - A network plugin that enforces NetworkPolicies, for `networkPolicy.enabled`. Without one, they are accepted and do nothing.
 - PostgreSQL, S3-compatible storage and Keycloak. They aren't installed here. The PostgreSQL user in the secrets file has to be able to create databases and roles. By default they are the ones from the [IndustryFusion DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack in namespace `iff`, at the addresses in `values/common.yaml`.
 - The realm set up once, as [keycloak.md](../keycloak.md) describes. `scripts/setup-keycloak.py` does this.
-- The images of `registry`, `gateway`, `dsp-gateway`, `management`, `adapter` and `connector` in a registry the cluster can pull from, as `[<images.registry>/]<images.repo>/<name>:<images.version>`. This project doesn't publish images yet, so build them with `docker build`.
+- The images of `registry`, `gateway`, `dsp-gateway`, `management`, `adapter` and `connector` in a registry the cluster can pull from, as `[<images.registry>/]<images.repo>/<name>:<images.version>`. Build and push them with the script below.
+
+## Building and pushing the images
+
+`scripts/build-images.sh` builds the six images, and pushes each as `<REGISTRY>/<REPO>/<name>:<VERSION>`. It needs Docker and bash 4.3 or later, and the registry has to accept your pushes, for example after `docker login`. Run it from the repository's root folder:
+
+```bash
+REGISTRY=registry.example.com:5000 REPO=dataspace VERSION=1.2.3 ./scripts/build-images.sh
+```
+
+| Setting | Default | Chart value to set to the same |
+|---|---|---|
+| `REGISTRY` | `k3d-iff.localhost:12345` | `images.registry` |
+| `REPO` | `dataspace` | `images.repo` |
+| `VERSION` | `latest` | `images.version` |
+
+- Settings set in the shell take precedence over a config file, `scripts/build-images.env`, which git ignores. Copy `scripts/build-images.env.example` to start one, or point `BUILD_IMAGES_CONFIG` at another file. The file holds `KEY=value` lines for these three keys and is never run.
+- Name images to build only those, such as `./scripts/build-images.sh adapter connector`.
+- `--build-only` builds without pushing. `--list` prints the names and builds nothing.
+- An empty `REGISTRY` means no prefix, as in the chart. It works with `--build-only`, but the script won't push without a registry.
+- The script stops at the first failed build or push, and says which image and which step failed. Images it pushed before that stay in the registry.
+
+Then set the same three values in your environment's values file, step 3 below:
+
+```yaml
+images:
+  registry: registry.example.com:5000
+  repo: dataspace
+  version: 1.2.3
+```
+
+The chart uses them for the four fixed services, and passes them to the management API, which names participants' `adapter` and `connector` images the same way. `values/common.yaml` has `registry: ""` and `version: dev`, which are the local environment's names, so set all three.
 
 ## Install
 

@@ -144,3 +144,23 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build connector
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install "pyyaml>=6,<7"
+      - name: Lint the build script
+        run: shellcheck scripts/build-images.sh
+      - name: Test the build script
+        run: python scripts/build-images-test.py
+      - name: Check the names against the chart and the management API
+        run: python scripts/check-image-names.py
+      - name: Build every image through the script
+        run: scripts/build-images.sh --build-only
+        env:
+          REGISTRY: ci.example:5000
