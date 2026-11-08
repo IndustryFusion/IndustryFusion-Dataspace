@@ -23,15 +23,23 @@ The management API image SHALL serve the built UI on the service's port.
 
 ### Requirement: Health screen
 
-The Health screen SHALL show each component's status, refreshed every 15 seconds, without signing in.
+The Health screen SHALL show a summary line, each component's status, detail and response time, and the time of the check, refreshed every 15 seconds and on a Refresh button, without signing in.
 
 #### Scenario: All healthy
 - **WHEN** the screen is opened
-- **THEN** each component shows its status
+- **THEN** each component shows its status and response time, with the time of the check and a summary line of how many components are ok
 
 #### Scenario: A component goes down
 - **WHEN** a component goes down while the screen is open
-- **THEN** within 15 seconds the screen shows it, with the detail message
+- **THEN** within 15 seconds the screen shows it, with the detail message, and the summary line counts it
+
+#### Scenario: Refreshing by hand
+- **WHEN** the Refresh button is pressed
+- **THEN** the health is read again at once, and the time of the check changes
+
+#### Scenario: A component that isn't configured
+- **WHEN** a component has no response time
+- **THEN** its response time is shown as empty, not as zero
 
 #### Scenario: Leaving the screen
 - **WHEN** another screen is opened
@@ -39,11 +47,27 @@ The Health screen SHALL show each component's status, refreshed every 15 seconds
 
 ### Requirement: Participants screen
 
-The Participants screen SHALL list participants without signing in, and in admin mode SHALL let an administrator register hosted or external participants, create demo participants, show credentials, set reachability and delete.
+The Participants screen SHALL list participants without signing in, with each one's adapter and DSP addresses and an "(external)" marker for an external participant, and SHALL offer a Refresh button. In admin mode it SHALL let an administrator register hosted or external participants, create demo participants, show credentials with copy buttons, set reachability and delete.
 
 #### Scenario: Reading
 - **WHEN** the screen is opened without signing in
 - **THEN** participants are listed
+
+#### Scenario: Addresses
+- **WHEN** participants are listed
+- **THEN** each shows its adapter and DSP address as the API returned them, and an address the API withheld reads as not public
+
+#### Scenario: Addresses in admin mode
+- **WHEN** participants are listed in admin mode
+- **THEN** a hosted participant shows its adapter and DSP address
+
+#### Scenario: External marker
+- **WHEN** a participant is external
+- **THEN** it is marked "(external)", and a hosted one is not
+
+#### Scenario: Refreshing
+- **WHEN** a participant is added by another client, and the Refresh button is pressed
+- **THEN** it is listed
 
 #### Scenario: Registering a hosted participant
 - **WHEN** an administrator registers one
@@ -60,6 +84,14 @@ The Participants screen SHALL list participants without signing in, and in admin
 #### Scenario: Showing credentials
 - **WHEN** an administrator asks for a participant's credentials
 - **THEN** its client id and secret are shown
+
+#### Scenario: Copying credentials
+- **WHEN** credentials are shown, and the copy button of the client id or the secret is pressed
+- **THEN** that value is on the clipboard, and the screen says it was copied
+
+#### Scenario: No secret unless asked
+- **WHEN** the screen is open, in or out of admin mode, and no credentials were asked for or returned by a registration
+- **THEN** no client secret is in the page, and no copy button is offered
 
 #### Scenario: Setting reachability
 - **WHEN** an administrator changes it
@@ -79,18 +111,22 @@ The Participants screen SHALL list participants without signing in, and in admin
 
 ### Requirement: Policies screen
 
-The Policies screen SHALL show a factory owner and machine builder pair, and in admin mode SHALL offer approve, deny and reset.
+The Policies screen SHALL show a factory owner and machine builder pair to an administrator, with each capability's data classification and the conversation its decision was made in, including an external provider's capabilities, and SHALL offer approve, deny and reset for a hosted provider.
 
 #### Scenario: Viewing a pair
-- **WHEN** a hosted pair is chosen without signing in
-- **THEN** each capability shows, in both directions, its provider, consumer, status and source
+- **WHEN** an administrator chooses a hosted pair
+- **THEN** each capability shows, in both directions, its provider, consumer, data classification, status, source and conversation
+
+#### Scenario: Without admin mode
+- **WHEN** the screen is opened without admin mode
+- **THEN** it says that reading who has access needs admin mode, and no policy is read
 
 #### Scenario: Choosing a pair
 - **WHEN** the lists are opened
 - **THEN** each offers only participants of its type
 
 #### Scenario: Approve, deny and reset
-- **WHEN** an administrator approves, denies and resets a capability
+- **WHEN** an administrator approves, denies and resets a capability of a hosted provider
 - **THEN** its status changes each time, ending at the default
 
 #### Scenario: Nothing to reset
@@ -98,8 +134,12 @@ The Policies screen SHALL show a factory owner and machine builder pair, and in 
 - **THEN** reset isn't available
 
 #### Scenario: An external side
-- **WHEN** a side of the pair is external
-- **THEN** without admin mode the API's error is shown, and in admin mode the hosted side is shown with a note about the other
+- **WHEN** a side of the pair is external and its policies can be read
+- **THEN** its capabilities are shown with the other side's, without approve, deny or reset
+
+#### Scenario: An external side that can't be read
+- **WHEN** a side of the pair is external and its policies can't be read
+- **THEN** the hosted side is shown, and a note names the external side with the reason
 
 ### Requirement: Admin mode
 
@@ -148,3 +188,39 @@ Errors from the API SHALL be shown to the user.
 #### Scenario: The API can't be reached
 - **WHEN** a call can't reach the API
 - **THEN** a message says so
+
+### Requirement: Registration form starts reachable
+
+The Participants screen's registration form SHALL start with reachability ticked, and SHALL send the value shown.
+
+#### Scenario: Registering with the starting value
+- **WHEN** an administrator registers a hosted participant without touching the reachability box
+- **THEN** the request has `externally_reachable` true
+
+#### Scenario: Unticking it
+- **WHEN** an administrator unticks the box and registers
+- **THEN** the request has `externally_reachable` false
+
+### Requirement: Registration warnings are shown
+
+The Participants screen SHALL show each warning in the answer to registering a participant, to changing its reachability and to creating the demo participants, with the participant it concerns. A warning SHALL be shown as text only, and a value that isn't text SHALL NOT be shown.
+
+#### Scenario: A registration that can't be reachable
+- **WHEN** an administrator registers a hosted participant and the answer has a warning that it isn't reachable from outside
+- **THEN** the screen shows that warning with the participant's id
+
+#### Scenario: Making a participant reachable
+- **WHEN** an administrator uses "Make reachable" and the answer has a warning
+- **THEN** the screen shows that warning with the participant's id
+
+#### Scenario: Creating the demo participants
+- **WHEN** an administrator creates the demo participants and the answer's records have warnings
+- **THEN** the screen shows each record's warnings with its participant's id
+
+#### Scenario: No warnings
+- **WHEN** the answer has no warnings
+- **THEN** no warning is shown
+
+#### Scenario: A warning that isn't text
+- **WHEN** a warning in the answer is not text
+- **THEN** the screen still renders, and that warning isn't shown

@@ -120,7 +120,7 @@ The database SHALL hold message metadata and a payload reference only, with cont
 - **THEN** its row has no payload content, and its content is in object storage
 
 ### Requirement: Retention
-The adapter SHALL purge content and delete rows of messages in a final status, by the configured periods.
+The adapter SHALL purge content and delete rows of messages in a final status, by the configured periods, and SHALL NOT delete conversations.
 
 #### Scenario: Content past its time
 - **WHEN** a final message passes its `expires_at`, or the content retention period if it has none
@@ -133,6 +133,14 @@ The adapter SHALL purge content and delete rows of messages in a final status, b
 #### Scenario: Not final
 - **WHEN** a message isn't in a final status, including one received and not acknowledged
 - **THEN** it and its content are kept
+
+#### Scenario: Conversations are kept
+- **WHEN** a conversation has had no message for longer than the row retention period, and retention runs
+- **THEN** the conversation is kept with its state, outcome and times, while its messages' content and rows are removed on time
+
+#### Scenario: A closed conversation stays closed
+- **WHEN** a conversation was closed longer ago than the row retention period, and a message without `reopen` arrives with its id
+- **THEN** the message is refused by the state rules, as for any closed conversation, and no new conversation is opened
 
 ### Requirement: Schema monitor
 The adapter SHALL check its tables every 15 seconds, and recreate any that are missing.

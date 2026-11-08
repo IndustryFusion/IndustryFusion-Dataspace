@@ -27,11 +27,15 @@ Participant reads SHALL add `company_name`, `company_category`, `city` and `coun
 
 ### Requirement: IFRIC unavailable or not configured
 
-If IFRIC is unreachable, refuses or is not configured, the fields SHALL be left out and nothing else SHALL change.
+If IFRIC is unreachable, refuses or is not configured, the fields SHALL be left out and nothing else SHALL change. `IFRIC_READER_CLIENT_ID` SHALL default to `dataspace-ifric-reader` when unset or empty.
 
 #### Scenario: Not configured
-- **WHEN** any of `IFRIC_BACKEND_URL`, `IFRIC_READER_CLIENT_ID` and `IFRIC_READER_CLIENT_SECRET` is missing
+- **WHEN** `IFRIC_BACKEND_URL` or `IFRIC_READER_CLIENT_SECRET` is missing
 - **THEN** reads return plain records, and no call goes to Keycloak or IFRIC
+
+#### Scenario: The default client id
+- **WHEN** `IFRIC_BACKEND_URL` and `IFRIC_READER_CLIENT_SECRET` are set, and `IFRIC_READER_CLIENT_ID` is unset or empty
+- **THEN** the reader's token is asked for with the client id `dataspace-ifric-reader`, and reads have the company details
 
 #### Scenario: Unreachable
 - **WHEN** IFRIC doesn't answer, or answers with an error
@@ -67,8 +71,12 @@ The result SHALL be cached for `IFRIC_LOOKUP_CACHE_SECONDS`, by default 300.
 
 ### Requirement: Identifiers and the shared realm are documented
 
-`keycloak.md` and `architecture.md` SHALL say that such a participant's `participant_id` is its `company_ifric_id`, with no mapping table, and that other participant ids must never equal a real `company_ifric_id`. `keycloak.md` SHALL describe the setup of the shared realm.
+`keycloak.md` and `architecture.md` SHALL say that a participant's `participant_id` is its company's `company_ifric_id`, with no mapping table, because the IFRIC registry's access control matches participant ids to `company_ifric_id`. `keycloak.md` SHALL describe the setup of the shared realm.
 
 #### Scenario: Reading the documents
 - **WHEN** an administrator sets up a shared realm from `keycloak.md`
-- **THEN** it says which client to create, how to give the service its credentials, and the rule for identifiers
+- **THEN** it says which client to create, how to give the service its credentials, and that each participant is registered with its company's `company_ifric_id` as `participant_id`
+
+#### Scenario: No statement of the opposite
+- **WHEN** the documents are read
+- **THEN** none says that a participant id must differ from a `company_ifric_id`
