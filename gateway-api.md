@@ -51,7 +51,7 @@ The participants this one may communicate with.
 ]
 ```
 
-`participant_type` is a full IRI. An agent doesn't need the addresses. A hosted participant's `adapter_url` is `null`, and so is its `dsp_url` unless it is `externally_reachable`, as they only work inside the hub. An external participant's own addresses are shown.
+`participant_type` is a full IRI. An agent doesn't need the addresses. A hosted participant's `adapter_url` is `null`, and so is its `dsp_url` unless it is `externally_reachable`, as its own addresses only work inside the hub. A reachable hosted participant's `dsp_url` is its address on the DSP gateway: the deployment's DSP gateway peer address, one path segment, then `/api/v1/dsp`. An external participant's own addresses are shown.
 
 ## Sending
 
