@@ -28,6 +28,10 @@ External participants' flows run if there are any: with --local, those from scri
 those given with --external-owner and --external-builder, each as ADAPTER_URL,ID,SECRET. Their agents call their own
 adapter, and the hosted participants have to be externally reachable, which the suite arranges where it created them.
 
+A reachable hosted peer's dsp_url has to lie under the DSP gateway's peer address. --local reads it from the local
+cluster's management Deployment. Against another deployment, give it with --dsp-gateway-peer-url. Without it, that
+part of the check is listed as not run.
+
 --tamper 'GET /conversations/*:outcome' puts a proxy in front of the gateway that removes a field from one route's real
 answers. That run must fail, naming the field. It exits with 0 only if everything that ran passed.
 """
@@ -38,6 +42,7 @@ import datetime
 import hashlib
 import http.client
 import http.server
+import io
 import json
 import os
 import re
@@ -399,6 +404,66 @@ def self_test() -> int:
         if change_value(sample, rule) != wanted:
             failures += 1
             print(f"FAIL the tamper change {rule} did something else")
+    # Hosted peers' addresses in GET /participants/compatible.
+    peer = "http://dsp-gateway.example:8085"
+    reachable = {
+        "participant_id": "urn:self-test:reachable", "hosted": True, "externally_reachable": True,
+        "adapter_url": None, "dsp_url": f"{peer}/0a1b2c3d/api/v1/dsp",
+    }  # fmt: skip
+    unreachable = {**reachable, "participant_id": "urn:self-test:unreachable", "externally_reachable": False,
+                   "dsp_url": None}  # fmt: skip
+    for entry in (reachable, unreachable):
+        checks += 1
+        if hosted_address_problems(entry, peer) or hosted_address_problems(entry, None):
+            failures += 1
+            print(f"FAIL a valid hosted peer was refused: {entry}")
+    connector = "http://connector-0a1b2c3d.dataspace-participants:8082/api/v1/dsp"
+    wrong_entries = {
+        "an adapter_url": {**reachable, "adapter_url": "http://adapter-0a1b2c3d.dataspace-participants:8000"},
+        "a dsp_url while not reachable": {**unreachable, "dsp_url": connector},
+        "the connector's own address": {**reachable, "dsp_url": connector},
+        "another prefix": {**reachable, "dsp_url": f"{peer}0/0a1b2c3d/api/v1/dsp"},
+        "two segments": {**reachable, "dsp_url": f"{peer}/a/b/api/v1/dsp"},
+        "no segment": {**reachable, "dsp_url": f"{peer}//api/v1/dsp"},
+        "no /api/v1/dsp": {**reachable, "dsp_url": f"{peer}/0a1b2c3d/api/v1"},
+        "a null dsp_url while reachable": {**reachable, "dsp_url": None},
+        "reachable with no peer address configured": reachable,
+        "no / after the peer address": {**reachable, "dsp_url": f"{peer}0a1b2c3d/api/v1/dsp"},
+        "a ? in the segment": {**reachable, "dsp_url": f"{peer}/0a1b?2c3d/api/v1/dsp"},
+        "a # in the segment": {**reachable, "dsp_url": f"{peer}/0a1b#2c3d/api/v1/dsp"},
+        "a / in the segment": {**reachable, "dsp_url": f"{peer}/0a1b/2c3d/api/v1/dsp"},
+        "a . segment": {**reachable, "dsp_url": f"{peer}/./api/v1/dsp"},
+        "a .. segment": {**reachable, "dsp_url": f"{peer}/../api/v1/dsp"},
+        "another case in the path": {**reachable, "dsp_url": f"{peer}/0a1b2c3d/API/v1/dsp"},
+    }
+    for what, entry in wrong_entries.items():
+        checks += 1
+        given = "" if what == "reachable with no peer address configured" else peer
+        if not hosted_address_problems(entry, given):
+            failures += 1
+            print(f"FAIL a hosted peer with {what} was accepted")
+    checks += 1
+    if not any("no DSP gateway peer address" in problem for problem in hosted_address_problems(reachable, "")):
+        failures += 1
+        print("FAIL a reachable hosted peer with no peer address configured isn't reported as such")
+    # The scheme and host compare in any case.
+    checks += 1
+    shouting = {**reachable, "dsp_url": "HTTP://DSP-Gateway.EXAMPLE:8085/0a1b2c3d/api/v1/dsp"}
+    if hosted_address_problems(shouting, peer):
+        failures += 1
+        print("FAIL a hosted peer whose scheme and host differ only in case was refused")
+    # Without a peer address, the address part is listed as not run, and the rest still fails a wrong entry.
+    with contextlib.redirect_stdout(io.StringIO()):
+        unknown, wrong = Report(), Report()
+        check_hosted_addresses(unknown, [reachable, unreachable], None)
+        check_hosted_addresses(wrong, [{**reachable, "adapter_url": "http://adapter.example"}], None)
+    checks += 2
+    if unknown.failed or len(unknown.not_run) != 1 or "--dsp-gateway-peer-url" not in unknown.not_run[0]:
+        failures += 1
+        print(f"FAIL without a peer address: failed {unknown.failed}, not run {unknown.not_run}")
+    if not wrong.failed:
+        failures += 1
+        print("FAIL without a peer address, a hosted peer's adapter_url was accepted")
     print(f"Self-test: {checks} checks, {failures} failures")
     return 1 if failures else 0
 
@@ -460,6 +525,8 @@ class Limits:
 
     json_bytes: int = 4 * 1024**2
     upload_bytes: int = 1024**3
+    # The DSP gateway's peer address, under which a reachable hosted peer's dsp_url lies. None: not known here.
+    dsp_gateway_peer_url: str | None = None
 
 
 class Run:
@@ -529,6 +596,66 @@ def both_views_agree(run: "Run", chat: str, what: str, accepted: list[str] | Non
 
 
 # --- The routes -------------------------------------------------------------------------------------------------------
+HOSTED_ADDRESSES = "A hosted peer shows no adapter address, and its DSP gateway address only if reachable"
+
+
+def hosted_address_problems(entry: dict, peer: str | None) -> list[str]:
+    """What is wrong with a hosted peer's addresses in GET /participants/compatible. See gateway-api.md.
+
+    Its adapter_url is null, and so is its dsp_url unless it is externally reachable. Then its dsp_url is under the
+    DSP gateway's peer address: <peer>/<one segment>/api/v1/dsp. Anything else, such as the connector's own address,
+    only works inside the hub. With peer None, that last form isn't checked.
+    """
+    name = entry.get("participant_id")
+    found = []
+    if entry.get("adapter_url") is not None:
+        found.append(f"{name}: adapter_url is {entry.get('adapter_url')!r}, wanted null")
+    address = entry.get("dsp_url")
+    if not entry.get("externally_reachable"):
+        if address is not None:
+            found.append(f"{name}: dsp_url is {address!r} while not externally reachable, wanted null")
+        return found
+    if peer is None:
+        return found
+    if not peer:
+        found.append(f"{name}: externally reachable, though management has no DSP gateway peer address")
+        return found
+    if not under_dsp_gateway(address, peer):
+        found.append(f"{name}: dsp_url is {address!r}, wanted {peer}/<one segment>/api/v1/dsp")
+    return found
+
+
+def under_dsp_gateway(address: object, peer: str) -> bool:
+    """Whether address is <peer>/<one segment>/api/v1/dsp. Scheme and host compare in any case, the path as it is.
+
+    The segment can't be empty, . or .., or hold / ? or #, and the address has no query or fragment.
+    """
+    if not isinstance(address, str) or "?" in address or "#" in address:
+        return False
+    found, wanted = urllib.parse.urlsplit(address), urllib.parse.urlsplit(peer)
+    if (found.scheme.lower(), found.netloc.lower()) != (wanted.scheme.lower(), wanted.netloc.lower()):
+        return False
+    prefix = f"{wanted.path.rstrip('/')}/"
+    if not found.path.startswith(prefix):
+        return False
+    segment, _, tail = found.path[len(prefix) :].partition("/")
+    return bool(segment) and segment not in (".", "..") and tail == "api/v1/dsp"
+
+
+def check_hosted_addresses(report: "Report", entries: object, peer: str | None) -> None:
+    """The hosted entries of GET /participants/compatible. Without a peer address, its part is listed as not run."""
+    hosted = (
+        [entry for entry in entries if isinstance(entry, dict) and entry.get("hosted")]
+        if isinstance(entries, list)
+        else []
+    )
+    report.note(HOSTED_ADDRESSES, [problem for entry in hosted for problem in hosted_address_problems(entry, peer)])
+    if peer is None and any(entry.get("externally_reachable") for entry in hosted):
+        report.not_run.append(
+            "A reachable hosted peer's dsp_url on the DSP gateway: give --dsp-gateway-peer-url, or run with --local"
+        )
+
+
 def discovery(run: Run) -> None:
     report = run.report
     report.status("GET /health needs no token", run.owner.request("GET", "/health", authenticated=False), 200)
@@ -537,12 +664,7 @@ def discovery(run: Run) -> None:
     ids = [entry.get("participant_id") for entry in compatible.body if isinstance(entry, dict)]
     report.that("GET /participants/compatible names the other side", run.builder_id in ids, ids)
     report.that("GET /participants/compatible doesn't name this side", run.owner_id not in ids, ids)
-    hosted = [entry for entry in compatible.body if isinstance(entry, dict) and entry.get("hosted")]
-    report.that(
-        "A hosted peer's addresses inside the hub are left out",
-        all(entry["adapter_url"] is None and entry["dsp_url"] is None for entry in hosted),
-        hosted,
-    )
+    check_hosted_addresses(report, compatible.body, run.limits.dsp_gateway_peer_url)
     answer = run.owner.request("GET", "/participants/compatible", authenticated=False)
     report.shape("No token: 401", answer, 401, STANDARD)
     call = urllib.request.Request(f"{run.owner.gateway}/participants/compatible")
@@ -1598,6 +1720,13 @@ def run_suite(
     return report.finish()
 
 
+def local_dsp_gateway_peer_url(lc) -> str:
+    """DSP_GATEWAY_PEER_URL of the management Deployment on the local cluster, through its own kubeconfig only."""
+    jsonpath = '{.spec.template.spec.containers[0].env[?(@.name=="DSP_GATEWAY_PEER_URL")].value}'
+    found = lc.kubectl("-n", "dataspace", "get", "deploy", "management", "-o", f"jsonpath={jsonpath}")
+    return found.strip().rstrip("/")
+
+
 def external_client(given: str, keycloak: str) -> DataspaceClient:
     """From ADAPTER_URL,ID,SECRET. An external agent calls its own adapter, not the gateway."""
     url, _, rest = given.partition(",")
@@ -1625,11 +1754,17 @@ def main() -> int:
     top.add_argument("--only", help="Run only these sections, comma-separated, by the names the report prints")
     top.add_argument("--max-json-bytes", type=int, default=Limits.json_bytes, help="This deployment's MAX_JSON_BYTES")
     top.add_argument("--max-upload-bytes", type=int, default=Limits.upload_bytes, help="Its MAX_UPLOAD_BYTES")
+    top.add_argument(
+        "--dsp-gateway-peer-url",
+        help="This deployment's DSP gateway peer address, participants.dspGatewayPeerUrl in its Helm values, under "
+        "which a reachable hosted peer's dsp_url lies. --local reads it from the cluster",
+    )
     args = top.parse_args()
 
     if args.self_test:
         return self_test()
-    limits = Limits(args.max_json_bytes, args.max_upload_bytes)
+    peer = args.dsp_gateway_peer_url.rstrip("/") if args.dsp_gateway_peer_url is not None else None
+    limits = Limits(args.max_json_bytes, args.max_upload_bytes, peer)
     only = args.only.split(",") if args.only else None
 
     def against(
@@ -1661,6 +1796,15 @@ def main() -> int:
     if args.local:
         import local_cluster as lc
 
+        if limits.dsp_gateway_peer_url is None and (only is None or "discovery" in only):
+            # What management makes reachable hosted participants' addresses from, read with the local kubeconfig.
+            try:
+                limits.dsp_gateway_peer_url = local_dsp_gateway_peer_url(lc)
+            except (RuntimeError, OSError) as error:
+                print(
+                    f"contract_test: can't read DSP_GATEWAY_PEER_URL from the local cluster: {error}", file=sys.stderr
+                )
+                return 2
         secret = (lc.LOCAL / "admin-client-secret").read_text().strip()
         state_file = lc.LOCAL / "external-demo.json"
         demo = json.loads(state_file.read_text()) if state_file.exists() else None
