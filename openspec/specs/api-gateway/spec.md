@@ -78,7 +78,7 @@ The gateway SHALL forward `POST /peer/{receiver}/internal/transfer-request`, `GE
 - **THEN** each reaches the other side unchanged
 
 ### Requirement: Compatible participants
-The gateway SHALL answer `GET /participants/compatible` for the calling participant with what the registry answers, leaving out the addresses of hosted participants that only work inside the hub.
+The gateway SHALL answer `GET /participants/compatible` for the calling participant with what the registry answers, leaving out the addresses of hosted participants that only work inside the hub. A reachable hosted peer's `dsp_url` SHALL be its address on the DSP gateway.
 
 #### Scenario: Peers listed
 - **WHEN** a registered participant calls it
@@ -87,6 +87,10 @@ The gateway SHALL answer `GET /participants/compatible` for the calling particip
 #### Scenario: A hosted peer
 - **WHEN** a peer is hosted
 - **THEN** its `adapter_url` is null, and its `dsp_url` is null unless it is reachable
+
+#### Scenario: A reachable hosted peer
+- **WHEN** a hosted peer is `externally_reachable`
+- **THEN** its `dsp_url` starts with the deployment's DSP gateway peer address followed by one path segment, and ends with `/api/v1/dsp`
 
 #### Scenario: An external peer
 - **WHEN** a peer is external
