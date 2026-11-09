@@ -98,7 +98,7 @@ Every release gets `common.yaml`, the environment files, the secrets file and th
 Each chart has its own `_helpers.tpl` with only the helpers it uses: labels, the image name, secret references, and the PostgreSQL, Keycloak and limit variables. The same few helpers therefore appear in more than one chart. The check below catches a difference between them and today's output, and `check-helm-values.py` keeps checking the rules that span charts, such as Ingress body sizes against limits.
 
 Alternatives:
-- **A library chart** as a dependency of each chart. It avoids the repetition, but adds `helm dependency build` and vendored archives, and doesn't match the layout of the other repositories.
+- **A library chart** as a dependency of each chart. It avoids the repetition, but adds `helm dependency build` and vendored archives, and doesn't match how DigitalTwin and XANA lay out their charts.
 - **Computing the env lists in `values.yaml.gotmpl`.** Templates would move out of the charts, which then couldn't be read or linted on their own.
 
 ### The same objects as before (maintainer's decision)
