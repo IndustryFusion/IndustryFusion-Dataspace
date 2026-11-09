@@ -53,14 +53,15 @@ source helm/env.sh
 | `HELMFILE_VERSION` | `0.169.2` | the helmfile `bootstrap.sh` installs. `bootstrap.sh` holds its checksum |
 | `HELM_DIFF_PLUGIN` | `3.15.11` | the helm-diff plugin `bootstrap.sh` installs, for `helmfile diff` and `helmfile apply` |
 
-A variable already set keeps its value, even an empty one, so you can set them before sourcing, or edit `env.sh` in a copy you keep with your installation. It holds no secret. The charts and `scripts/build-images.sh` read the same three image variables, so what the script pushes is what the charts deploy. Without `env.sh`, helmfile stops and names the variable that is missing.
+A variable already exported keeps its value, even an empty one, so you can export them before sourcing, or edit `env.sh` in a copy you keep with your installation. Export them on their own line: `LOCAL_REGISTRY=... source helm/env.sh` on one line doesn't keep the value after `source`. It holds no secret. The charts and `scripts/build-images.sh` read the same three image variables, so what the script pushes is what the charts deploy. Without `env.sh`, helmfile stops and names the variable that is missing.
 
 ## Building and pushing the images
 
 `scripts/build-images.sh` builds the six images, and pushes each as `<LOCAL_REGISTRY>/<MAIN_REPO>/<name>:<MAIN_VERSION>`. It needs Docker and bash 4.3 or later (macOS ships 3.2: install a newer one, for example with Homebrew), and the registry has to accept your pushes, for example after `docker login`. Run it from the repository's root folder:
 
 ```bash
-LOCAL_REGISTRY=registry.example.com:5000 MAIN_VERSION=1.2.3 source helm/env.sh
+export LOCAL_REGISTRY=registry.example.com:5000 MAIN_VERSION=1.2.3
+source helm/env.sh
 ./scripts/build-images.sh
 ```
 

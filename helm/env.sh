@@ -19,9 +19,11 @@
 #
 #   source helm/env.sh
 #
-# A variable already set in the shell keeps its value, even an empty one, so
-#   LOCAL_REGISTRY=registry.example.com:5000 MAIN_VERSION=1.2.3 source helm/env.sh
-# changes the images for both. Nothing here is secret. See helm/README.md.
+# A variable already exported keeps its value, even an empty one, so
+#   export LOCAL_REGISTRY=registry.example.com:5000 MAIN_VERSION=1.2.3
+#   source helm/env.sh
+# changes the images for both. Export them first: an assignment written before `source` on the same line doesn't
+# last past it. Nothing here is secret. See helm/README.md.
 
 # Where the services run, and where the management API creates participants.
 export NAMESPACE="${NAMESPACE-dataspace}"
