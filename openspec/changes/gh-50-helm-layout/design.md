@@ -34,9 +34,9 @@ Operators run `source helm/env.sh` before `helmfile` and `scripts/build-images.s
 | `LOCAL_REGISTRY` | `k3d-iff.localhost:12345` | the image registry. Empty means no prefix |
 | `MAIN_REPO` | `dataspace` | the image repository |
 | `MAIN_VERSION` | `latest` | the image tag |
-| `HELM_VERSION` | the version CI uses | the oldest Helm that `bootstrap.sh` accepts |
+| `HELM_VERSION` | `3.14.0` | the oldest Helm that `bootstrap.sh` accepts |
 | `HELMFILE_VERSION` | today's `0.169.2` | the helmfile that `bootstrap.sh` downloads |
-| `HELM_DIFF_PLUGIN` | a pinned helm-diff version | the plugin `bootstrap.sh` installs, which `helmfile diff` and `helmfile apply` need |
+| `HELM_DIFF_PLUGIN` | `3.15.11` | the plugin `bootstrap.sh` installs if none is installed, which `helmfile diff` and `helmfile apply` need |
 
 - Each variable keeps a value already set in the shell, even an empty one, so `LOCAL_REGISTRY= source helm/env.sh` gives names without a registry.
 - `env.sh` holds no secret, and no environment-specific host.
