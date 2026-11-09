@@ -38,7 +38,7 @@ A mock agent SHALL use the gateway and normal authentication to answer messages 
 A contract suite SHALL run the client against a deployment, and check each route, field, status value and error shape in `gateway-api.md`.
 
 #### Scenario: Against a deployment that meets the contract
-- **WHEN** it runs against the local environment or a deployment from `deploy/README.md`
+- **WHEN** it runs against the local environment or a deployment from `helm/README.md`
 - **THEN** it passes, and exits with 0
 
 #### Scenario: A wrong response shape
