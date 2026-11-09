@@ -158,7 +158,7 @@ a copy out of another's bucket: see `helm/README.md`.
 | Component | Public | Notes |
 |-----------|--------|-------|
 | API Gateway | Yes (via Ingress) | Single HTTPS endpoint for all agents |
-| Management GUI | Ops team only | Behind VPN or separate Ingress with IP allowlist |
+| Management GUI and API | Yes (via Ingress) | The UI behind an optional login at the Ingress; every change on `/api` needs the Keycloak admin token; an optional IP allowlist or a VPN keeps it to known networks. See `helm/README.md` |
 | Registry | No | Cluster-internal. Only the gateway, management and adapters can reach it, by NetworkPolicy |
 | Adapters | No | Cluster-internal; only reachable via gateway, by the hub's own components, by NetworkPolicy |
 | EDC connectors | No | Cluster-internal. Hosted connectors are never exposed directly; external participants reach them only through the DSP gateway |

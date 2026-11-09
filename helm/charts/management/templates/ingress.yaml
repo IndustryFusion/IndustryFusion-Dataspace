@@ -14,10 +14,17 @@
 # limitations under the License.
 #
 
+{{- /*
+  Two Ingress objects on the management host. management routes /api and /health, never with a login: the UI and
+  external adapters send a bearer token there, and adapters can't answer a password prompt. management-ui routes
+  the rest, the UI and its files, with nginx basic auth when ingress.management.basicAuth.enabled is set. nginx
+  takes the longest matching path, so the API goes to management. See helm/README.md.
+*/}}
 {{- if .Values.ingress.enabled }}
 {{- $settings := .Values.ingress.management -}}
 {{- $tls := .Values.ingress.tls }}
-{{- $secret := $tls.managementSecretName }}
+{{- $host := required "the Ingress needs a host" $settings.host }}
+{{- $login := and $settings.basicAuth $settings.basicAuth.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -27,7 +34,10 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: {{ int64 .Values.limits.maxJsonBytes | quote }}
     # A registration has one deadline, and an undo after it has up to 50 seconds. See management-api.md.
     nginx.ingress.kubernetes.io/proxy-read-timeout: {{ add 60 .Values.participants.provisionReadySeconds | quote }}
-    nginx.ingress.kubernetes.io/whitelist-source-range: {{ required "ingress.management.allowFrom is required with the Ingress: see architecture.md" .Values.ingress.management.allowFrom | quote }}
+    {{- with $settings.allowFrom }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}
+    {{- end }}
+    {{- /* Only here: on both, cert-manager would make two Certificates for one Secret. */}}
     {{- if and $tls.enabled $tls.certManagerClusterIssuer }}
     cert-manager.io/cluster-issuer: {{ $tls.certManagerClusterIssuer | quote }}
     {{- end }}
@@ -38,11 +48,56 @@ spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- if $tls.enabled }}
   tls:
-    - hosts: [{{ required "the Ingress needs a host" $settings.host | quote }}]
-      secretName: {{ $secret }}
+    - hosts: [{{ $host | quote }}]
+      secretName: {{ $tls.managementSecretName }}
   {{- end }}
   rules:
-    - host: {{ required "the Ingress needs a host" $settings.host | quote }}
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: management
+                port:
+                  number: 3000
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: management
+                port:
+                  number: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: management-ui
+  labels: {{- include "management.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ int64 .Values.limits.maxJsonBytes | quote }}
+    {{- with $settings.allowFrom }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}
+    {{- end }}
+    {{- if $login }}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: management-basic-auth
+    nginx.ingress.kubernetes.io/auth-secret-type: auth-file
+    nginx.ingress.kubernetes.io/auth-realm: "Dataspace management"
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if $tls.enabled }}
+  tls:
+    - hosts: [{{ $host | quote }}]
+      secretName: {{ $tls.managementSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
       http:
         paths:
           - path: /

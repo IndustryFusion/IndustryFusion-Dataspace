@@ -184,9 +184,11 @@ async def admin_token(
 
 
 async def shown_as_token_allows(services: Services, authorization: str | None, records: list[dict]) -> list[dict]:
-    """A token that isn't an administrator's is refused, not treated as no token."""
-    if authorization is not None:
-        await services.tokens.require_admin(authorization)
+    """A bearer token that isn't an administrator's is refused, not treated as no token. A header of another
+    scheme, such as Basic from the UI's login, is treated as none."""
+    bearer = services.tokens.bearer(authorization)
+    if bearer is not None:
+        await services.tokens.require_admin(bearer)
     else:
         records = [public_view(record) for record in records]
     return await services.companies.add_details(records)

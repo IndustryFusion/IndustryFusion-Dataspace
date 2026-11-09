@@ -14,7 +14,7 @@ Admin routes need a token with the realm role `dataspace-admin`. Get one with th
 { "client_id": "dataspace-admin-cli", "client_secret": "..." }
 ```
 
-Returns the token response from Keycloak. Send it as `Authorization: Bearer <token>`.
+Returns the token response from Keycloak. Send it as `Authorization: Bearer <token>`. `/api` never asks for the UI's login at the Ingress, and management ignores credentials of another scheme. See "Management access" in [helm/README.md](helm/README.md).
 
 The API uses the caller's token for the Keycloak Admin API. It stores no data of its own. It holds one credential, `MANAGEMENT_CLIENT_SECRET` for `dataspace-admin-cli`, for finishing what a caller started: undoing a failed registration, and removing a participant's client and role after waiting for its pods, as a caller's token can expire during those waits. Without it, what can't be undone is named in the answer, and `DELETE` finishes it.
 
@@ -123,7 +123,7 @@ Returns `client_id` and `client_secret`.
 }
 ```
 
-**What is public.** Without a token, a hosted participant has `adapter_url` `null`, and `dsp_url` `null` unless it is `externally_reachable`, when that is the DSP gateway's address. An external participant's own addresses are shown, as its peers need them. With a `dataspace-admin` token, the record is whole. Any other token gives `401` or `403`, rather than being treated as none.
+**What is public.** Without a token, a hosted participant has `adapter_url` `null`, and `dsp_url` `null` unless it is `externally_reachable`, when that is the DSP gateway's address. An external participant's own addresses are shown, as its peers need them. With a `dataspace-admin` token, the record is whole. Any other bearer token gives `401` or `403`, rather than being treated as none. A header of another scheme, such as the `Basic` credentials a browser sends after the UI's login, counts as no token: a read gives the public view, and a change `401`.
 
 The last four fields come from the IFRIC registry, and are left out if it is unavailable, not configured or does not know the participant. See [IFRIC details](#ifric-details).
 
@@ -137,7 +137,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
 
 **To onboard one:**
 
-1. Make sure of the doors. The gateway has to be reachable from where it runs, and so does the DSP gateway, which isn't exposed by default: see `ingress.dspGateway`, `participants.gatewayPeerUrl` and `participants.dspGatewayPeerUrl` in [helm/README.md](helm/README.md). So do these read routes: add its address to `ingress.management.allowFrom`.
+1. Make sure of the doors. The gateway has to be reachable from where it runs, and so does the DSP gateway, which isn't exposed by default: see `ingress.dspGateway`, `participants.gatewayPeerUrl` and `participants.dspGatewayPeerUrl` in [helm/README.md](helm/README.md). So do these read routes: if `ingress.management.allowFrom` is set, add its address to it.
 2. Register it, with `hosted: false` and the addresses where hosted connectors and adapters can reach it. It gets only its Keycloak client and registry entry, with no databases or pods. The answer has its `client_secret`.
 
    ```json

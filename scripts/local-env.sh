@@ -46,6 +46,11 @@ generate_credentials() {
   mkdir -p "$LOCAL"
   chmod 700 "$LOCAL"
   if [ -f "$LOCAL/credentials.env" ]; then
+    # A credentials file from before the UI login gets one.
+    if ! grep -q '^MANAGEMENT_BASIC_AUTH_PASSWORD=' "$LOCAL/credentials.env"; then
+      (umask 077; printf 'MANAGEMENT_BASIC_AUTH_USER=admin\nMANAGEMENT_BASIC_AUTH_PASSWORD=%s\n' "$(openssl rand -hex 24)" \
+        >> "$LOCAL/credentials.env")
+    fi
     return
   fi
   umask 077
@@ -56,6 +61,8 @@ S3_ACCESS_KEY=$(openssl rand -hex 12)
 S3_SECRET_KEY=$(openssl rand -hex 24)
 KEYCLOAK_ADMIN_USER=admin
 KEYCLOAK_ADMIN_PASSWORD=$(openssl rand -hex 24)
+MANAGEMENT_BASIC_AUTH_USER=admin
+MANAGEMENT_BASIC_AUTH_PASSWORD=$(openssl rand -hex 24)
 CREDENTIALS
 }
 
@@ -168,6 +175,9 @@ secrets:
     accessKey: "$S3_ACCESS_KEY"
     secretKey: "$S3_SECRET_KEY"
   adminClientSecret: "$(cat "$LOCAL/admin-client-secret")"
+  managementBasicAuth:
+    user: "$MANAGEMENT_BASIC_AUTH_USER"
+    password: "$MANAGEMENT_BASIC_AUTH_PASSWORD"
 SECRETS
   echo "$LOCAL/helm-secrets.yaml"
 }
@@ -188,7 +198,9 @@ ingress:
     host: dataspace.localtest.me
   management:
     host: dataspace-management.localtest.me
-    allowFrom: "0.0.0.0/0"
+    # The UI behind a login, from .local/credentials.env. /api keeps the admin token. No allowlist.
+    basicAuth:
+      enabled: true
 VALUES
   echo "$file"
 }

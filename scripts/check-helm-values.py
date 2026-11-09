@@ -22,6 +22,9 @@ settings. The releases must be in the spec's order with its needs, and listing t
 file, while rendering stops without one. Needs bash, helm, helmfile and PyYAML.
 """
 
+import base64
+import copy
+import hashlib
 import pathlib
 import re
 import subprocess
@@ -87,19 +90,13 @@ def check(environment: str | None, secrets: str) -> list[str]:
     for name, objects in (("gateway", gateway), ("management", management)):
         env = env_of(objects)
         upload, json_limit = env["MAX_UPLOAD_BYTES"]["value"], env["MAX_JSON_BYTES"]["value"]
-        ingress = next(o for o in objects if o.get("kind") == "Ingress")
+        ingress = next(o for o in objects if o.get("kind") == "Ingress" and o["metadata"]["name"] == name)
         size = ingress["metadata"]["annotations"][BODY_SIZE]
         wanted = upload if name == "gateway" else json_limit
         if size != wanted:
             problems.append(f"{name}: Ingress body size {size} isn't the limit {wanted}")
 
-    # A management Ingress that is open to whoever reaches it isn't a mistake that can be made.
-    open_ingress = attempt(
-        "management", secrets, "--set", "ingress.enabled=true", "--set", "ingress.management.host=m.example",
-        "--set", "ingress.management.allowFrom=",
-    )  # fmt: skip
-    if open_ingress.returncode == 0 or "ingress.management.allowFrom" not in open_ingress.stderr:
-        problems.append("A management Ingress without an allowlist was accepted")
+    problems += management_access(environment, secrets)
 
     # On by default, and each policy where it belongs.
     policies = {
@@ -164,7 +161,8 @@ def check(environment: str | None, secrets: str) -> list[str]:
 
     # A registration has one deadline, and its undo up to 50 seconds. The Ingress must not cut that off.
     ready = int(env_of(management)["PROVISION_READY_SECONDS"]["value"])
-    timeout = int(next(o for o in management if o["kind"] == "Ingress")["metadata"]["annotations"][READ_TIMEOUT])
+    api_ingress = next(o for o in management if o["kind"] == "Ingress" and o["metadata"]["name"] == "management")
+    timeout = int(api_ingress["metadata"]["annotations"][READ_TIMEOUT])
     if timeout < ready + 50:
         problems.append(f"management: the Ingress waits {timeout}s for a registration that can take {ready + 50}s")
 
@@ -173,12 +171,123 @@ def check(environment: str | None, secrets: str) -> list[str]:
            "--set", "ingress.tls.enabled=true",
            "--set", "ingress.tls.certManagerClusterIssuer=the-issuer")  # fmt: skip
     for component, host in (("gateway", "g.example"), ("management", "m.example")):
-        ingress = next(o for o in render(component, environment, secrets, *tls) if o["kind"] == "Ingress")
-        if ingress["metadata"]["annotations"].get(CERT_MANAGER) != "the-issuer":
-            problems.append(f"{component}: TLS with a cluster issuer has no cert-manager annotation")
-        sections = ingress["spec"].get("tls", [])
-        if not any(host in entry.get("hosts", []) and entry.get("secretName") for entry in sections):
-            problems.append(f"{component}: TLS has no section for its host")
+        ingresses = {
+            o["metadata"]["name"]: o for o in render(component, environment, secrets, *tls) if o["kind"] == "Ingress"
+        }
+        for name, ingress in ingresses.items():
+            # cert-manager makes one Certificate per annotated Ingress, so only one per TLS Secret may carry it.
+            wanted = "the-issuer" if name == component else None
+            if ingress["metadata"]["annotations"].get(CERT_MANAGER) != wanted:
+                given = ingress["metadata"]["annotations"].get(CERT_MANAGER)
+                problems.append(f"{name}: the cert-manager annotation is {given!r}, not {wanted!r}")
+            sections = ingress["spec"].get("tls", [])
+            if not any(host in entry.get("hosts", []) and entry.get("secretName") for entry in sections):
+                problems.append(f"{name}: TLS has no section for its host")
+        if (
+            component == "management"
+            and len({entry["secretName"] for o in ingresses.values() for entry in o["spec"].get("tls", [])}) != 1
+        ):
+            problems.append("The two management Ingress objects don't share one TLS Secret")
+    return problems
+
+
+AUTH = "nginx.ingress.kubernetes.io/auth-"
+LOGIN = {
+    "nginx.ingress.kubernetes.io/auth-type": "basic",
+    "nginx.ingress.kubernetes.io/auth-secret": "management-basic-auth",
+    "nginx.ingress.kubernetes.io/auth-secret-type": "auth-file",
+    "nginx.ingress.kubernetes.io/auth-realm": "Dataspace management",
+}
+FINGERPRINT = "dataspace.industryfusion.org/credentials-sha256"
+
+
+def management_access(environment: str | None, secrets: str) -> list[str]:
+    """The UI login on / only, /api and /health without it, the optional allowlist on both, and no plain password."""
+    problems = []
+    on = ("--set", "ingress.enabled=true", "--set", "ingress.management.host=m.example",
+          "--set", "ingress.gateway.host=g.example")  # fmt: skip
+    user, password = (
+        CANARY["secrets"]["managementBasicAuth"]["user"],
+        CANARY["secrets"]["managementBasicAuth"]["password"],
+    )
+
+    def ingresses(objects: list[dict]) -> dict[str, dict]:
+        return {o["metadata"]["name"]: o for o in objects if o["kind"] == "Ingress"}
+
+    def paths(ingress: dict) -> list[tuple[str, str]]:
+        return [(p["path"], p["pathType"]) for rule in ingress["spec"]["rules"] for p in rule["http"]["paths"]]
+
+    # Without an allowlist, it renders, and neither object has one.
+    plain = render("management", environment, secrets, *on, "--set", "ingress.management.allowFrom=",
+                   "--set", "ingress.management.basicAuth.enabled=false")  # fmt: skip
+    found = ingresses(plain)
+    if set(found) != {"management", "management-ui"}:
+        problems.append(f"The management Ingress objects are {sorted(found)}")
+        return problems
+    if paths(found["management"]) != [("/api", "Prefix"), ("/health", "Exact")] or paths(found["management-ui"]) != [
+        ("/", "Prefix")
+    ]:
+        problems.append(
+            f"management routes {paths(found['management'])}, management-ui {paths(found['management-ui'])}"
+        )
+    for name, ingress in found.items():
+        if ALLOWLIST in ingress["metadata"]["annotations"]:
+            problems.append(f"{name}: an allowlist without allowFrom")
+        if any(key.startswith(AUTH) for key in ingress["metadata"]["annotations"]):
+            problems.append(f"{name}: a login while it is off")
+    if any(o["kind"] == "Secret" and o["metadata"]["name"] == "management-basic-auth" for o in plain):
+        problems.append("The login's Secret is rendered while the login is off")
+
+    # With one, both carry exactly it.
+    listed = ingresses(
+        render("management", environment, secrets, *on, "--set", "ingress.management.allowFrom=10.1.0.0/16")
+    )
+    for name, ingress in listed.items():
+        if ingress["metadata"]["annotations"].get(ALLOWLIST) != "10.1.0.0/16":
+            problems.append(f"{name}: the allowlist is {ingress['metadata']['annotations'].get(ALLOWLIST)!r}")
+
+    # The login on: / asks, /api and /health don't, and the Secret holds a bcrypt line, not the password.
+    login = render("management", environment, secrets, *on, "--set", "ingress.management.basicAuth.enabled=true")
+    found = ingresses(login)
+    annotations = found["management-ui"]["metadata"]["annotations"]
+    if {key: annotations.get(key) for key in LOGIN} != LOGIN:
+        problems.append(f"management-ui: the login's annotations are {annotations}")
+    if any(key.startswith(AUTH) for key in found["management"]["metadata"]["annotations"]):
+        problems.append("management: /api or /health asks for the login")
+    secret = next(
+        (o for o in login if o["kind"] == "Secret" and o["metadata"]["name"] == "management-basic-auth"), None
+    )
+    if secret is None:
+        problems.append("The login is on, and its Secret isn't rendered")
+    else:
+        line = base64.b64decode(secret["data"]["auth"]).decode()
+        if not re.fullmatch(rf"{re.escape(user)}:\$2[aby]\$\d\d\$[./A-Za-z0-9]{{53}}", line):
+            problems.append(f"The login's Secret isn't a bcrypt htpasswd line for {user}")
+        if (
+            secret["metadata"]["annotations"].get(FINGERPRINT)
+            != hashlib.sha256(f"{user}:{password}".encode()).hexdigest()
+        ):
+            problems.append("The login's Secret doesn't carry the credentials' SHA-256")
+
+    # No object of any release holds the plain password, as text or in base64.
+    leaks = (password, base64.b64encode(password.encode()).decode())
+    for component in COMPONENTS:
+        text = yaml.safe_dump(
+            render(component, environment, secrets, *on, "--set", "ingress.management.basicAuth.enabled=true")
+        )
+        if any(leak in text for leak in leaks):
+            problems.append(f"{component}: the plain basic-auth password is in a rendered object")
+
+    # The login on without a user or a password stops, naming it.
+    for missing in ("user", "password"):
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml") as partial:
+            given = copy.deepcopy(CANARY)
+            given["secrets"]["managementBasicAuth"][missing] = ""
+            yaml.safe_dump(given, partial)
+            partial.flush()
+            failed = attempt("management", partial.name, *on, "--set", "ingress.management.basicAuth.enabled=true")
+            if failed.returncode == 0 or f"secrets.managementBasicAuth.{missing} is required" not in failed.stderr:
+                problems.append(f"The login on without a {missing} was accepted")
     return problems
 
 
@@ -239,6 +348,9 @@ def main() -> int:
     # The committed example has to name every secret the charts read, and nothing else.
     secret_template = (HELM / "charts" / "common" / "templates" / "secret.yaml").read_text()
     read = set(re.findall(r"\.Values\.secrets\.([A-Za-z0-9.]+)", secret_template))
+    # The login's template reads secrets.managementBasicAuth as $given.
+    login_template = (HELM / "charts" / "management" / "templates" / "basic-auth.yaml").read_text()
+    read |= {f"managementBasicAuth.{key}" for key in re.findall(r"\$given\.([A-Za-z]+)", login_template)}
     example_text = yaml.safe_load((HELM / "environment" / "secrets.yaml.example").read_text())["secrets"]
 
     def leaves(value: dict, prefix: str = "") -> set[str]:

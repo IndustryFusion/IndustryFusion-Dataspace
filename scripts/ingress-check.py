@@ -22,12 +22,16 @@ sent as a header.
 
 Without --ingress it forwards to the gateway and management Services, for an install with no Ingress controller.
 That checks the same flows and limits as the services enforce them, and says nothing about the Ingress.
+
+Through the Ingress, it also checks management's access: the UI behind the login scripts/local-env.sh sets up, the UI's
+files with and without it, /api and /health without it, and Basic credentials on /api counting as no token.
 """
 
 import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -109,9 +113,67 @@ def upload(gateway: Through, path: str, boundary: str) -> tuple[int, str]:
     )  # fmt: skip
 
 
+def login_credentials() -> tuple[str, str] | None:
+    """The UI login scripts/local-env.sh generated, from its credentials file, if it has one."""
+    found = {}
+    path = lc.LOCAL / "credentials.env"
+    if path.exists():
+        for line in path.read_text().splitlines():
+            key, _, value = line.partition("=")
+            found[key] = value
+    user, password = found.get("MANAGEMENT_BASIC_AUTH_USER"), found.get("MANAGEMENT_BASIC_AUTH_PASSWORD")
+    return (user, password) if user and password else None
+
+
+def check_management_access(args: argparse.Namespace) -> None:
+    """Through the Ingress: the UI behind its login, /api and /health without it, and Basic credentials on /api
+    counting as no token."""
+    login = login_credentials()
+    if login is None:
+        print("NOTE the UI login isn't set up in .local/, so it isn't checked")
+        return
+    user, password = login
+    host = ["-H", f"Host: {args.management_host}"]
+    page = f"{args.ingress}/"
+
+    status, _ = curl(*host, page)
+    assert status == 401, f"the UI without the login answered {status}"
+    print("PASS the UI without the login: 401")
+    status, _ = curl(*host, "-u", f"{user}:wrong-{password}", page)
+    assert status == 401, f"the UI with a wrong password answered {status}"
+    print("PASS the UI with a wrong password: 401")
+    status, text = curl(*host, "-u", f"{user}:{password}", page)
+    assert status == 200 and "<title>Dataspace Management</title>" in text, (status, text[:200])
+    print("PASS the UI with the login: 200, the page")
+    for asset in sorted(set(re.findall(r'(?:src|href)="(/assets/[^"]+)"', text))):
+        status, _ = curl(*host, "-u", f"{user}:{password}", f"{args.ingress}{asset}")
+        assert status == 200, f"{asset} answered {status}"
+        status, _ = curl(*host, f"{args.ingress}{asset}")
+        assert status == 401, f"{asset} without the login answered {status}"
+    print("PASS the UI's files: 200 with the login, 401 without")
+
+    for path in ("/health", "/api/health", "/api/participants"):
+        status, _ = curl(*host, f"{args.ingress}{path}")
+        assert status == 200, f"{path} without the login answered {status}"
+    print("PASS /health and /api without the login: 200")
+
+    status, public = curl(*host, f"{args.ingress}/api/participants")
+    status_basic, basic = curl(*host, "-u", f"{user}:{password}", f"{args.ingress}/api/participants")
+    assert status == status_basic == 200 and json.loads(basic) == json.loads(public), (status_basic, basic[:200])
+    print("PASS a read with Basic credentials: the public view, as without a token")
+    body = json.dumps({"participant_id": "urn:ingress-check:basic", "participant_type": "factory_owner"})
+    status, text = curl(
+        *host, "-u", f"{user}:{password}", "-X", "POST", "-H", "Content-Type: application/json",
+        "--data-binary", body, f"{args.ingress}/api/participants",
+    )  # fmt: skip
+    assert status == 401, (status, text)
+    print("PASS a change with Basic credentials: 401")
+
+
 def main() -> int:
     arguments = parse_arguments()
     if arguments.ingress:
+        check_management_access(arguments)
         return run(arguments, arguments.ingress, arguments.ingress)
     print("NOTE no Ingress is involved in this run: it goes to the Services directly")
     with lc.port_forward("dataspace", "gateway", 8080) as gateway:
