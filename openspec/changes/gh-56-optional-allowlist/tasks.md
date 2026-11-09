@@ -4,8 +4,9 @@
 
 - [x] 1.1 Split the management Ingress into `management` (`/api`, `/health`, no basic auth, body size, timeout, cert-manager) and `management-ui` (`/`), sharing the host and TLS; verify by rendering offline that each path goes to the right object and the other objects are unchanged
 - [x] 1.2 Add `ingress.management.basicAuth.enabled`, `secrets.managementBasicAuth.user` and `.password` to `common.yaml` and `secrets.yaml.example`, the Secret `management-basic-auth` with a bcrypt htpasswd line, the auth annotations on `management-ui`, and `required` for empty credentials; verify by rendering with and without them
-- [x] 1.3 Keep the hash while the credentials are unchanged, with `lookup` and the credentials annotation, and keep `helmfile diff` quiet if the pinned helm-diff allows `--dry-run=server`; verify with two `helmfile sync` runs on a local cluster showing the same Secret, and a changed credentials annotation showing a new one, as a password change would
+- [ ] 1.3 Keep the hash while the credentials are unchanged, with `lookup` and a fingerprint in `data` salted by the htpasswd line, keep `helmfile diff` quiet with `--dry-run=server`, and check helm-diff is 3.9.4 or later in `bootstrap.sh`; verify with two `helmfile sync` runs on a local cluster showing the same Secret, and a changed stored fingerprint showing a new line, as a password change would
 - [x] 1.4 Add `whitelist-source-range` to both Ingress objects only when `allowFrom` is set, and describe it as optional in `common.yaml`; verify by rendering both cases
+- [ ] 1.5 Limit the login's tries on `management-ui` only, with `limit-rps` and `limit-connections` from `ingress.management.basicAuth.limitRps` and `limitConnections`, defaults 5 and 10; verify by rendering, and on a local cluster that quick tries get `503` while `/health` doesn't
 
 ## 2. Checks
 
@@ -14,6 +15,7 @@
 ## 3. Management API
 
 - [x] 3.1 Treat a non-Bearer `Authorization` header as no token on the read routes, keep refusing a bad or non-admin Bearer token, and keep `401` on admin routes; verify with API tests for a `Basic` header on a read and on a change, and a non-admin Bearer token on a read, and that the read test fails against the old code
+- [ ] 3.2 Normalise the path in management's page route before refusing `api` and `health`, so `//api/x` and `/./api/x` don't get the page; verify with unit tests that fail against the old route, and through the Ingress in `ingress-check.py`
 
 ## 4. Local cluster
 

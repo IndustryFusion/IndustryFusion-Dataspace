@@ -37,6 +37,8 @@ ingress-nginx merges the Ingress objects of one host into one server, and applie
 - **When the login is off,** the split stays the same, so turning it on or off changes only annotations and the Secret.
 - **TLS.** Both objects list the same host and TLS Secret. The cert-manager annotation goes only on `management`. With it on both, cert-manager's ingress shim would make two Certificates for one Secret, which conflict.
 - **Basic auth annotations** on `management-ui`: `nginx.ingress.kubernetes.io/auth-type: basic`, `auth-secret: management-basic-auth`, `auth-secret-type: auth-file`, and `auth-realm: "Dataspace management"`.
+- **A rate limit on the login,** added after review. Each try costs a bcrypt check in the shared nginx worker, so `management-ui` gets `limit-rps` (default 5) and `limit-connections` (default 10) per client address, set by `ingress.management.basicAuth.limitRps` and `limitConnections`. Over them nginx answers `503`. `/api` gets none, as the maintainer decided against a rate limit on `/api/admin/token`.
+- **Paths nginx normalises.** nginx merges slashes and resolves dot segments before it picks the Ingress, but passes the raw path on. So `//api/x` reaches the no-login `management` object, and management's page route would serve the UI's page for it. The route normalises the path first, and refuses anything under `api` or `health`.
 
 Alternatives:
 - **One Ingress with a server snippet** that turns auth off for `/api`. Snippets are disabled by default in ingress-nginx for security, and wouldn't be portable. Rejected.
@@ -52,18 +54,14 @@ Alternatives:
 
 Helm's `htpasswd` picks a new random salt on every render. So the Secret's data would change on every `helmfile apply`, `helmfile diff` would always show it, and nginx would reload it each time. Helm has no bcrypt with a given salt, and no way to compare a password with a hash.
 
-**Decision: keep the existing hash while the credentials are the same, with `lookup`.**
-- The Secret carries an annotation, `dataspace.industryfusion.org/credentials-sha256`. It is the SHA-256 of `<user>:<password>`.
-- On render, the template looks up the existing `management-basic-auth`. If its annotation matches the new one, it keeps the existing `auth` value. Otherwise it writes a new hash, as for a new install or changed credentials.
-- `lookup` reaches the cluster during `helm install` and `helm upgrade`, which `helmfile sync` and `apply` run. So the Secret stays the same across repeated installs.
-- Without a cluster, as in `helmfile template` and the checks, `lookup` returns nothing and a fresh hash is written. That doesn't matter there.
-- `helmfile diff` uses helm-diff, which only calls `lookup` against the cluster with `--dry-run=server`. The implementation sets that through the release defaults in `helmfile.yaml.gotmpl`, if the pinned versions allow it, so a diff shows no change. Otherwise the README says that the Secret shows as changed in a diff, and why.
+**Decision: keep the existing hash while the credentials are the same, with `lookup`.** This was revised after review.
+- The Secret's `data` holds, beside `auth`, a `fingerprint`: the SHA-256 of the htpasswd line followed by the password. It is salted by the line's own random bcrypt salt. It is kept in `data`, which helm-diff masks, and not in an annotation, so no plain or unsalted fast hash of the password is shown anywhere.
+- On render, the template looks up the existing `management-basic-auth`. It keeps the existing line only if the Secret has both `auth` and `fingerprint`, the line is for the same user, and the SHA-256 of that line with the new password equals the stored fingerprint. Otherwise it writes a new line and fingerprint.
+- A user containing `:` stops rendering, as it would end the user early in the htpasswd line.
+- `lookup` reaches the cluster during `helm install` and `helm upgrade`, which `helmfile sync` and `apply` run, so the Secret stays the same across repeated installs. Without a cluster, as in `helmfile template`, `lookup` returns nothing and a new line is written.
+- `helmfile.yaml.gotmpl` sets `diffArgs: ["--dry-run=server"]`, so helm-diff renders against the cluster and a diff doesn't show the Secret as changed. This needs helm-diff 3.9.4 or later, which `bootstrap.sh` checks.
 
-**Why a SHA-256 of the credentials is acceptable here:**
-- It sits on the same Secret as the bcrypt hash, readable with the same rights.
-- Anyone with those rights can already read the plain password from the Helm release record in the same namespace, which holds the release's values in its own Secret.
-- So it gives an attacker nothing new.
-- It still keeps the plain password out of every rendered object, as the issue requires.
+An earlier draft kept an unsalted SHA-256 of `user:password` in an annotation. Review found that helm-diff and `helmfile template` print annotations, which would help anyone cracking a weak password offline, so it was replaced as above.
 
 Alternatives:
 - **A new hash on each render.** This is simple and works, but gives a spurious Secret change and an nginx reload on every apply. It stays as the fallback described above.
@@ -105,7 +103,9 @@ The README gains a short section:
 - **The login on:** `management-ui` has the four auth annotations, `management` has none, and the Secret has an `auth` line for the user with a bcrypt hash.
 - **The login on, without a user or password:** rendering fails, naming it.
 - **`/api` and `/health`:** they are on `management`, without basic auth.
-- **No plain password** appears in any object, with a canary password.
+- **No plain password, and no unsalted MD5, SHA-1 or SHA-256 of it or of `user:password`,** appears in any object's text or in any Secret value once decoded, with a canary password. The Secret has no annotations, and its fingerprint is salted by its line.
+- **The login's rate limit** is on `management-ui` only.
+- **A user with a colon** stops rendering.
 - **Moved from the single Ingress:** the existing checks (the body size, the registration timeout, and the TLS section with one cert-manager annotation) now apply to the right object.
 - **The secrets-key check** also reads the basic-auth keys.
 
@@ -119,4 +119,4 @@ The README gains a short section:
 
 - **An exposed token route.** Without an allowlist, anyone who reaches the host can try client secrets at `POST /api/admin/token`, which Keycloak answers. This is the same exposure as Keycloak's own public token endpoint. The maintainer decided against a rate limit.
 - **Basic auth over plain HTTP** sends the password in clear text. The README says to use TLS with the login.
-- **`lookup` and RBAC.** `lookup` runs with the deploying user's rights, which can read Secrets in the release's namespace. Without those rights it returns nothing, and a new hash is written each time, which still works.
+- **`lookup` and RBAC.** `lookup` runs with the deploying user's rights, which have to include reading Secrets in the release's namespace. A missing Secret gives an empty result. A refused read (Forbidden) is an error, and the install stops. The deploying user already manages Secrets there, so this holds for any user who can install the charts.

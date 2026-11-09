@@ -35,5 +35,13 @@ The management UI's route `/` SHALL have nginx basic auth when `ingress.manageme
 - **THEN** it is answered, and an external adapter's participant read works
 
 #### Scenario: A change without an admin token
-- **WHEN** a change is sent to `/api` through the Ingress without an admin token, with or without basic credentials and whatever the allowlist
+- **WHEN** a client the allowlist admits, or any client without an allowlist, sends a change to `/api` through the Ingress without an admin token, with or without basic credentials
 - **THEN** it is refused with `401`
+
+#### Scenario: A client outside the allowlist
+- **WHEN** `ingress.management.allowFrom` is set, and a client outside it calls `/` or `/api`
+- **THEN** nginx refuses it with `403`
+
+#### Scenario: Too many tries at the login
+- **WHEN** the login is on, and a client sends more requests to `/` than `ingress.management.basicAuth.limitRps` allows
+- **THEN** nginx refuses the excess, and `/api` isn't limited
