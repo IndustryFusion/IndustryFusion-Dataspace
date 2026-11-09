@@ -52,10 +52,15 @@ def helmfile() -> str:
     return str(found)
 
 
-def environment(settings: dict[str, str] | None = None) -> dict[str, str]:
-    """The process environment after `source helm/env.sh`, with settings set before it, as an operator would."""
+def environment(settings: dict[str, str] | None = None, sourced: bool = True) -> dict[str, str]:
+    """The process environment after `source helm/env.sh`, with settings exported before it, as an operator would.
+
+    Without sourcing, only the settings given are set, and the others of env.sh are unset.
+    """
     base = {key: value for key, value in os.environ.items() if key not in ENV_VARIABLES}
     base.update(settings or {})
+    if not sourced:
+        return base
     answer = subprocess.run(
         ["bash", "-c", 'source "$1" && env -0', "env", str(HELM / "env.sh")],
         env=base,
@@ -73,24 +78,23 @@ def run(
     release: str | None = None,
     state: tuple[str, ...] = (),
     sourced: bool = True,
+    command: str = "template",
 ) -> subprocess.CompletedProcess:
-    """helmfile -e default template, with key=value pairs in state given as --state-values-set."""
-    given = (
-        environment(settings)
-        if sourced
-        else {key: value for key, value in os.environ.items() if key not in ENV_VARIABLES}
-    )
+    """helmfile -e default <command>, template by default, with key=value pairs in state as --state-values-set."""
+    given = environment(settings, sourced)
     given["DATASPACE_SECRETS_FILE"] = secrets
     if values_file:
         given["DATASPACE_VALUES_FILE"] = values_file
     else:
         given.pop("DATASPACE_VALUES_FILE", None)
-    command = [helmfile(), "-e", "default", "template", "--skip-deps"]
+    arguments = [helmfile(), "-e", "default", command]
+    if command == "template":
+        arguments.append("--skip-deps")
     if release:
-        command += ["--selector", f"name={release}"]
+        arguments += ["--selector", f"name={release}"]
     for pair in state:
-        command += ["--state-values-set", pair]
-    return subprocess.run(command, cwd=HELM, env=given, capture_output=True, text=True)
+        arguments += ["--state-values-set", pair]
+    return subprocess.run(arguments, cwd=HELM, env=given, capture_output=True, text=True)
 
 
 def render(secrets: str, **options) -> list[dict]:

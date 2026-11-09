@@ -19,9 +19,13 @@
   services' addresses in the cluster. The charts never read an environment file themselves.
 */}}
 {{- $values := .Values | toYaml | fromYaml }}
+{{- if not (hasKey $values "secrets") }}
+{{- fail (printf "The secrets file %s doesn't exist. Copy environment/secrets.yaml.example to environment/secrets.yaml and fill it in, or set DATASPACE_SECRETS_FILE to its path." (env "DATASPACE_SECRETS_FILE" | default "environment/secrets.yaml")) }}
+{{- end }}
 {{- $namespace := requiredEnv "NAMESPACE" }}
 {{- $images := index $values "images" | default dict }}
-{{- $_ := set $images "registry" (env "LOCAL_REGISTRY") }}
+{{- /* As env.sh and scripts/build-images.sh: unset means the default, and empty means no registry prefix. */}}
+{{- $_ := set $images "registry" (exec "sh" (list "-c" "printf %s \"${LOCAL_REGISTRY-k3d-iff.localhost:12345}\"")) }}
 {{- $_ := set $images "repo" (requiredEnv "MAIN_REPO") }}
 {{- $_ := set $images "version" (requiredEnv "MAIN_VERSION") }}
 {{- $_ := set $values "images" $images }}

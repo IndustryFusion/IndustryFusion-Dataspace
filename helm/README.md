@@ -26,7 +26,7 @@ helm/
 
 ## What you need first
 
-- `kubectl` and `helm`, with `KUBECONFIG` pointing at the cluster. `bootstrap.sh` checks Helm's version, and installs `helmfile` and the helm-diff plugin if they are missing.
+- `kubectl` and `helm`, with `KUBECONFIG` pointing at the cluster. `bootstrap.sh` checks Helm's version, and installs the pinned `helmfile` and the helm-diff plugin if they are missing. A `helmfile` of another version on `PATH` is left alone, and the pinned one goes in `.tools`, which comes first.
 - An Ingress controller, if you enable the Ingress. The annotations are for [ingress-nginx](https://kubernetes.github.io/ingress-nginx/). Any other controller needs its own, through `ingress.annotations`, and has to allow the same body size.
 - [cert-manager](https://cert-manager.io), if you want it to issue certificates.
 - A network plugin that enforces NetworkPolicies, for `networkPolicy.enabled`. Without one, they are accepted and do nothing.
@@ -50,8 +50,8 @@ source helm/env.sh
 | `MAIN_REPO` | `dataspace` | the images' repository |
 | `MAIN_VERSION` | `latest` | the images' tag |
 | `HELM_VERSION` | `3.14.0` | the oldest Helm `bootstrap.sh` accepts |
-| `HELMFILE_VERSION` | `0.169.2` | the helmfile `bootstrap.sh` installs. `bootstrap.sh` holds its checksum |
-| `HELM_DIFF_PLUGIN` | `3.15.11` | the helm-diff plugin `bootstrap.sh` installs, for `helmfile diff` and `helmfile apply` |
+| `HELMFILE_VERSION` | `0.169.2` | the helmfile `bootstrap.sh` installs, for Linux or macOS on amd64 or arm64. `bootstrap.sh` holds the checksums |
+| `HELM_DIFF_PLUGIN` | `3.15.11` | the helm-diff plugin `bootstrap.sh tools` installs if none is, for `helmfile diff` and `helmfile apply` |
 
 A variable already exported keeps its value, even an empty one, so you can export them before sourcing, or edit `env.sh` in a copy you keep with your installation. Export them on their own line: `LOCAL_REGISTRY=... source helm/env.sh` on one line doesn't keep the value after `source`. It holds no secret. The charts and `scripts/build-images.sh` read the same three image variables, so what the script pushes is what the charts deploy. Without `env.sh`, helmfile stops and names the variable that is missing.
 
@@ -184,5 +184,7 @@ To remove participants' databases, buckets and Keycloak clients too, delete each
 ```bash
 ./bootstrap.sh down
 ```
+
+It doesn't need the secrets file, and neither does `helmfile list`. Rendering and installing stop without it, naming the file.
 
 This removes the releases, every participant object, and the two namespaces. The dependencies and the realm stay, and so does the `registry` database with its entries, so a later install finds those participants registered, with no pods. To start clean, delete participants first, and then drop that database.

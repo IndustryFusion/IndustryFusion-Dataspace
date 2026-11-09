@@ -37,12 +37,18 @@ import tempfile
 import yaml
 from helm_render import CANARY_SECRETS, RELEASES, ROOT, environment, render
 
-# None is helm/env.sh's defaults.
-SETTINGS: list[dict[str, str] | None] = [
-    None,
-    {"LOCAL_REGISTRY": "reg.example:5000", "MAIN_REPO": "team/dataspace", "MAIN_VERSION": "1.2.3"},
-    {"LOCAL_REGISTRY": "", "MAIN_REPO": "dataspace", "MAIN_VERSION": "dev"},
-]
+# Each with helm/env.sh sourced after the settings, or, last, without it, where LOCAL_REGISTRY is unset and the
+# charts and the script have to fall back to the same default. None is env.sh's defaults.
+SETTINGS: list[tuple[dict[str, str] | None, bool]] = [
+    (None, True),
+    ({"LOCAL_REGISTRY": "reg.example:5000", "MAIN_REPO": "team/dataspace", "MAIN_VERSION": "1.2.3"}, True),
+    ({"LOCAL_REGISTRY": "", "MAIN_REPO": "dataspace", "MAIN_VERSION": "dev"}, True),
+    (
+        {"MAIN_REPO": "dataspace", "MAIN_VERSION": "1.0", "NAMESPACE": "dataspace",
+         "PARTICIPANTS_NAMESPACE": "dataspace-participants"},
+        False,
+    ),
+]  # fmt: skip
 
 
 def pod_specs(item: dict) -> list[dict]:
@@ -55,12 +61,12 @@ def pod_specs(item: dict) -> list[dict]:
     return [template["spec"]] if "spec" in template else []
 
 
-def chart_names(secrets: str, settings: dict[str, str] | None) -> tuple[list[str], dict[str, str]]:
+def chart_names(secrets: str, settings: dict[str, str] | None, sourced: bool) -> tuple[list[str], dict[str, str]]:
     """The images of the chart's pods, and the management Deployment's MAIN_* settings."""
     images: list[str] = []
     main: dict[str, str] = {}
     for release in RELEASES:
-        for item in render(secrets, settings=settings, release=release):
+        for item in render(secrets, settings=settings, release=release, sourced=sourced):
             for spec in pod_specs(item):
                 for container in spec.get("initContainers", []) + spec.get("containers", []):
                     images.append(container["image"])
@@ -91,8 +97,10 @@ def participant_names(main: dict[str, str]) -> list[str]:
                 os.environ[key] = value
 
 
-def script_names(script: pathlib.Path, settings: dict[str, str] | None) -> list[str]:
-    answer = subprocess.run(["bash", str(script), "--list"], env=environment(settings), capture_output=True, text=True)
+def script_names(script: pathlib.Path, settings: dict[str, str] | None, sourced: bool) -> list[str]:
+    answer = subprocess.run(
+        ["bash", str(script), "--list"], env=environment(settings, sourced), capture_output=True, text=True
+    )
     if answer.returncode:
         raise SystemExit(f"build-images.sh --list failed: {answer.stderr}")
     return answer.stdout.splitlines()
@@ -106,16 +114,19 @@ def main() -> int:
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as secrets:
         yaml.safe_dump(CANARY_SECRETS, secrets)
         secrets.flush()
-        for settings in SETTINGS:
-            used = environment(settings)
-            registry, repo, version = used["LOCAL_REGISTRY"], used["MAIN_REPO"], used["MAIN_VERSION"]
-            shown = f"LOCAL_REGISTRY={registry!r} MAIN_REPO={repo!r} MAIN_VERSION={version!r}"
-            images, main = chart_names(secrets.name, settings)
+        for settings, sourced in SETTINGS:
+            used = environment(settings, sourced)
+            registry = used.get("LOCAL_REGISTRY", "k3d-iff.localhost:12345")
+            repo, version = used["MAIN_REPO"], used["MAIN_VERSION"]
+            shown = (
+                f"LOCAL_REGISTRY={used.get('LOCAL_REGISTRY', 'unset')!r} MAIN_REPO={repo!r} MAIN_VERSION={version!r}"
+            )
+            images, main = chart_names(secrets.name, settings, sourced)
             expected_main = {"MAIN_REGISTRY": registry, "MAIN_REPO": repo, "MAIN_VERSION": version}
             if main != expected_main:
                 problems.append(f"{shown}: the management Deployment has {main}, not {expected_main}")
             deployed = images + participant_names(main)
-            listed = script_names(script, settings)
+            listed = script_names(script, settings, sourced)
             if sorted(deployed) != sorted(listed) or len(set(listed)) != len(listed):
                 problems.append(f"{shown}: the deployment uses {sorted(deployed)}, the script names {sorted(listed)}")
             else:

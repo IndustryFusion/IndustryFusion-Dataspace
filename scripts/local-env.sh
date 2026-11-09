@@ -30,6 +30,8 @@ KEYCLOAK_ISSUER_BASE="http://keycloak-service.iff:8080/auth"
 SERVICES="registry gateway dsp-gateway management"
 # The images keep the names dataspace/<name>:dev, which the external demo and deploy/local/ use.
 export LOCAL_REGISTRY="" MAIN_REPO=dataspace MAIN_VERSION=dev
+# And the namespaces this cluster has, whatever the shell was given.
+export NAMESPACE=dataspace PARTICIPANTS_NAMESPACE=dataspace-participants
 # shellcheck source-path=SCRIPTDIR source=../helm/env.sh
 source "$ROOT/helm/env.sh"
 export PATH="$ROOT/helm/.tools:$PATH"
@@ -96,7 +98,8 @@ with_keycloak() {
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   kubectl -n iff port-forward svc/keycloak-service "$port:8080" >/dev/null &
   pf_pid=$!
-  trap "kill $pf_pid 2>/dev/null || true; trap - RETURN" RETURN
+  # Read when the function returns, while pf_pid is still in scope.
+  trap 'kill "$pf_pid" 2>/dev/null || true; trap - RETURN' RETURN
   for _ in $(seq 1 30); do
     curl -fs -o /dev/null "http://127.0.0.1:$port/auth/realms/master" && break
     sleep 1
@@ -195,7 +198,7 @@ VALUES
 services() {
   need docker kind kubectl helm openssl
   generate_credentials
-  "$ROOT/helm/bootstrap.sh" tools >/dev/null
+  "$ROOT/helm/bootstrap.sh" helmfile >/dev/null
   images
   DATASPACE_SECRETS_FILE="$(helm_secrets)" DATASPACE_VALUES_FILE="$(helm_values)" \
     bash -c 'cd "$1" && helmfile -e default sync --skip-deps' sync "$ROOT/helm"

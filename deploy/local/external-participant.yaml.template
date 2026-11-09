@@ -107,13 +107,8 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
-    # By their labels from the Helm charts.
+    # By the labels the Helm charts give them.
     - to:
-        - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: dataspace }
-          podSelector:
-            matchExpressions:
-              - { key: app, operator: In, values: [gateway, dsp-gateway, management] }
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: dataspace }
           podSelector:

@@ -17,7 +17,8 @@
 # The dataspace on Kubernetes. Run `source helm/env.sh` first. See helm/README.md for the procedure.
 #
 # One environment, default. Its values are layered: common.yaml, then environment/default.yaml, then the file
-# DATASPACE_VALUES_FILE names, if any, then environment/secrets.yaml or the file DATASPACE_SECRETS_FILE names.
+# DATASPACE_VALUES_FILE names, if any, then environment/secrets.yaml or the file DATASPACE_SECRETS_FILE names. The
+# secrets file is needed to render or install, but not to list or remove the releases.
 # values.yaml.gotmpl turns them, with env.sh's settings, into what every chart reads.
 
 environments:
@@ -28,7 +29,11 @@ environments:
       {{- with env "DATASPACE_VALUES_FILE" }}
       - {{ . }}
       {{- end }}
-      - {{ env "DATASPACE_SECRETS_FILE" | default "environment/secrets.yaml" }}
+      {{- /* Optional here, so list and destroy work without it. values.yaml.gotmpl stops a render without it. */}}
+      {{- $secrets := env "DATASPACE_SECRETS_FILE" | default "environment/secrets.yaml" }}
+      {{- if isFile $secrets }}
+      - {{ $secrets }}
+      {{- end }}
 
 ---
 helmDefaults:

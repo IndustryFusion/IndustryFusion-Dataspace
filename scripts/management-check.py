@@ -333,7 +333,7 @@ def run_failures(connect) -> None:
             if count:
                 lc.wait_ready("dataspace", "registry")
             else:
-                pods = ("-n", "dataspace", "get", "pods", "-l", "app=registry", "-o", "name")
+                pods = ("-n", "dataspace", "get", "pods", "-l", "app.kubernetes.io/name=registry", "-o", "name")
                 lc.poll(lambda: not lc.kubectl(*pods).strip(), 90, what="the registry to stop")
 
         return scale

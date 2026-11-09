@@ -139,6 +139,8 @@ jobs:
           pip install "pyyaml>=6,<7"
           helm/bootstrap.sh tools
           echo "$PWD/helm/.tools" >> "$GITHUB_PATH"
+      - name: Lint the deployment scripts
+        run: shellcheck -x helm/bootstrap.sh helm/env.sh scripts/local-env.sh
       - name: Lint the charts
         run: |
           printf 'secrets:\n  postgres: {user: u, password: p}\n  s3: {accessKey: a, secretKey: s}\n  adminClientSecret: x\n' > "$RUNNER_TEMP/secrets.yaml"

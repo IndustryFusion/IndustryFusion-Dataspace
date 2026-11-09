@@ -17,8 +17,9 @@
 """Renders helm/ with canary secrets and checks what a review would otherwise have to catch.
 
 The default environment, alone and with the values file scripts/local-env.sh writes, must: keep the Ingress body
-sizes equal to the services' limits, keep credentials in the Secret, use no fixed cluster addresses, and let each
-pod find its settings. Needs bash, helm, helmfile and PyYAML.
+sizes equal to the services' limits, keep credentials in the Secret, hold no IP address, and let each pod find its
+settings. The releases must be in the spec's order with its needs, and listing them must work without a secrets
+file, while rendering stops without one. Needs bash, helm, helmfile and PyYAML.
 """
 
 import pathlib
@@ -205,6 +206,36 @@ def main() -> int:
         if limits.returncode == 0 or "limits.maxUploadBytes must not be below" not in limits.stderr:
             problems.append("An upload limit below the JSON limit was accepted")
 
+    # The releases and what each needs, as the helm-deployment spec gives them.
+    built = run_helmfile(str(HELM / "environment" / "secrets.yaml.example"), command="build")
+    if built.returncode:
+        problems.append(f"helmfile build failed: {built.stderr}")
+    else:
+        state = next(document for document in yaml.safe_load_all(built.stdout) if document and "releases" in document)
+        # helmfile gives each need as <namespace>/<release>.
+        releases = [
+            (entry["name"], sorted(need.split("/")[-1] for need in entry.get("needs") or []))
+            for entry in state["releases"]
+        ]
+        wanted = [
+            ("common", []),
+            ("registry", ["common"]),
+            ("gateway", ["registry"]),
+            ("dsp-gateway", ["common"]),
+            ("management", ["dsp-gateway", "gateway", "registry"]),
+        ]
+        if releases != wanted:
+            problems.append(f"The releases and their needs are {releases}, not {wanted}")
+
+    # Listing and removing work without a secrets file. Rendering stops, naming it.
+    missing = "/nonexistent/secrets.yaml"
+    listed = run_helmfile(missing, command="list")
+    if listed.returncode or "management" not in listed.stdout:
+        problems.append(f"helmfile list fails without a secrets file: {listed.stderr}")
+    rendered = run_helmfile(missing, release="gateway")
+    if rendered.returncode == 0 or f"The secrets file {missing} doesn't exist" not in rendered.stderr:
+        problems.append("A render without a secrets file doesn't stop, naming the file")
+
     # The committed example has to name every secret the charts read, and nothing else.
     secret_template = (HELM / "charts" / "common" / "templates" / "secret.yaml").read_text()
     read = set(re.findall(r"\.Values\.secrets\.([A-Za-z0-9.]+)", secret_template))
@@ -227,7 +258,7 @@ def main() -> int:
     for problem in problems:
         print(f"FAIL {problem}")
     if not problems:
-        print("The chart's limits, credentials and addresses are as they should be")
+        print("The charts' limits, credentials, IP addresses, releases and secrets file are as they should be")
     return 1 if problems else 0
 
 
