@@ -15,6 +15,8 @@ The gateway behaves as the `api-gateway` spec says, so the test is what changes.
 
 ## Decisions
 
+The maintainer accepted the decisions below.
+
 ### What the check requires
 
 For each hosted entry in `GET /participants/compatible`:
@@ -63,7 +65,7 @@ Alternative: registering an extra hosted participant that isn't reachable on eve
 
 ## Conflicts with existing documents and specs
 
-- **The issue's wording.** The issue says the address is "never an address that only works inside the hub (a cluster Service name …)". On the local cluster, the configured DSP gateway peer address is itself a cluster Service name, `http://dsp-gateway.dataspace:8085`, which works for peers in the same cluster, such as the external demo. So the check doesn't refuse cluster Service names as such. It refuses anything that isn't under the configured peer address. The maintainer may prefer a different reading.
+- **The issue's wording.** The issue says the address is "never an address that only works inside the hub (a cluster Service name …)". On the local cluster, the configured DSP gateway peer address is itself a cluster Service name, `http://dsp-gateway.dataspace:8085`, which works for peers in the same cluster, such as the external demo. So the check doesn't refuse cluster Service names as such. It refuses anything that isn't under the configured peer address. The maintainer confirmed this reading.
 - **`api-gateway` spec**, "Compatible participants": the scenario "A hosted peer" gains what a reachable peer's `dsp_url` is. The gateway already behaves this way.
 - **`gateway-api.md`** says a reachable hosted peer's `dsp_url` is shown, but not what it is. It gains the same sentence.
 

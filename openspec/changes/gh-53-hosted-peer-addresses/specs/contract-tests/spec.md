@@ -18,6 +18,10 @@ For each hosted entry in `GET /participants/compatible`, the contract suite SHAL
 - **WHEN** the peer addresses are unset on management, and the suite runs
 - **THEN** it requires each hosted peer's `dsp_url` to be null, and passes
 
+#### Scenario: A cluster address that is the configured peer address
+- **WHEN** the configured DSP gateway peer address is a cluster Service name, as on the local cluster
+- **THEN** a `dsp_url` under it is accepted, and any `dsp_url` not under it is refused, such as the connector's or adapter's own address
+
 #### Scenario: A wrong entry
 - **WHEN** a hosted entry has an `adapter_url`, a `dsp_url` while not reachable, or a `dsp_url` that isn't under the DSP gateway peer address in that form
 - **THEN** the check fails, naming the participant and the field
