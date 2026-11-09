@@ -24,7 +24,7 @@
 
 ## 5. CI
 
-- [ ] 5.1 Update the `helm` job to source `env.sh`, install helmfile with `bootstrap.sh tools`, lint the five charts, render `default`, run `check-helm-values.py` and run `check-helm-layout.py` against the base; update the `images` job to the new variables; verify on the Pull Request
+- [x] 5.1 Update the `helm` job to source `env.sh`, install helmfile with `bootstrap.sh tools`, lint the five charts, render `default`, run `check-helm-values.py` and run `check-helm-layout.py` against the base; update the `images` job to the new variables; verify on the Pull Request
 
 ## 6. Documents
 
