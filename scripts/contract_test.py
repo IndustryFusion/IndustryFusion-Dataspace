@@ -428,6 +428,13 @@ def self_test() -> int:
         "no /api/v1/dsp": {**reachable, "dsp_url": f"{peer}/0a1b2c3d/api/v1"},
         "a null dsp_url while reachable": {**reachable, "dsp_url": None},
         "reachable with no peer address configured": reachable,
+        "no / after the peer address": {**reachable, "dsp_url": f"{peer}0a1b2c3d/api/v1/dsp"},
+        "a ? in the segment": {**reachable, "dsp_url": f"{peer}/0a1b?2c3d/api/v1/dsp"},
+        "a # in the segment": {**reachable, "dsp_url": f"{peer}/0a1b#2c3d/api/v1/dsp"},
+        "a / in the segment": {**reachable, "dsp_url": f"{peer}/0a1b/2c3d/api/v1/dsp"},
+        "a . segment": {**reachable, "dsp_url": f"{peer}/./api/v1/dsp"},
+        "a .. segment": {**reachable, "dsp_url": f"{peer}/../api/v1/dsp"},
+        "another case in the path": {**reachable, "dsp_url": f"{peer}/0a1b2c3d/API/v1/dsp"},
     }
     for what, entry in wrong_entries.items():
         checks += 1
@@ -435,6 +442,16 @@ def self_test() -> int:
         if not hosted_address_problems(entry, given):
             failures += 1
             print(f"FAIL a hosted peer with {what} was accepted")
+    checks += 1
+    if not any("no DSP gateway peer address" in problem for problem in hosted_address_problems(reachable, "")):
+        failures += 1
+        print("FAIL a reachable hosted peer with no peer address configured isn't reported as such")
+    # The scheme and host compare in any case.
+    checks += 1
+    shouting = {**reachable, "dsp_url": "HTTP://DSP-Gateway.EXAMPLE:8085/0a1b2c3d/api/v1/dsp"}
+    if hosted_address_problems(shouting, peer):
+        failures += 1
+        print("FAIL a hosted peer whose scheme and host differ only in case was refused")
     # Without a peer address, the address part is listed as not run, and the rest still fails a wrong entry.
     with contextlib.redirect_stdout(io.StringIO()):
         unknown, wrong = Report(), Report()
@@ -603,11 +620,26 @@ def hosted_address_problems(entry: dict, peer: str | None) -> list[str]:
     if not peer:
         found.append(f"{name}: externally reachable, though management has no DSP gateway peer address")
         return found
-    rest = address[len(peer) + 1 :] if isinstance(address, str) and address.startswith(f"{peer}/") else None
-    segment, _, tail = (rest or "").partition("/")
-    if rest is None or not segment or tail != "api/v1/dsp":
+    if not under_dsp_gateway(address, peer):
         found.append(f"{name}: dsp_url is {address!r}, wanted {peer}/<one segment>/api/v1/dsp")
     return found
+
+
+def under_dsp_gateway(address: object, peer: str) -> bool:
+    """Whether address is <peer>/<one segment>/api/v1/dsp. Scheme and host compare in any case, the path as it is.
+
+    The segment can't be empty, . or .., or hold / ? or #, and the address has no query or fragment.
+    """
+    if not isinstance(address, str) or "?" in address or "#" in address:
+        return False
+    found, wanted = urllib.parse.urlsplit(address), urllib.parse.urlsplit(peer)
+    if (found.scheme.lower(), found.netloc.lower()) != (wanted.scheme.lower(), wanted.netloc.lower()):
+        return False
+    prefix = f"{wanted.path.rstrip('/')}/"
+    if not found.path.startswith(prefix):
+        return False
+    segment, _, tail = found.path[len(prefix) :].partition("/")
+    return bool(segment) and segment not in (".", "..") and tail == "api/v1/dsp"
 
 
 def check_hosted_addresses(report: "Report", entries: object, peer: str | None) -> None:
@@ -1764,9 +1796,15 @@ def main() -> int:
     if args.local:
         import local_cluster as lc
 
-        if limits.dsp_gateway_peer_url is None:
+        if limits.dsp_gateway_peer_url is None and (only is None or "discovery" in only):
             # What management makes reachable hosted participants' addresses from, read with the local kubeconfig.
-            limits.dsp_gateway_peer_url = local_dsp_gateway_peer_url(lc)
+            try:
+                limits.dsp_gateway_peer_url = local_dsp_gateway_peer_url(lc)
+            except (RuntimeError, OSError) as error:
+                print(
+                    f"contract_test: can't read DSP_GATEWAY_PEER_URL from the local cluster: {error}", file=sys.stderr
+                )
+                return 2
         secret = (lc.LOCAL / "admin-client-secret").read_text().strip()
         state_file = lc.LOCAL / "external-demo.json"
         demo = json.loads(state_file.read_text()) if state_file.exists() else None
