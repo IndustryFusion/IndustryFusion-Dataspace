@@ -14,20 +14,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Prepares a cluster for the dataspace, and removes it again. See deploy/README.md.
+# Prepares a cluster for the dataspace, and removes it again. See helm/README.md.
 # It acts on the cluster that KUBECONFIG points at, and shows which one before changing anything.
+# tools only checks Helm and installs helmfile and the helm-diff plugin, and touches no cluster.
 #
-# Usage: deploy/helm/bootstrap.sh tools | up | down
+# Usage: helm/bootstrap.sh tools | up | down
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOLS="$HERE/.tools"
-HELMFILE_VERSION=0.169.2
-HELMFILE_SHA256=34a5ca9c5fda733f0322f7b12a2959b7de4ab125bcf6531337751e263b027d58
-SERVICES_NAMESPACE=dataspace
-PARTICIPANTS_NAMESPACE=dataspace-participants
+# shellcheck source-path=SCRIPTDIR source=env.sh
+source "$HERE/env.sh"
+SERVICES_NAMESPACE="$NAMESPACE"
 export PATH="$TOOLS:$PATH"
+
+# The checksum of each helmfile release this script will download. Another version needs its checksum added here.
+helmfile_sha256() {
+  case "$1" in
+    0.169.2) echo 34a5ca9c5fda733f0322f7b12a2959b7de4ab125bcf6531337751e263b027d58 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Whether version $1 is at least $2, comparing major, minor and patch.
+at_least() {
+  local IFS=.
+  # shellcheck disable=SC2206
+  local have=($1) want=($2) index
+  for index in 0 1 2; do
+    if [ "${have[index]:-0}" -gt "${want[index]:-0}" ]; then return 0; fi
+    if [ "${have[index]:-0}" -lt "${want[index]:-0}" ]; then return 1; fi
+  done
+  return 0
+}
 
 need() {
   for tool in "$@"; do
@@ -37,18 +57,45 @@ need() {
 
 install_tools() {
   need kubectl helm curl sha256sum tar
-  if command -v helmfile >/dev/null; then
-    echo "helmfile is present: $(command -v helmfile)"
-    return
+  local current_helm
+  current_helm=$(helm version --template '{{.Version}}' 2>/dev/null)
+  current_helm="${current_helm#v}"
+  current_helm="${current_helm%%+*}"
+  if ! at_least "$current_helm" "$HELM_VERSION"; then
+    echo "Helm $current_helm is older than HELM_VERSION, $HELM_VERSION. Install a newer Helm." >&2
+    exit 1
   fi
-  mkdir -p "$TOOLS"
-  local archive="$TOOLS/helmfile.tgz"
-  curl -fsSL -o "$archive" \
-    "https://github.com/helmfile/helmfile/releases/download/v$HELMFILE_VERSION/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz"
-  echo "$HELMFILE_SHA256  $archive" | sha256sum -c - >/dev/null
-  tar -xzf "$archive" -C "$TOOLS" helmfile
-  rm -f "$archive"
-  echo "Installed helmfile $HELMFILE_VERSION in $TOOLS. Add it to PATH to run helmfile yourself."
+  echo "Helm $current_helm"
+
+  if command -v helmfile >/dev/null; then
+    echo "helmfile is present: $(command -v helmfile), $(helmfile --version 2>/dev/null | head -1)"
+  else
+    local sha256
+    sha256=$(helmfile_sha256 "$HELMFILE_VERSION") || {
+      echo "No checksum is known for helmfile $HELMFILE_VERSION, so it isn't downloaded. Add it to helm/bootstrap.sh." >&2
+      exit 1
+    }
+    mkdir -p "$TOOLS"
+    local archive="$TOOLS/helmfile.tgz"
+    curl -fsSL -o "$archive" \
+      "https://github.com/helmfile/helmfile/releases/download/v$HELMFILE_VERSION/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz"
+    echo "$sha256  $archive" | sha256sum -c - >/dev/null
+    tar -xzf "$archive" -C "$TOOLS" helmfile
+    rm -f "$archive"
+    echo "Installed helmfile $HELMFILE_VERSION in $TOOLS. Add it to PATH to run helmfile yourself."
+  fi
+
+  # helmfile diff and helmfile apply need it. A version already installed is left as it is.
+  local installed
+  installed=$(helm plugin list 2>/dev/null | awk '$1 == "diff" { print $2 }')
+  if [ -n "$installed" ]; then
+    echo "helm-diff $installed is present"
+  else
+    local verify=()
+    case "$current_helm" in 3.*) ;; *) verify=(--verify=false) ;; esac
+    helm plugin install https://github.com/databus23/helm-diff --version "v$HELM_DIFF_PLUGIN" "${verify[@]}" >/dev/null
+    echo "Installed helm-diff $HELM_DIFF_PLUGIN"
+  fi
 }
 
 up() {
@@ -71,7 +118,7 @@ down() {
     echo "Note: $left participant Deployments remain. Their databases, buckets and Keycloak clients stay behind," >&2
     echo "as they are outside these namespaces. Use DELETE /api/participants/{id} first to remove those too." >&2
   fi
-  (cd "$HERE" && helmfile ${DATASPACE_ENVIRONMENT:+-e "$DATASPACE_ENVIRONMENT"} destroy)
+  (cd "$HERE" && helmfile -e default destroy)
   kubectl -n "$PARTICIPANTS_NAMESPACE" delete deployments,services,secrets,configmaps \
     -l app.kubernetes.io/managed-by=dataspace-management --ignore-not-found --wait=true >/dev/null 2>&1 || true
   kubectl delete namespace "$PARTICIPANTS_NAMESPACE" "$SERVICES_NAMESPACE" --ignore-not-found --wait=true

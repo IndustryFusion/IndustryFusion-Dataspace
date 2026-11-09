@@ -27,6 +27,7 @@ on:
       - "connector/**"
       - "scripts/**"
       - "deploy/**"
+      - "helm/**"
       - ".github/workflows/services.yml"
   push:
     branches: [main]
@@ -39,6 +40,7 @@ on:
       - "connector/**"
       - "scripts/**"
       - "deploy/**"
+      - "helm/**"
       - ".github/workflows/services.yml"
 
 permissions:
@@ -126,17 +128,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The layout check renders the Pull Request's base too.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install "pyyaml>=6,<7"
-      - name: Lint the chart
-        run: >-
-          helm lint deploy/helm/charts/dataspace --set component=registry
-          -f deploy/helm/values/common.yaml
+        run: |
+          pip install "pyyaml>=6,<7"
+          helm/bootstrap.sh tools
+          echo "$PWD/helm/.tools" >> "$GITHUB_PATH"
+      - name: Lint the charts
+        run: |
+          printf 'secrets:\n  postgres: {user: u, password: p}\n  s3: {accessKey: a, secretKey: s}\n  adminClientSecret: x\n' > "$RUNNER_TEMP/secrets.yaml"
+          source helm/env.sh
+          cd helm
+          DATASPACE_SECRETS_FILE="$RUNNER_TEMP/secrets.yaml" helmfile -e default lint --skip-deps
+      - name: Render the environment
+        run: |
+          source helm/env.sh
+          cd helm
+          DATASPACE_SECRETS_FILE="$RUNNER_TEMP/secrets.yaml" helmfile -e default template --skip-deps > /dev/null
       - name: Check what it renders
         run: python scripts/check-helm-values.py
+      - name: Check the objects are the same as before the move
+        run: python scripts/check-helm-layout.py --before "${{ github.event.pull_request.base.sha || github.event.before }}"
 
   connector:
     runs-on: ubuntu-latest
@@ -153,7 +170,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install "pyyaml>=6,<7"
+        run: |
+          pip install "pyyaml>=6,<7"
+          helm/bootstrap.sh tools
+          echo "$PWD/helm/.tools" >> "$GITHUB_PATH"
       - name: Lint the build script
         run: shellcheck scripts/build-images.sh
       - name: Test the build script
@@ -161,6 +181,8 @@ jobs:
       - name: Check the names against the chart and the management API
         run: python scripts/check-image-names.py
       - name: Build every image through the script
-        run: scripts/build-images.sh --build-only
+        run: |
+          source helm/env.sh
+          scripts/build-images.sh --build-only
         env:
-          REGISTRY: ci.example:5000
+          LOCAL_REGISTRY: ci.example:5000

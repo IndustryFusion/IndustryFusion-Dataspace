@@ -1,0 +1,69 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# The dataspace on Kubernetes. Run `source helm/env.sh` first. See helm/README.md for the procedure.
+#
+# One environment, default. Its values are layered: common.yaml, then environment/default.yaml, then the file
+# DATASPACE_VALUES_FILE names, if any, then environment/secrets.yaml or the file DATASPACE_SECRETS_FILE names.
+# values.yaml.gotmpl turns them, with env.sh's settings, into what every chart reads.
+
+environments:
+  default:
+    values:
+      - common.yaml
+      - environment/default.yaml
+      {{- with env "DATASPACE_VALUES_FILE" }}
+      - {{ . }}
+      {{- end }}
+      - {{ env "DATASPACE_SECRETS_FILE" | default "environment/secrets.yaml" }}
+
+---
+helmDefaults:
+  wait: true
+  timeout: 420
+  createNamespace: false
+
+commonLabels:
+  app.kubernetes.io/part-of: dataspace
+
+templates:
+  service:
+    namespace: {{ requiredEnv "NAMESPACE" }}
+    values:
+      - values.yaml.gotmpl
+
+# Each release can only rely on the ones it needs. The first holds the Secret that registry and management read, so
+# no pod waits on something a later release creates.
+releases:
+  - name: common
+    chart: ./charts/common
+    inherit: [{ template: service }]
+  - name: registry
+    chart: ./charts/registry
+    inherit: [{ template: service }]
+    needs: [common]
+  - name: gateway
+    chart: ./charts/gateway
+    inherit: [{ template: service }]
+    needs: [registry]
+  - name: dsp-gateway
+    chart: ./charts/dsp-gateway
+    inherit: [{ template: service }]
+    needs: [common]
+  - name: management
+    chart: ./charts/management
+    inherit: [{ template: service }]
+    needs: [registry, gateway, dsp-gateway]

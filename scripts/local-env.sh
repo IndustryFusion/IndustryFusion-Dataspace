@@ -18,7 +18,7 @@
 # Brings up a local Kubernetes cluster with the infrastructure the dataspace needs.
 # It uses only its own kubeconfig under .local/, so it cannot act on another cluster.
 #
-# Usage: scripts/local-env.sh up | down | status | check | images | services | helm-secrets
+# Usage: scripts/local-env.sh up | down | status | check | images | services | helm-secrets | helm-values [file]
 
 set -euo pipefail
 
@@ -28,7 +28,11 @@ CLUSTER="${DATASPACE_CLUSTER:-dataspace-local}"
 export KUBECONFIG="$LOCAL/kubeconfig"
 KEYCLOAK_ISSUER_BASE="http://keycloak-service.iff:8080/auth"
 SERVICES="registry gateway dsp-gateway management"
-PARTICIPANT_IMAGES="connector adapter"
+# The images keep the names dataspace/<name>:dev, which the external demo and deploy/local/ use.
+export LOCAL_REGISTRY="" MAIN_REPO=dataspace MAIN_VERSION=dev
+# shellcheck source-path=SCRIPTDIR source=../helm/env.sh
+source "$ROOT/helm/env.sh"
+export PATH="$ROOT/helm/.tools:$PATH"
 
 need() {
   for tool in "$@"; do
@@ -137,20 +141,17 @@ up() {
   echo "Local environment is ready. Use: KUBECONFIG=$KUBECONFIG kubectl get pods -A"
 }
 
-# Builds the images and loads them into the cluster.
+# Builds the images with scripts/build-images.sh and loads them into the cluster.
 images() {
   need docker kind
-  for service in $SERVICES $PARTICIPANT_IMAGES; do
-    if [ "$service" = management ]; then
-      docker build -q -t "dataspace/$service:dev" -f "$ROOT/management/api/Dockerfile" "$ROOT/management" >/dev/null
-    else
-      docker build -q -t "dataspace/$service:dev" "$ROOT/$service" >/dev/null
-    fi
-    kind load docker-image --name "$CLUSTER" "dataspace/$service:dev" >/dev/null
+  "$ROOT/scripts/build-images.sh" --build-only
+  local name
+  for name in $("$ROOT/scripts/build-images.sh" --list); do
+    kind load docker-image --name "$CLUSTER" "$name" >/dev/null
   done
 }
 
-# Writes a secrets file for deploy/helm from this environment's credentials, and prints its path.
+# Writes a secrets file for helm/ from this environment's credentials, and prints its path.
 helm_secrets() {
   generate_credentials
   # shellcheck disable=SC1091
@@ -168,25 +169,40 @@ SECRETS
   echo "$LOCAL/helm-secrets.yaml"
 }
 
-# Builds the service images, loads them into the cluster and deploys them.
+# This cluster's hosts and settings for helm/, written to the file given or .local/helm-values.yaml. Prints the path.
+helm_values() {
+  local file="${1:-$LOCAL/helm-values.yaml}"
+  mkdir -p "$(dirname "$file")"
+  cat > "$file" <<'VALUES'
+# Written by scripts/local-env.sh for the local cluster. Not committed.
+dependencies:
+  s3:
+    iamUrl: http://seaweedfs.iff:8111
+
+ingress:
+  enabled: true
+  gateway:
+    host: dataspace.localtest.me
+  management:
+    host: dataspace-management.localtest.me
+    allowFrom: "0.0.0.0/0"
+VALUES
+  echo "$file"
+}
+
+# Builds the images, loads them into the cluster, and deploys the default environment of helm/ with this cluster's
+# values and credentials.
 services() {
-  need docker kind kubectl openssl
+  need docker kind kubectl helm openssl
   generate_credentials
-  # shellcheck disable=SC1091
-  . "$LOCAL/credentials.env"
-  kubectl -n dataspace create secret generic service-credentials \
-    --from-literal=postgres-user="$POSTGRES_USER" \
-    --from-literal=postgres-password="$POSTGRES_PASSWORD" \
-    --from-literal=s3-access-key="$S3_ACCESS_KEY" \
-    --from-literal=s3-secret-key="$S3_SECRET_KEY" \
-    --from-literal=admin-client-secret="$(cat "$LOCAL/admin-client-secret")" \
-    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  "$ROOT/helm/bootstrap.sh" tools >/dev/null
   images
-  kubectl apply -f "$ROOT/deploy/local/services.yaml" >/dev/null
-  kubectl apply -f "$ROOT/deploy/local/network-policies.yaml" >/dev/null
+  DATASPACE_SECRETS_FILE="$(helm_secrets)" DATASPACE_VALUES_FILE="$(helm_values)" \
+    bash -c 'cd "$1" && helmfile -e default sync --skip-deps' sync "$ROOT/helm"
+  # The images keep their tags, so the pods restart to take up new ones.
   for service in $SERVICES; do
-    kubectl -n dataspace rollout restart "deploy/$service" >/dev/null
-    kubectl -n dataspace rollout status "deploy/$service" --timeout=180s
+    kubectl -n "$NAMESPACE" rollout restart "deploy/$service" >/dev/null
+    kubectl -n "$NAMESPACE" rollout status "deploy/$service" --timeout=180s
   done
 }
 
@@ -211,5 +227,6 @@ case "${1:-}" in
   images) images ;;
   services) services ;;
   helm-secrets) helm_secrets ;;
-  *) echo "Usage: $0 up | down | status | check | images | services | helm-secrets" >&2; exit 2 ;;
+  helm-values) helm_values "${2:-}" ;;
+  *) echo "Usage: $0 up | down | status | check | images | services | helm-secrets | helm-values [file]" >&2; exit 2 ;;
 esac

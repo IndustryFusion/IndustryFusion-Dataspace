@@ -14,5 +14,6 @@
 # limitations under the License.
 #
 
-# The environment used without -e. Keep the hosts of a real installation out of this repository.
+# The settings of this installation, layered over common.yaml. Keep the hosts of a real installation out of this
+# repository: keep this file for it in a private one, or pass them with DATASPACE_VALUES_FILE. See helm/README.md.
 {}

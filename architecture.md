@@ -151,7 +151,7 @@ cluster (`acid-cluster.iff`) — not a shared schema, and each participant has
 its own PostgreSQL user, which owns its two databases and can't connect to
 anyone else's. Each also has its own S3 identity, for reading, writing and listing
 its own bucket only, if the storage's identities can be managed. That doesn't stop
-a copy out of another's bucket: see `deploy/README.md`.
+a copy out of another's bucket: see `helm/README.md`.
 
 ### What is and is not publicly reachable
 

@@ -14,18 +14,11 @@
 # limitations under the License.
 #
 
-# Settings shared by every environment. Override them in values/environments/<environment>.yaml.
+# Settings shared by every installation. Override them in environment/default.yaml.
+# The image names and the namespaces come from helm/env.sh, through values.yaml.gotmpl.
 
 images:
-  # Empty means no registry prefix: <repo>/<component>:<version>.
-  registry: ""
-  repo: dataspace
-  version: dev
   pullPolicy: IfNotPresent
-
-namespaces:
-  services: dataspace
-  participants: dataspace-participants
 
 # By default these come from the IndustryFusion DigitalTwin stack, in namespace iff.
 dependencies:
@@ -36,7 +29,7 @@ dependencies:
     endpoint: http://seaweedfs.iff:80
     # The storage's IAM API, for an S3 identity per participant. A storage started with a static list can't use this,
     # which includes the DigitalTwin stack's. Empty means participants share the identity in the secrets file. See
-    # deploy/README.md.
+    # helm/README.md.
     iamUrl: ""
   keycloak:
     # Every service compares a token's issuer with <url>/realms/<realm>, so mint tokens through this URL.

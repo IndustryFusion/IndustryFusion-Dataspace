@@ -132,18 +132,20 @@ The connector is built with `docker build connector`, which runs Gradle on Java 
 
 ## Local environment
 
-`scripts/local-env.sh` brings up a local Kubernetes cluster with PostgreSQL, S3-compatible storage and Keycloak, and sets up the realm as [keycloak.md](keycloak.md) describes. It needs a container runtime, `kind`, `kubectl`, `openssl`, `curl` and `python3`.
+`scripts/local-env.sh` brings up a local Kubernetes cluster with PostgreSQL, S3-compatible storage and Keycloak, and sets up the realm as [keycloak.md](keycloak.md) describes. It needs a container runtime, `kind`, `kubectl`, `helm`, `openssl`, `curl` and `python3`.
 
 ```bash
 scripts/local-env.sh up       # create everything
 scripts/local-env.sh status   # show pods
 scripts/local-env.sh check    # mint a token and check its issuer
 scripts/local-env.sh images   # build the images and load them into the cluster
-scripts/local-env.sh services # build the services and deploy them to the cluster
+scripts/local-env.sh services # build the images and deploy the charts in helm/ to the cluster
 scripts/local-env.sh down     # remove the cluster and generated files
 ```
 
 It uses only its own kubeconfig, `.local/kubeconfig`, so your other clusters aren't touched. Generated credentials are in `.local/`, which git ignores.
+
+`services` deploys the `default` environment of [helm/](helm/README.md) with helmfile, as an operator would, with two generated files in `.local/`: `helm-values.yaml` with this cluster's hosts and settings, given as `DATASPACE_VALUES_FILE`, and `helm-secrets.yaml` with its credentials, given as `DATASPACE_SECRETS_FILE`. The images keep the names `dataspace/<name>:dev`. `bootstrap.sh tools` installs helmfile under `helm/.tools` the first time. A cluster whose services were deployed before this used the charts has to be made again with `down` and `up`.
 
 With the services deployed, `scripts/message-exchange-check.py` runs two agents exchanging messages through the gateway, `scripts/connector-transfer-check.py` tests two connectors on their own, `scripts/management-check.py` onboards and removes participants through the management API, with real failures at each step, and `scripts/ifric-check.py` checks company details with real Keycloak tokens and a stand-in for the IFRIC registry.
 
@@ -151,7 +153,7 @@ With the services deployed, `scripts/message-exchange-check.py` runs two agents 
 
 `scripts/external-demo.py up` deploys two self-hosted participants, each in its own namespace with its own PostgreSQL, S3 storage, adapter and connector, and a NetworkPolicy limiting it to the public routes. `down` removes them. See "External participants" in [management-api.md](management-api.md).
 
-To try the Helm install from [deploy/README.md](deploy/README.md) instead of `services`, run `scripts/local-env.sh images`, install an Ingress controller, and use `-e local` with the file that `scripts/local-env.sh helm-secrets` writes as `DATASPACE_SECRETS_FILE`. `scripts/ingress-check.py` then checks the install through the Ingress, including an upload at the limit.
+The generated values enable an Ingress with the hosts `dataspace.localtest.me` and `dataspace-management.localtest.me`. To use it, install an Ingress controller in the cluster. `scripts/ingress-check.py` then checks the install through the Ingress, including an upload at the limit.
 
 ### Contract tests
 

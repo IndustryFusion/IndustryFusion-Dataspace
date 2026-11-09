@@ -51,7 +51,7 @@ def known_gap(what: str, still_open: bool, detail: object = "") -> None:
         known_gaps.append(what)
         print(f"KNOWN GAP {what}: {detail}")
     else:
-        print(f"PASS {what}. It was a known gap, so correct design.md and deploy/README.md")
+        print(f"PASS {what}. It was a known gap, so correct design.md and helm/README.md")
 
 
 def in_pod(namespace: str, deployment: str, code: str) -> str:
@@ -289,7 +289,7 @@ def check_copy_from_another(mine: dict, theirs: dict, own_bucket: str, other_buc
         known_gap(
             f"Another's object copied into its own bucket, with {what}, and read there",
             answers[name] == bytes_wanted,
-            "the storage only checks a copy against its destination. See design.md and deploy/README.md",
+            "the storage only checks a copy against its destination. See design.md and helm/README.md",
         )
 
 

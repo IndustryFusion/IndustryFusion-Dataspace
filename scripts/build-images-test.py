@@ -19,12 +19,11 @@
     build-images-test.py                  Tests scripts/build-images.sh
     build-images-test.py --script <file>  Tests another copy, such as one with a change undone
 
-Each test runs a copy of the script in its own folder, with only the stand-in on PATH, so neither a real
-docker nor a scripts/build-images.env in the checkout is used. Needs bash.
+Each test runs a copy of the script in its own folder, with only the stand-in on PATH and only the variables
+the test gives, so neither a real docker nor the caller's settings are used. Needs bash.
 """
 
 import argparse
-import os
 import pathlib
 import shutil
 import subprocess
@@ -52,13 +51,11 @@ exit 0
 
 
 class Run:
-    def __init__(self, answer: subprocess.CompletedProcess, calls: list[list[str]], files: set[str]) -> None:
+    def __init__(self, answer: subprocess.CompletedProcess, calls: list[list[str]]) -> None:
         self.code = answer.returncode
         self.out = answer.stdout
         self.err = answer.stderr
         self.calls = calls
-        # What the run left in its folder, to show that nothing in a config file was run.
-        self.files = files
 
     @property
     def built(self) -> list[str]:
@@ -84,7 +81,7 @@ class Harness:
         fail: str | None = None,
         docker: bool = True,
     ) -> Run:
-        """Runs the script in a fresh folder. config, if given, is written as the folder's scripts/build-images.env."""
+        """Runs the script in a fresh folder. config is written as scripts/build-images.env, to show it isn't read."""
         folder = pathlib.Path(tempfile.mkdtemp(prefix="build-images-test-"))
         try:
             (folder / "scripts").mkdir()
@@ -112,7 +109,7 @@ class Harness:
                 timeout=60,
             )
             calls = [line.split("\t") for line in log.read_text().splitlines()] if log.exists() else []
-            return Run(answer, calls, {path.name for path in folder.iterdir()})
+            return Run(answer, calls)
         finally:
             shutil.rmtree(folder)
 
@@ -162,75 +159,41 @@ def the_targets_are_shown_first(h: Harness) -> None:
 
 @test
 def settings_from_the_shell(h: Harness) -> None:
-    run = h.run(env={"REGISTRY": "reg.test:5000", "REPO": "team/ds", "VERSION": "1.2.3"})
+    run = h.run(env={"LOCAL_REGISTRY": "reg.test:5000", "MAIN_REPO": "team/ds", "MAIN_VERSION": "1.2.3"})
     assert run.code == 0, run
     assert run.pushed == names("reg.test:5000/team/ds/{}:1.2.3"), run
 
 
 @test
-def settings_from_the_file(h: Harness) -> None:
-    run = h.run(config="REGISTRY=file.test:1\nREPO=from-file\nVERSION=0.9\n")
-    assert run.code == 0, run
-    assert run.pushed == names("file.test:1/from-file/{}:0.9"), run
-
-
-@test
-def a_shell_variable_overrides_the_file(h: Harness) -> None:
-    run = h.run(env={"VERSION": "2.0.0"}, config="REGISTRY=file.test:1\nVERSION=1.0.0\n")
-    assert run.code == 0, run
-    assert run.pushed == names("file.test:1/dataspace/{}:2.0.0"), run
-
-
-@test
-def an_empty_shell_variable_overrides_the_file(h: Harness) -> None:
-    run = h.run("--list", env={"REGISTRY": ""}, config="REGISTRY=file.test:1\n")
+def an_empty_shell_variable_is_used_not_the_default(h: Harness) -> None:
+    run = h.run("--list", env={"LOCAL_REGISTRY": ""})
     assert run.code == 0, run
     assert run.out.split() == names("dataspace/{}:latest"), run
 
 
 @test
-def the_file_may_have_comments_blank_lines_quotes_and_crlf(h: Harness) -> None:
-    config = "# a comment\r\n\r\n  REGISTRY=\"quoted.test:2\"\r\nREPO='single'  \r\n   # indented comment\nVERSION=3"
-    run = h.run("--list", config=config)
-    assert run.code == 0, run
-    assert run.out.split() == names("quoted.test:2/single/{}:3"), run
+def a_config_file_is_not_read(h: Harness) -> None:
+    run = h.run("--list", "adapter", config="LOCAL_REGISTRY=file.test:1\nMAIN_VERSION=9\nREGISTRY=old.test\n")
+    assert run.code == 0 and run.out.split() == [DEFAULT.format("adapter")], run
+    named = h.run("--list", "adapter", env={"BUILD_IMAGES_CONFIG": "/nonexistent/settings.env"})
+    assert named.code == 0 and named.out.split() == [DEFAULT.format("adapter")], named
 
 
 @test
-def the_file_is_read_not_run(h: Harness) -> None:
-    run = h.run("--list", config="echo ran > marker\n")
-    assert run.code != 0, run
-    assert "build-images.env, line 1" in run.err and "echo ran > marker" in run.err, run
-    assert "marker" not in run.files and run.calls == [], run
-    # Nothing in a value is expanded: it is taken as written, and this one isn't a registry.
-    expanded = h.run("--list", config="REGISTRY=$(echo ran > marker)\n")
-    assert expanded.code != 0 and "'$(echo ran > marker)'" in expanded.err, expanded
-    assert "marker" not in expanded.files, expanded
+def the_old_names_are_reported_and_not_used(h: Harness) -> None:
+    run = h.run("--list", "adapter", env={"REGISTRY": "old.test", "VERSION": "9"})
+    assert run.code == 0 and run.out.split() == [DEFAULT.format("adapter")], run
+    assert "REGISTRY VERSION set, but not read" in run.err and "LOCAL_REGISTRY, MAIN_REPO and MAIN_VERSION" in run.err
+    quiet = h.run("--list", "adapter")
+    assert quiet.err == "", quiet
 
 
 @test
-def another_key_in_the_file_is_refused_with_its_line(h: Harness) -> None:
-    run = h.run(config="REGISTRY=a.test\n\nIMAGES=adapter\n")
-    assert run.code != 0 and "line 3" in run.err and "IMAGES=adapter" in run.err, run
-    assert run.calls == [], run
-
-
-@test
-def a_named_config_file(h: Harness) -> None:
-    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as named:
-        named.write("REGISTRY=named.test\n")
-    try:
-        run = h.run("--list", "adapter", env={"BUILD_IMAGES_CONFIG": named.name}, config="REGISTRY=default.test\n")
-        assert run.code == 0 and run.out.split() == ["named.test/dataspace/adapter:latest"], run
-    finally:
-        os.unlink(named.name)
-
-
-@test
-def a_named_config_file_that_is_missing(h: Harness) -> None:
-    run = h.run(env={"BUILD_IMAGES_CONFIG": "/nonexistent/settings.env"})
-    assert run.code != 0 and "/nonexistent/settings.env" in run.err, run
-    assert run.calls == [], run
+def the_settings_of_env_sh_are_used(h: Harness) -> None:
+    run = h.run(
+        "--list", "adapter", env={"LOCAL_REGISTRY": "env.test:5000", "MAIN_REPO": "team/ds", "MAIN_VERSION": "2"}
+    )
+    assert run.code == 0 and run.out.split() == ["env.test:5000/team/ds/adapter:2"], run
 
 
 @test
@@ -252,7 +215,7 @@ def build_only_pushes_nothing(h: Harness) -> None:
 
 @test
 def listing_builds_nothing_and_needs_no_docker(h: Harness) -> None:
-    run = h.run("--list", env={"REGISTRY": "r.test", "VERSION": "5"}, docker=False)
+    run = h.run("--list", env={"LOCAL_REGISTRY": "r.test", "MAIN_VERSION": "5"}, docker=False)
     assert run.code == 0, run
     assert run.out.split() == names("r.test/dataspace/{}:5"), run
     assert run.calls == [], run
@@ -287,26 +250,24 @@ def help_is_shown(h: Harness) -> None:
 
 @test
 def an_empty_registry_without_pushing_means_no_prefix(h: Harness) -> None:
-    run = h.run("--build-only", env={"REGISTRY": ""})
+    run = h.run("--build-only", env={"LOCAL_REGISTRY": ""})
     assert run.code == 0, run
     assert run.built == names("dataspace/{}:latest") and run.pushed == [], run
 
 
 @test
 def an_empty_registry_is_refused_for_pushing(h: Harness) -> None:
-    run = h.run(env={"REGISTRY": ""})
-    assert run.code != 0 and "REGISTRY is empty" in run.err, run
+    run = h.run(env={"LOCAL_REGISTRY": ""})
+    assert run.code != 0 and "LOCAL_REGISTRY is empty" in run.err, run
     assert run.calls == [], run
 
 
 @test
 def an_empty_repository_or_version_is_refused(h: Harness) -> None:
-    for key in ("REPO", "VERSION"):
+    for key in ("MAIN_REPO", "MAIN_VERSION"):
         run = h.run("--build-only", env={key: ""})
         assert run.code != 0 and f"{key} is empty" in run.err, run
         assert run.calls == [], run
-    from_file = h.run("--list", config="VERSION=\n")
-    assert from_file.code != 0 and "VERSION is empty" in from_file.err, from_file
 
 
 BAD_REGISTRIES = [
@@ -335,68 +296,59 @@ GOOD_REGISTRIES = [
 def a_registry_that_is_not_one_is_refused_even_for_listing(h: Harness) -> None:
     for value in BAD_REGISTRIES:
         for mode in ("--list", "--build-only"):
-            run = h.run(mode, env={"REGISTRY": value})
+            run = h.run(mode, env={"LOCAL_REGISTRY": value})
             assert run.code != 0, (value, run)
-            assert f"REGISTRY is not a registry address (set in the shell): '{value}'" in run.err, (value, run)
+            assert f"LOCAL_REGISTRY is not a registry address (set in the shell): '{value}'" in run.err, (value, run)
             assert run.out == "" and run.calls == [], (value, run)
 
 
 @test
 def a_port_outside_the_range_is_refused(h: Harness) -> None:
     for value in ("reg:0", "reg:65536", "reg:123456", "reg:99999/team"):
-        run = h.run("--list", env={"REGISTRY": value})
+        run = h.run("--list", env={"LOCAL_REGISTRY": value})
         assert run.code != 0 and "port outside 1 to 65535" in run.err and run.out == "", (value, run)
-    edge = h.run("--list", "adapter", env={"REGISTRY": "reg:65535"})
+    edge = h.run("--list", "adapter", env={"LOCAL_REGISTRY": "reg:65535"})
     assert edge.code == 0 and edge.out.split() == ["reg:65535/dataspace/adapter:latest"], edge
 
 
 @test
 def registry_addresses_are_accepted(h: Harness) -> None:
     for value in GOOD_REGISTRIES:
-        run = h.run("--list", "adapter", env={"REGISTRY": value})
+        run = h.run("--list", "adapter", env={"LOCAL_REGISTRY": value})
         assert run.code == 0 and run.out.split() == [f"{value}/dataspace/adapter:latest"], (value, run)
 
 
 @test
 def a_repository_that_is_not_one_is_refused(h: Harness) -> None:
     for value in ("Data/Space", "data//space", "data/", "/data", "a___b", "a-.b", "a.", "data space", "a:b"):
-        run = h.run("--list", env={"REPO": value})
+        run = h.run("--list", env={"MAIN_REPO": value})
         assert run.code != 0, (value, run)
-        assert f"REPO is not a repository path (set in the shell): '{value}'" in run.err and run.out == "", (value, run)
+        assert f"MAIN_REPO is not a repository path (set in the shell): '{value}'" in run.err and run.out == "", (
+            value,
+            run,
+        )
     for value in ("data/space", "a__b", "a--b", "a.b_c", "team/data-space/x"):
-        run = h.run("--list", "adapter", env={"REPO": value})
+        run = h.run("--list", "adapter", env={"MAIN_REPO": value})
         assert run.code == 0 and run.out.split() == [f"k3d-iff.localhost:12345/{value}/adapter:latest"], (value, run)
 
 
 @test
 def a_version_that_is_not_a_tag_is_refused(h: Harness) -> None:
     for value in ("bad tag", ".1", "-x", "1/2", "v1:2", "a" * 129, "1.2.3 "):
-        run = h.run("--list", env={"VERSION": value})
+        run = h.run("--list", env={"MAIN_VERSION": value})
         assert run.code != 0, (value, run)
-        assert f"VERSION is not a tag (set in the shell): '{value}'" in run.err and run.out == "", (value, run)
+        assert f"MAIN_VERSION is not a tag (set in the shell): '{value}'" in run.err and run.out == "", (value, run)
     for value in ("1.2.3", "v1_2-rc.1", "_x", "a" * 128):
-        run = h.run("--list", "adapter", env={"VERSION": value})
+        run = h.run("--list", "adapter", env={"MAIN_VERSION": value})
         assert run.code == 0 and run.out.split() == [f"k3d-iff.localhost:12345/dataspace/adapter:{value}"], run
-
-
-@test
-def a_value_from_the_file_is_named_with_its_line(h: Harness) -> None:
-    run = h.run("--list", config="# settings\nREPO=dataspace\nREGISTRY=reg:5000/\n")
-    assert run.code != 0, run
-    assert (
-        "REGISTRY is not a registry address (from " in run.err and "build-images.env, line 3): 'reg:5000/'" in run.err
-    )
-    assert run.out == "", run
-    quoted = h.run("--list", config='VERSION="1.0 # not a comment"\n')
-    assert quoted.code != 0 and "build-images.env, line 1): '1.0 # not a comment'" in quoted.err, quoted
 
 
 @test
 def a_name_longer_than_docker_allows_is_refused(h: Harness) -> None:
     # k3d-iff.localhost:12345/<repo>/dsp-gateway is 36 characters beside the repository.
-    run = h.run("--list", env={"REPO": "a" * 220})
+    run = h.run("--list", env={"MAIN_REPO": "a" * 220})
     assert run.code != 0 and "Docker allows 255" in run.err and run.out == "", run
-    fits = h.run("--list", env={"REPO": "a" * 219})
+    fits = h.run("--list", env={"MAIN_REPO": "a" * 219})
     assert fits.code == 0 and len(fits.out.splitlines()) == 6, fits
 
 

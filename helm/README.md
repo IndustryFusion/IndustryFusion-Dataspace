@@ -1,87 +1,122 @@
 # Deploying the dataspace
 
-This installs the dataspace on Kubernetes with [Helmfile](https://helmfile.readthedocs.io). Fixed services go in namespace `dataspace`, and the management API creates participants' adapters and connectors in `dataspace-participants`.
+This installs the dataspace on Kubernetes with [Helmfile](https://helmfile.readthedocs.io). Fixed services go in the namespace `NAMESPACE` names, `dataspace` by default. The management API creates participants' adapters and connectors in `PARTICIPANTS_NAMESPACE`, `dataspace-participants` by default.
 
-`deploy/local` is separate. It holds stand-ins for the local environment that `scripts/local-env.sh` creates. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+The layout is the one DigitalTwin and XANA use:
+
+```
+helm/
+  bootstrap.sh              # checks Helm, installs helmfile and helm-diff, creates and removes the namespaces
+  helmfile.yaml.gotmpl      # the environment and the releases
+  values.yaml.gotmpl        # what every chart reads: the environment's values with env.sh's settings
+  common.yaml               # settings shared by every installation
+  env.sh                    # sourced before helmfile and scripts/build-images.sh
+  environment/
+    default.yaml            # this installation's settings
+    secrets.yaml.example    # copy to secrets.yaml, which git ignores
+  charts/
+    common/                 # the Secret registry and management read
+    registry/
+    gateway/
+    dsp-gateway/
+    management/             # with its service account, its rights and the participants' network policies
+```
+
+`deploy/local` is separate. It holds stand-ins for the local environment that `scripts/local-env.sh` creates, which deploys these charts too. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## What you need first
 
-- `kubectl` and `helm`, with `KUBECONFIG` pointing at the cluster. `bootstrap.sh` installs `helmfile` if it is missing.
+- `kubectl` and `helm`, with `KUBECONFIG` pointing at the cluster. `bootstrap.sh` checks Helm's version, and installs `helmfile` and the helm-diff plugin if they are missing.
 - An Ingress controller, if you enable the Ingress. The annotations are for [ingress-nginx](https://kubernetes.github.io/ingress-nginx/). Any other controller needs its own, through `ingress.annotations`, and has to allow the same body size.
 - [cert-manager](https://cert-manager.io), if you want it to issue certificates.
 - A network plugin that enforces NetworkPolicies, for `networkPolicy.enabled`. Without one, they are accepted and do nothing.
-- PostgreSQL, S3-compatible storage and Keycloak. They aren't installed here. The PostgreSQL user in the secrets file has to be able to create databases and roles. By default they are the ones from the [IndustryFusion DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack in namespace `iff`, at the addresses in `values/common.yaml`.
+- PostgreSQL, S3-compatible storage and Keycloak. They aren't installed here. The PostgreSQL user in the secrets file has to be able to create databases and roles. By default they are the ones from the [IndustryFusion DigitalTwin](https://github.com/IndustryFusion/DigitalTwin) stack in namespace `iff`, at the addresses in `common.yaml`.
 - The realm set up once, as [keycloak.md](../keycloak.md) describes. `scripts/setup-keycloak.py` does this.
-- The images of `registry`, `gateway`, `dsp-gateway`, `management`, `adapter` and `connector` in a registry the cluster can pull from, as `[<images.registry>/]<images.repo>/<name>:<images.version>`. Build and push them with the script below.
+- The images of `registry`, `gateway`, `dsp-gateway`, `management`, `adapter` and `connector` in a registry the cluster can pull from, as `[<LOCAL_REGISTRY>/]<MAIN_REPO>/<name>:<MAIN_VERSION>`. Build and push them with the script below.
+
+## env.sh
+
+Source it in the shell you run helmfile and the build script from:
+
+```bash
+source helm/env.sh
+```
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `NAMESPACE` | `dataspace` | where the services run |
+| `PARTICIPANTS_NAMESPACE` | `dataspace-participants` | where management creates participants |
+| `LOCAL_REGISTRY` | `k3d-iff.localhost:12345` | the images' registry. Empty means no prefix |
+| `MAIN_REPO` | `dataspace` | the images' repository |
+| `MAIN_VERSION` | `latest` | the images' tag |
+| `HELM_VERSION` | `3.14.0` | the oldest Helm `bootstrap.sh` accepts |
+| `HELMFILE_VERSION` | `0.169.2` | the helmfile `bootstrap.sh` installs. `bootstrap.sh` holds its checksum |
+| `HELM_DIFF_PLUGIN` | `3.15.11` | the helm-diff plugin `bootstrap.sh` installs, for `helmfile diff` and `helmfile apply` |
+
+A variable already set keeps its value, even an empty one, so you can set them before sourcing, or edit `env.sh` in a copy you keep with your installation. It holds no secret. The charts and `scripts/build-images.sh` read the same three image variables, so what the script pushes is what the charts deploy. Without `env.sh`, helmfile stops and names the variable that is missing.
 
 ## Building and pushing the images
 
-`scripts/build-images.sh` builds the six images, and pushes each as `<REGISTRY>/<REPO>/<name>:<VERSION>`. It needs Docker and bash 4.3 or later (macOS ships 3.2: install a newer one, for example with Homebrew), and the registry has to accept your pushes, for example after `docker login`. Run it from the repository's root folder:
+`scripts/build-images.sh` builds the six images, and pushes each as `<LOCAL_REGISTRY>/<MAIN_REPO>/<name>:<MAIN_VERSION>`. It needs Docker and bash 4.3 or later (macOS ships 3.2: install a newer one, for example with Homebrew), and the registry has to accept your pushes, for example after `docker login`. Run it from the repository's root folder:
 
 ```bash
-REGISTRY=registry.example.com:5000 REPO=dataspace VERSION=1.2.3 ./scripts/build-images.sh
+LOCAL_REGISTRY=registry.example.com:5000 MAIN_VERSION=1.2.3 source helm/env.sh
+./scripts/build-images.sh
 ```
 
-| Setting | Default | Chart value to set to the same |
-|---|---|---|
-| `REGISTRY` | `k3d-iff.localhost:12345` | `images.registry` |
-| `REPO` | `dataspace` | `images.repo` |
-| `VERSION` | `latest` | `images.version` |
-
-- Settings set in the shell take precedence over a config file, `scripts/build-images.env`, which git ignores. Copy `scripts/build-images.env.example` to start one, or point `BUILD_IMAGES_CONFIG` at another file. The file holds `KEY=value` lines for these three keys and is never run.
+- The script reads the three variables from the shell. Unset, they have the defaults above. `REGISTRY`, `REPO` and `VERSION` are not read, and the script says so if they are set.
 - Name images to build only those, such as `./scripts/build-images.sh adapter connector`.
 - `--build-only` builds without pushing. `--list` prints the names and builds nothing.
-- An empty `REGISTRY` means no prefix, as in the chart. It works with `--build-only`, but the script won't push without a registry.
+- An empty `LOCAL_REGISTRY` means no prefix, as in the charts. It works with `--build-only`, but the script won't push without a registry.
 - The script stops at the first failed build or push, and says which image and which step failed. Images it pushed before that stay in the registry.
-- `REGISTRY` is checked before anything is built or listed: `host` or `host:port`, optionally with a lowercase path, without a trailing slash or spaces. `REPO` is lowercase parts joined by `/`, and `VERSION` is a Docker tag. An invalid value stops the script, which says where the value came from.
+- `LOCAL_REGISTRY` is checked before anything is built or listed: `host` or `host:port`, optionally with a lowercase path, without a trailing slash or spaces. `MAIN_REPO` is lowercase parts joined by `/`, and `MAIN_VERSION` is a Docker tag. An invalid value stops the script, which says so.
 - A registry that speaks plain HTTP, such as the default `k3d-iff.localhost:12345` from k3d, has to be listed in Docker's `insecure-registries`, unless it is `localhost` or an address Docker resolves to loopback. Otherwise the push fails with `server gave HTTP response to HTTPS client`. On Linux, add it to `/etc/docker/daemon.json` and restart Docker. With Docker Desktop, add it under Settings, Docker Engine:
 
   ```json
   { "insecure-registries": ["k3d-iff.localhost:12345"] }
   ```
 
-Then set the same three values in your environment's values file, step 3 below:
-
-```yaml
-images:
-  registry: registry.example.com:5000
-  repo: dataspace
-  version: 1.2.3
-```
-
-The chart uses them for the four fixed services, and passes them to the management API, which names participants' `adapter` and `connector` images the same way. `values/common.yaml` has `registry: ""` and `version: dev`, which are the local environment's names, so set all three.
+The charts use the same variables for the four fixed services, and pass them to the management API, which names participants' `adapter` and `connector` images the same way.
 
 ## Install
 
-Run these from `deploy/helm`.
+Run these from `helm/`, in a shell where `env.sh` is sourced.
 
-1. **Prepare the cluster.** This installs `helmfile` under `.tools` if needed, and creates both namespaces. It can be repeated.
+1. **Prepare the cluster.** This checks Helm, installs `helmfile` under `.tools` and helm-diff if needed, and creates both namespaces. It can be repeated.
 
    ```bash
    ./bootstrap.sh up
    export PATH="$PWD/.tools:$PATH"
    ```
 
-2. **Fill in the secrets.** Copy the example and set each value. The copy is ignored by git.
+2. **Fill in the secrets.** Copy the example and set each value. The copy is ignored by git. To keep it elsewhere, set `DATASPACE_SECRETS_FILE` to its path.
 
    ```bash
-   cp values/secrets.yaml.example values/secrets.yaml
+   cp environment/secrets.yaml.example environment/secrets.yaml
    ```
 
-3. **Add an environment.** Copy `values/environments/local.yaml` to `values/environments/<name>.yaml` outside version control, or to a private repository, and add it under `environments:` in `helmfile.yaml`. Set the image names, the Ingress hosts and, if they differ, the dependencies. Settings not given come from `values/common.yaml`.
+3. **Fill in the environment.** Set your installation's values in `environment/default.yaml`: at least the Ingress hosts and `ingress.management.allowFrom` if you enable the Ingress, and the dependencies' addresses if they differ from `common.yaml`. Settings not given come from `common.yaml`. Keep a real installation's hosts out of this repository: keep the file in a private one, or put them in a file of your own and set `DATASPACE_VALUES_FILE` to its path, which is layered after `environment/default.yaml`.
 
-4. **Install.** Releases go in order, each waiting until its pods are ready.
+4. **Install.** Releases go in order, each waiting until its pods are ready: `common`, then `registry` and `dsp-gateway`, then `gateway`, then `management`.
 
    ```bash
-   helmfile -e <name> sync
+   helmfile -e default sync
    ```
 
 5. **Check it.**
 
    ```bash
-   kubectl -n dataspace get pods
+   kubectl -n "$NAMESPACE" get pods
    curl https://<management host>/api/health
    ```
+
+### An install from before helm/
+
+Installs made before the deployment moved to `helm/` used the releases `dataspace-common`, `dataspace-registry`, `dataspace-gateway`, `dataspace-dsp-gateway` and `dataspace-management`. Helm can't hand their objects to the new releases, so remove the old ones first, then install as above. Participants, their databases and buckets stay, and the services are unavailable until the new releases are ready:
+
+```bash
+helm -n dataspace uninstall dataspace-management dataspace-gateway dataspace-dsp-gateway dataspace-registry dataspace-common
+```
 
 ## Onboard a participant
 
@@ -97,6 +132,8 @@ curl -s https://<management host>/api/participants -H "Authorization: Bearer <to
 A registration waits for the participant's pods, so it can take a few minutes.
 
 ## Settings to know
+
+Set these in `environment/default.yaml`.
 
 | Setting | Notes |
 |---|---|
@@ -133,8 +170,8 @@ Run one replica of management, as [management-api.md](../management-api.md) desc
 
 The services read the secrets file's values when they start, and each participant's pods read a copy from their own Secret. To change a value:
 
-1. Change it in the secrets file, and run `helmfile -e <name> sync`.
-2. Restart the services that use it: `kubectl -n dataspace rollout restart deploy/<name>`, for `registry`, `gateway` and `management`.
+1. Change it in the secrets file, and run `helmfile -e default sync`.
+2. Restart the services that use it: `kubectl -n "$NAMESPACE" rollout restart deploy/<name>`, for `registry`, `gateway` and `management`.
 3. Register each hosted participant again, with `POST /api/participants` and the same fields. Its Secret takes the new value, and its pods restart. A participant whose Secret doesn't change isn't restarted. Until this is done, management can't reach an adapter it hasn't reached with the new key: it answers `502` saying the adapter refused the internal key.
 
 To change the PostgreSQL password or the S3 keys, change them in those services first.
@@ -144,7 +181,7 @@ To change the PostgreSQL password or the S3 keys, change them in those services 
 To remove participants' databases, buckets and Keycloak clients too, delete each with `DELETE /api/participants/{id}` first, as these are outside the two namespaces.
 
 ```bash
-DATASPACE_ENVIRONMENT=<name> ./bootstrap.sh down
+./bootstrap.sh down
 ```
 
 This removes the releases, every participant object, and the two namespaces. The dependencies and the realm stay, and so does the `registry` database with its entries, so a later install finds those participants registered, with no pods. To start clean, delete participants first, and then drop that database.
