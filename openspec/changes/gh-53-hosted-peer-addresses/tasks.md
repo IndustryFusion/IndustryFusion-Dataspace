@@ -10,7 +10,7 @@
 
 - [ ] 2.1 On a local kind cluster with the default settings, run `contract_test.py --local`; verify it has no failures
 - [ ] 2.2 On that cluster, empty `GATEWAY_PEER_URL` and `DSP_GATEWAY_PEER_URL` on management with `kubectl --kubeconfig .local/kubeconfig`, and run the suite again; verify the hosted peers aren't reachable and the suite passes
-- [ ] 2.3 Change the gateway on a copy to show a hosted peer's connector address; verify the check fails, naming the participant and `dsp_url`. Then revert
+- [ ] 2.3 Change the gateway temporarily to show a hosted peer's connector address; verify the check fails, naming the participant and `dsp_url`. Then revert
 
 ## 3. Documents
 
