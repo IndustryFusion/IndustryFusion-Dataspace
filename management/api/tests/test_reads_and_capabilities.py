@@ -416,6 +416,34 @@ def test_unknown_api_paths_are_not_given_the_page(world, tmp_path, monkeypatch):
     assert answer.status_code == 404 and answer.json() == {"detail": "Not found"}
 
 
+@pytest.mark.parametrize(
+    "path", ["//api/x", "//api", "/./api/x", "/x/../api/x", "///api//x", "//health", "/./health", "/x/../health"]
+)
+def test_paths_nginx_routes_to_the_api_are_not_given_the_page(world, tmp_path, monkeypatch, path):
+    """nginx merges slashes and resolves dot segments before it picks the Ingress, and sends the raw path on. A path
+    it routes to the API's object, which has no login, must not get the UI's page."""
+    (tmp_path / "index.html").write_text("<html>the page</html>")
+    monkeypatch.setattr(world.services, "settings", dataclasses.replace(world.settings, ui_dir=str(tmp_path)))
+    # In full, as "//api/x" alone reads as a host named api.
+    answer = world.client.get(f"http://testserver{path}")
+    # httpx resolves dot segments itself, so /./health reaches the real probe, which is right too.
+    assert "the page" not in answer.text, (path, answer.status_code)
+
+
+@pytest.mark.parametrize(
+    ("path", "outside"),
+    [
+        ("api/x", True), ("/api/x", True), ("api", True), ("health", True), ("./api/x", True), ("x/../api/x", True),
+        ("a/./../api", True), ("", False), ("policies", False), ("assets/app.js", False), ("apix", False),
+        ("health/x", False), ("api-docs", False),
+    ],
+)  # fmt: skip
+def test_which_paths_are_outside_the_ui(path, outside):
+    from app.main import outside_the_ui
+
+    assert outside_the_ui(path) is outside
+
+
 def test_without_a_built_ui(world):
     answer = world.client.get("/")
     assert answer.status_code == 404

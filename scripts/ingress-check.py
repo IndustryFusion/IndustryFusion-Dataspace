@@ -28,6 +28,7 @@ files with and without it, /api and /health without it, and Basic credentials on
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -35,6 +36,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.parse
 import uuid
 import zipfile
 
@@ -125,55 +128,95 @@ def login_credentials() -> tuple[str, str] | None:
     return (user, password) if user and password else None
 
 
+@contextlib.contextmanager
+def netrc(host: str, user: str, password: str):
+    """A netrc file for curl, readable only by this user, so the password isn't on curl's command line."""
+    with tempfile.NamedTemporaryFile("w", prefix="ingress-check-", suffix=".netrc") as handle:
+        os.chmod(handle.name, 0o600)
+        handle.write(f"machine {host} login {user} password {password}\n")
+        handle.flush()
+        yield ["--netrc-file", handle.name]
+
+
 def check_management_access(args: argparse.Namespace) -> None:
-    """Through the Ingress: the UI behind its login, /api and /health without it, and Basic credentials on /api
-    counting as no token."""
+    """Through the Ingress: the UI behind its login, /api and /health without it, Basic credentials on /api counting
+    as no token, paths nginx normalises onto /api not giving the page, and the login's rate limit."""
     login = login_credentials()
     if login is None:
-        print("NOTE the UI login isn't set up in .local/, so it isn't checked")
-        return
+        raise SystemExit(
+            "The UI login isn't set up in .local/credentials.env. Run scripts/local-env.sh services, or give "
+            "--skip-access-checks to leave these checks out."
+        )
     user, password = login
     host = ["-H", f"Host: {args.management_host}"]
     page = f"{args.ingress}/"
+    ingress_host = urllib.parse.urlsplit(args.ingress).hostname
 
     status, _ = curl(*host, page)
     assert status == 401, f"the UI without the login answered {status}"
     print("PASS the UI without the login: 401")
-    status, _ = curl(*host, "-u", f"{user}:wrong-{password}", page)
+    with netrc(ingress_host, user, f"wrong-{password}") as wrong:
+        status, _ = curl(*host, *wrong, page)
     assert status == 401, f"the UI with a wrong password answered {status}"
     print("PASS the UI with a wrong password: 401")
-    status, text = curl(*host, "-u", f"{user}:{password}", page)
-    assert status == 200 and "<title>Dataspace Management</title>" in text, (status, text[:200])
-    print("PASS the UI with the login: 200, the page")
-    for asset in sorted(set(re.findall(r'(?:src|href)="(/assets/[^"]+)"', text))):
-        status, _ = curl(*host, "-u", f"{user}:{password}", f"{args.ingress}{asset}")
-        assert status == 200, f"{asset} answered {status}"
-        status, _ = curl(*host, f"{args.ingress}{asset}")
-        assert status == 401, f"{asset} without the login answered {status}"
-    print("PASS the UI's files: 200 with the login, 401 without")
+    with netrc(ingress_host, user, password) as right:
+        status, text = curl(*host, *right, page)
+        assert status == 200 and "<title>Dataspace Management</title>" in text, (status, text[:200])
+        print("PASS the UI with the login: 200, the page")
+        for asset in sorted(set(re.findall(r'(?:src|href)="(/assets/[^"]+)"', text))):
+            status, _ = curl(*host, *right, f"{args.ingress}{asset}")
+            assert status == 200, f"{asset} answered {status}"
+            status, _ = curl(*host, f"{args.ingress}{asset}")
+            assert status == 401, f"{asset} without the login answered {status}"
+        print("PASS the UI's files: 200 with the login, 401 without")
 
-    for path in ("/health", "/api/health", "/api/participants"):
-        status, _ = curl(*host, f"{args.ingress}{path}")
-        assert status == 200, f"{path} without the login answered {status}"
-    print("PASS /health and /api without the login: 200")
+        for path in ("/health", "/api/health", "/api/participants"):
+            status, _ = curl(*host, f"{args.ingress}{path}")
+            assert status == 200, f"{path} without the login answered {status}"
+        print("PASS /health and /api without the login: 200")
 
-    status, public = curl(*host, f"{args.ingress}/api/participants")
-    status_basic, basic = curl(*host, "-u", f"{user}:{password}", f"{args.ingress}/api/participants")
-    assert status == status_basic == 200 and json.loads(basic) == json.loads(public), (status_basic, basic[:200])
-    print("PASS a read with Basic credentials: the public view, as without a token")
-    body = json.dumps({"participant_id": "urn:ingress-check:basic", "participant_type": "factory_owner"})
-    status, text = curl(
-        *host, "-u", f"{user}:{password}", "-X", "POST", "-H", "Content-Type: application/json",
-        "--data-binary", body, f"{args.ingress}/api/participants",
+        # nginx merges slashes and resolves dot segments to route, and management sees the raw path.
+        for path in ("//api/x", "/./api/x", "//health"):
+            status, text = curl("--path-as-is", *host, f"{args.ingress}{path}")
+            assert status != 401 and "<title>Dataspace Management</title>" not in text, (path, status, text[:200])
+        print("PASS //api/x, /./api/x and //health: routed to the API without the login, and no page")
+
+        status, public = curl(*host, f"{args.ingress}/api/participants")
+        status_basic, basic = curl(*host, *right, f"{args.ingress}/api/participants")
+        assert status == status_basic == 200 and json.loads(basic) == json.loads(public), (status_basic, basic[:200])
+        print("PASS a read with Basic credentials: the public view, as without a token")
+        body = json.dumps({"participant_id": "urn:ingress-check:basic", "participant_type": "factory_owner"})
+        status, text = curl(
+            *host, *right, "-X", "POST", "-H", "Content-Type: application/json",
+            "--data-binary", body, f"{args.ingress}/api/participants",
+        )  # fmt: skip
+        assert status == 401, (status, text)
+        print("PASS a change with Basic credentials: 401")
+
+    # Each try costs a bcrypt check, so the UI's tries are limited per client. Over the limit, nginx answers 503.
+    answer = subprocess.run(
+        ["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}\n", *host, *([page] * 100)],
+        capture_output=True, text=True, check=True,
     )  # fmt: skip
-    assert status == 401, (status, text)
-    print("PASS a change with Basic credentials: 401")
+    codes = answer.stdout.split()
+    assert any(code in ("503", "429") for code in codes), sorted(set(codes))
+    print(f"PASS the login's rate limit: {codes.count('503') + codes.count('429')} of 100 quick tries refused")
+    api = subprocess.run(
+        ["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}\n", *host, *([f"{args.ingress}/health"] * 100)],
+        capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    assert set(api.stdout.split()) == {"200"}, sorted(set(api.stdout.split()))
+    print("PASS /health isn't rate limited: 100 of 100 answered")
+    time.sleep(3)
 
 
 def main() -> int:
     arguments = parse_arguments()
     if arguments.ingress:
-        check_management_access(arguments)
+        if arguments.skip_access_checks:
+            print("NOTE the management access checks are left out, as asked")
+        else:
+            check_management_access(arguments)
         return run(arguments, arguments.ingress, arguments.ingress)
     print("NOTE no Ingress is involved in this run: it goes to the Services directly")
     with lc.port_forward("dataspace", "gateway", 8080) as gateway:
@@ -189,6 +232,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max-upload-bytes", type=int, default=1024**3)
     parser.add_argument("--max-json-bytes", type=int, default=4 * 1024**2)
     parser.add_argument("--keep", action="store_true", help="Leave the participants there")
+    parser.add_argument(
+        "--skip-access-checks",
+        action="store_true",
+        help="With --ingress, leave out the UI login, /api and rate limit checks, for an install without the login",
+    )
     return parser.parse_args()
 
 

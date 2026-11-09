@@ -198,7 +198,23 @@ LOGIN = {
     "nginx.ingress.kubernetes.io/auth-secret-type": "auth-file",
     "nginx.ingress.kubernetes.io/auth-realm": "Dataspace management",
 }
-FINGERPRINT = "dataspace.industryfusion.org/credentials-sha256"
+LIMITS = ("nginx.ingress.kubernetes.io/limit-rps", "nginx.ingress.kubernetes.io/limit-connections")
+
+
+def leaked(objects: list[dict], user: str, password: str) -> bool:
+    """Whether the password, or an unsalted MD5, SHA-1 or SHA-256 of it or of user:password, appears in the objects:
+    in their text, or in any Secret value once decoded."""
+    texts = [yaml.safe_dump(objects)]
+    for item in objects:
+        if item.get("kind") == "Secret":
+            texts += [base64.b64decode(value).decode(errors="replace") for value in (item.get("data") or {}).values()]
+            texts += [str(value) for value in (item.get("stringData") or {}).values()]
+    needles = {password}
+    for secret in (password, f"{user}:{password}"):
+        for digest in (hashlib.md5, hashlib.sha1, hashlib.sha256):
+            raw = digest(secret.encode())
+            needles |= {raw.hexdigest(), base64.b64encode(raw.digest()).decode()}
+    return any(needle in text for text in texts for needle in needles)
 
 
 def management_access(environment: str | None, secrets: str) -> list[str]:
@@ -263,20 +279,36 @@ def management_access(environment: str | None, secrets: str) -> list[str]:
         line = base64.b64decode(secret["data"]["auth"]).decode()
         if not re.fullmatch(rf"{re.escape(user)}:\$2[aby]\$\d\d\$[./A-Za-z0-9]{{53}}", line):
             problems.append(f"The login's Secret isn't a bcrypt htpasswd line for {user}")
-        if (
-            secret["metadata"]["annotations"].get(FINGERPRINT)
-            != hashlib.sha256(f"{user}:{password}".encode()).hexdigest()
-        ):
-            problems.append("The login's Secret doesn't carry the credentials' SHA-256")
+        stored = base64.b64decode(secret["data"].get("fingerprint", "")).decode()
+        if stored != hashlib.sha256(f"{line}:{password}".encode()).hexdigest():
+            problems.append("The login's Secret doesn't hold the fingerprint salted by its own line")
+        if secret["metadata"].get("annotations"):
+            problems.append(
+                f"The login's Secret has annotations, which helm-diff shows: {secret['metadata']['annotations']}"
+            )
 
-    # No object of any release holds the plain password, as text or in base64.
-    leaks = (password, base64.b64encode(password.encode()).decode())
+    # The UI's login is limited per client, /api isn't.
+    if {key: annotations.get(key) for key in LIMITS} != {key: "5" if "rps" in key else "10" for key in LIMITS}:
+        problems.append(f"management-ui: the login's limits are {[annotations.get(key) for key in LIMITS]}")
+    if any(key in found["management"]["metadata"]["annotations"] for key in LIMITS):
+        problems.append("management: /api is rate limited")
+
+    # No object of any release holds the plain password, or a fast unsalted hash of it, anywhere: in its text, or in
+    # a Secret's values, decoded.
     for component in COMPONENTS:
-        text = yaml.safe_dump(
-            render(component, environment, secrets, *on, "--set", "ingress.management.basicAuth.enabled=true")
-        )
-        if any(leak in text for leak in leaks):
-            problems.append(f"{component}: the plain basic-auth password is in a rendered object")
+        objects = render(component, environment, secrets, *on, "--set", "ingress.management.basicAuth.enabled=true")
+        if leaked(objects, user, password):
+            problems.append(f"{component}: the basic-auth password, or an unsalted hash of it, is in a rendered object")
+
+    # A user with a colon would end early in the htpasswd line.
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml") as colon:
+        given = copy.deepcopy(CANARY)
+        given["secrets"]["managementBasicAuth"]["user"] = "ad:min"
+        yaml.safe_dump(given, colon)
+        colon.flush()
+        failed = attempt("management", colon.name, *on, "--set", "ingress.management.basicAuth.enabled=true")
+        if failed.returncode == 0 or "can't contain a colon" not in failed.stderr:
+            problems.append("A login user with a colon was accepted")
 
     # The login on without a user or a password stops, naming it.
     for missing in ("user", "password"):

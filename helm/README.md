@@ -51,7 +51,7 @@ source helm/env.sh
 | `MAIN_VERSION` | `latest` | the images' tag |
 | `HELM_VERSION` | `3.14.0` | the oldest Helm `bootstrap.sh` accepts |
 | `HELMFILE_VERSION` | `0.169.2` | the helmfile `bootstrap.sh` installs, for Linux or macOS on amd64 or arm64. `bootstrap.sh` holds the checksums |
-| `HELM_DIFF_PLUGIN` | `3.15.11` | the helm-diff plugin `bootstrap.sh tools` installs if none is, for `helmfile diff` and `helmfile apply` |
+| `HELM_DIFF_PLUGIN` | `3.15.11` | the helm-diff plugin `bootstrap.sh tools` installs if none is, for `helmfile diff` and `helmfile apply`. An installed one has to be 3.9.4 or later, for `--dry-run=server` |
 
 A variable already exported keeps its value, even an empty one, so you can export them before sourcing, or edit `env.sh` in a copy you keep with your installation. Export them on their own line: `LOCAL_REGISTRY=... source helm/env.sh` on one line doesn't keep the value after `source`. It holds no secret. The charts and `scripts/build-images.sh` read the same three image variables, so what the script pushes is what the charts deploy. Without `env.sh`, helmfile stops and names the variable that is missing.
 
@@ -176,6 +176,10 @@ secrets:
 - Only a bcrypt hash goes into the cluster, in the Secret `management-basic-auth`. The hash is kept while the credentials stay the same, so a repeated `helmfile sync` leaves the Secret alone. `helmfile diff` and `apply` render against the cluster for this (`diffArgs: ["--dry-run=server"]` in `helmfile.yaml.gotmpl`), so they don't show it as changed either. `helmfile template` has no cluster, and writes a new hash each time.
 - To change the password, change it in the secrets file and run `helmfile -e default sync`.
 - Use the login with TLS (`ingress.tls.enabled`): without it, the browser sends the password in clear text.
+- Tries are limited per client address, as each costs a bcrypt check in the Ingress controller: `ingress.management.basicAuth.limitRps` requests a second (5, with a burst of five times that) and `limitConnections` open connections (10). Over them, nginx answers `503`. `/api` isn't limited.
+- **Rolling back** with `helm rollback management` to a revision from before the login (one Ingress, `management`, on `/`): delete `management-ui` first, with `kubectl -n "$NAMESPACE" delete ingress management-ui`. Otherwise ingress-nginx refuses the old object, as the host and `/` are already taken.
+
+**Certificates.** Set `ingress.tls.certManagerClusterIssuer` for cert-manager, not a `cert-manager.io/...` annotation in `ingress.annotations`. That one goes on every Ingress object, and on both of management's, cert-manager would make two Certificates for one Secret.
 
 **The allowlist** is optional. With `ingress.management.allowFrom`, such as `10.0.0.0/8,192.0.2.10/32`, both objects only admit those addresses. Use it to keep management to known networks, such as an office or a VPN.
 - Include every external participant's adapter address, as adapters read participants there.

@@ -85,6 +85,9 @@ metadata:
     nginx.ingress.kubernetes.io/auth-secret: management-basic-auth
     nginx.ingress.kubernetes.io/auth-secret-type: auth-file
     nginx.ingress.kubernetes.io/auth-realm: "Dataspace management"
+    # Each try costs a bcrypt check in the controller, so tries are limited per client address. /api isn't.
+    nginx.ingress.kubernetes.io/limit-rps: {{ $settings.basicAuth.limitRps | default 5 | quote }}
+    nginx.ingress.kubernetes.io/limit-connections: {{ $settings.basicAuth.limitConnections | default 10 | quote }}
     {{- end }}
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}

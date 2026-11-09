@@ -37,4 +37,5 @@ export MAIN_VERSION="${MAIN_VERSION-latest}"
 # The tools helm/bootstrap.sh checks and installs: the oldest Helm it accepts, and the versions it installs.
 export HELM_VERSION="${HELM_VERSION-3.14.0}"
 export HELMFILE_VERSION="${HELMFILE_VERSION-0.169.2}"
+# helm-diff: 3.9.4 or later, as helmfile.yaml.gotmpl passes it --dry-run=server.
 export HELM_DIFF_PLUGIN="${HELM_DIFF_PLUGIN-3.15.11}"

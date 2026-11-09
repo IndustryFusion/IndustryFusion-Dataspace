@@ -61,7 +61,8 @@ participants:
 ingress:
   enabled: false
   className: nginx
-  # Extra annotations, for every Ingress object.
+  # Extra annotations, for every Ingress object. Not cert-manager's: set ingress.tls.certManagerClusterIssuer, which
+  # goes on one object per TLS Secret. On both of management's, cert-manager would make two Certificates for one.
   annotations: {}
   gateway:
     host: ""
@@ -78,6 +79,10 @@ ingress:
     # keeps the admin token. Use it with TLS.
     basicAuth:
       enabled: false
+      # Per client address on the UI, as each try costs a bcrypt check: requests a second (with a burst of five
+      # times as many), and open connections. Over them, nginx answers 503.
+      limitRps: 5
+      limitConnections: 10
   # For external participants. Hosted-only installations leave this off.
   dspGateway:
     enabled: false
