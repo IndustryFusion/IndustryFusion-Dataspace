@@ -40,6 +40,8 @@ helmDefaults:
   wait: true
   timeout: 420
   createNamespace: false
+  # helm-diff renders with the cluster, so lookup keeps the UI login's hash, and a diff doesn't show it as changed.
+  diffArgs: ["--dry-run=server"]
 
 commonLabels:
   app.kubernetes.io/part-of: dataspace

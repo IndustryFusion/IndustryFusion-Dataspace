@@ -173,7 +173,7 @@ secrets:
 - `/api` and `/health` never ask for the login. The UI and adapters send a bearer token there, and adapters can't answer a password prompt.
 - Management treats the Basic credentials a browser sends with every call after the login as no token.
 - Rendering stops if the login is on without a username or a password.
-- Only a bcrypt hash goes into the cluster, in the Secret `management-basic-auth`. The hash is kept while the credentials stay the same, so a repeated `helmfile sync` leaves the Secret alone. `helmfile diff` can't look in the cluster, so it shows that Secret as changed each time. That is expected.
+- Only a bcrypt hash goes into the cluster, in the Secret `management-basic-auth`. The hash is kept while the credentials stay the same, so a repeated `helmfile sync` leaves the Secret alone. `helmfile diff` and `apply` render against the cluster for this (`diffArgs: ["--dry-run=server"]` in `helmfile.yaml.gotmpl`), so they don't show it as changed either. `helmfile template` has no cluster, and writes a new hash each time.
 - To change the password, change it in the secrets file and run `helmfile -e default sync`.
 - Use the login with TLS (`ingress.tls.enabled`): without it, the browser sends the password in clear text.
 
