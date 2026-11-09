@@ -19,7 +19,7 @@
 ## 4. The local cluster
 
 - [x] 4.1 Make `scripts/local-env.sh services` source `helm/env.sh` with the local image names, build with `scripts/build-images.sh --build-only`, load the images, write `.local/helm-values.yaml` and `.local/helm-secrets.yaml`, and deploy `default` with helmfile; remove `deploy/local/services.yaml` and `deploy/local/network-policies.yaml`; verify on a new local cluster that all pods reach ready
-- [ ] 4.2 Run the local end-to-end checks against it: `message-exchange-check.py`, `management-check.py`, `contract_test.py --local`, and `ingress-check.py` without an Ingress controller; verify on a local cluster. Open: message-exchange, management and ingress checks pass; the contract suite has 146 passed, 1 failed and 2 not run. The failure, "A hosted peer's addresses inside the hub are left out", comes from hosted participants being reachable by default since #40, with the same peer addresses the removed local manifests set, and is not caused by this change
+- [ ] 4.2 Run the local end-to-end checks against it: `message-exchange-check.py`, `management-check.py`, `contract_test.py --local`, and `ingress-check.py` without an Ingress controller; verify on a local cluster. Open: message-exchange, management and ingress checks pass; the contract suite has 146 passed, 1 failed and 2 not run. The failure, "A hosted peer's addresses inside the hub are left out", comes from hosted participants being reachable by default since #40, with the same peer addresses the removed local manifests set. The independent review confirmed it fails the same way on main, so it is not caused by this change
 - [x] 4.3 Run `services` again after changing a service's code; verify the new image is running
 
 ## 5. CI
