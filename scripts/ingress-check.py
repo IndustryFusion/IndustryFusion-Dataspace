@@ -194,15 +194,18 @@ def check_management_access(args: argparse.Namespace) -> None:
         print("PASS a change with Basic credentials: 401")
 
     # Each try costs a bcrypt check, so the UI's tries are limited per client. Over the limit, nginx answers 503.
+    # curl applies each -o to the next address only, so every address gets its own.
     answer = subprocess.run(
-        ["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}\n", *host, *([page] * 100)],
+        ["curl", "-sS", "-w", "%{http_code}\n", *host,
+         *[part for _ in range(100) for part in ("-o", "/dev/null", page)]],
         capture_output=True, text=True, check=True,
     )  # fmt: skip
     codes = answer.stdout.split()
     assert any(code in ("503", "429") for code in codes), sorted(set(codes))
     print(f"PASS the login's rate limit: {codes.count('503') + codes.count('429')} of 100 quick tries refused")
     api = subprocess.run(
-        ["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}\n", *host, *([f"{args.ingress}/health"] * 100)],
+        ["curl", "-sS", "-w", "%{http_code}\n", *host,
+         *[part for _ in range(100) for part in ("-o", "/dev/null", f"{args.ingress}/health")]],
         capture_output=True, text=True, check=True,
     )  # fmt: skip
     assert set(api.stdout.split()) == {"200"}, sorted(set(api.stdout.split()))
