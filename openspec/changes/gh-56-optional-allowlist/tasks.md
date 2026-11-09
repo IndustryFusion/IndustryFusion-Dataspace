@@ -2,18 +2,26 @@
 
 ## 1. Chart and values
 
-- [ ] 1.1 Add `whitelist-source-range` to the management Ingress only when `ingress.management.allowFrom` is set, and describe it as optional in `helm/common.yaml`; verify by rendering offline with and without it
-- [ ] 1.2 Stop writing `allowFrom` in `scripts/local-env.sh helm-values`; verify by reading the generated file
+- [ ] 1.1 Split the management Ingress into `management` (`/api`, `/health`, no basic auth, body size, timeout, cert-manager) and `management-ui` (`/`), sharing the host and TLS; verify by rendering offline that each path goes to the right object and the other objects are unchanged
+- [ ] 1.2 Add `ingress.management.basicAuth.enabled`, `secrets.managementBasicAuth.user` and `.password` to `common.yaml` and `secrets.yaml.example`, the Secret `management-basic-auth` with a bcrypt htpasswd line, the auth annotations on `management-ui`, and `required` for empty credentials; verify by rendering with and without them
+- [ ] 1.3 Keep the hash while the credentials are unchanged, with `lookup` and the credentials annotation, and keep `helmfile diff` quiet if the pinned helm-diff allows `--dry-run=server`; verify with two `helmfile sync` runs on a local cluster showing the same Secret, and a password change showing a new one
+- [ ] 1.4 Add `whitelist-source-range` to both Ingress objects only when `allowFrom` is set, and describe it as optional in `common.yaml`; verify by rendering both cases
 
 ## 2. Checks
 
-- [ ] 2.1 In `scripts/check-helm-values.py`, replace the check that refuses a management Ingress without an allowlist with checks that it renders without the annotation, and that a set allowlist is carried exactly; verify it passes, and that it fails against a chart that still requires the allowlist or drops a set one
+- [ ] 2.1 In `scripts/check-helm-values.py`, cover: no allowlist, an allowlist on both objects, the login on, the login on without a user or without a password, `/api` and `/health` without basic auth, no plain password in any rendered object, the moved body size, timeout and TLS checks, and the basic-auth secret keys; verify it passes, and fails against a chart that puts basic auth on `/api`, leaks the password, or drops the allowlist from one object
 
-## 3. Local cluster
+## 3. Management API
 
-- [ ] 3.1 On a local kind cluster, through an explicit kubeconfig and with no allowlist, check that the management UI and API answer through the Ingress, that `ingress-check.py` passes, and that a change without an admin token gets `401`; verify on the local cluster, and delete it afterwards
+- [ ] 3.1 Treat a non-Bearer `Authorization` header as no token on the read routes, keep refusing a bad or non-admin Bearer token, and keep `401` on admin routes; verify with API tests for a `Basic` header on a read and on a change, and a non-admin Bearer token on a read, and that the read test fails against the old code
 
-## 4. Documents
+## 4. Local cluster
 
-- [ ] 4.1 Update `helm/README.md`: the allowlist as optional, when to use one, the client's real address (`externalTrafficPolicy: Local` or the PROXY protocol), and running helmfile from `helm/` or with `-f helm/helmfile.yaml.gotmpl`, keeping the `.gotmpl` name; check the statements about the file's name with the pinned helmfile offline; verify by reading
-- [ ] 4.2 Update `architecture.md`'s row for the management GUI, and step 1 of connecting an external participant in `management-api.md`; verify with a search for `allowFrom` and "allowlist"
+- [ ] 4.1 In `scripts/local-env.sh`, stop writing `allowFrom`, turn the UI login on, and generate a basic-auth password kept in `.local/credentials.env` and written to `.local/helm-secrets.yaml`; verify on a new local cluster
+- [ ] 4.2 Extend `scripts/ingress-check.py` to check `/` with and without the login, `/api` without it, and a `Basic` header on a read and on a change; verify on a local cluster with an Ingress controller, through an explicit kubeconfig
+- [ ] 4.3 With the login on, run `ingress-check.py`, `management-check.py` and `contract_test.py --local`; verify all pass, and delete the cluster afterwards
+
+## 5. Documents
+
+- [ ] 5.1 Update `helm/README.md`: the UI login and its settings, TLS with it, the token on `/api`, the optional allowlist and when it helps, the client's real address, the Secret in `helmfile diff`, and running helmfile from `helm/` or with `-f`, warning against duplicating or renaming `helmfile.yaml.gotmpl` as `helmfile.yaml`; check the helmfile statements with the pinned version offline; verify by reading
+- [ ] 5.2 Update `architecture.md`'s row for the management GUI, and `management-api.md` ("Authentication", "What is public", and step 1 for external participants); verify with a search for `allowFrom`, "allowlist" and "Any other token"

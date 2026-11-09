@@ -4,24 +4,34 @@ Issue: #56
 
 ## Why
 
-Today the chart refuses to render a management Ingress without `ingress.management.allowFrom`, under the `security-hardening` requirement "Management Ingress needs an allowlist". IP allowlists are hard to keep right. Home and mobile addresses change, and behind a cloud load balancer nginx often sees the load balancer's address, not the client's. Then either everyone is refused or a wide range has to be allowed.
+Today the chart refuses to render a management Ingress without `ingress.management.allowFrom`. This is the `security-hardening` requirement "Management Ingress needs an allowlist". An operator often can't know the right addresses before deploying:
+- home and mobile addresses change;
+- behind a cloud load balancer, nginx often sees the load balancer's address, not the client's.
 
-Management already authenticates every change with a Keycloak admin token. Reads without a token give only the public view, by design, because external adapters need it. The allowlist is an extra layer, not the access control.
+Operators want a simple login in front of the UI instead. Basic auth can't cover the API: the UI and external adapters call `/api` with `Authorization: Bearer <token>`, which is the same header, and adapters can't answer a password prompt. So the login goes on the UI, and `/api` keeps the Keycloak admin token that already protects every change.
 
 ## What Changes
 
-- **The chart.** The management Ingress gets `nginx.ingress.kubernetes.io/whitelist-source-range` only when `ingress.management.allowFrom` is set. Without it, the Ingress renders with no allowlist instead of failing.
-- **`helm/common.yaml`.** The comment says `allowFrom` is optional: empty means any address. An operator who sets it must include external participants' adapters.
-- **`scripts/check-helm-values.py`.**
-  - It checks both cases: no allowlist renders without the annotation, and a set allowlist is carried exactly.
-  - The check that a management Ingress without an allowlist is refused goes away.
-- **`scripts/local-env.sh`** stops writing `allowFrom: "0.0.0.0/0"` into the local cluster's values.
+- **Two Ingress objects for the management host:**
+  - `management-ui` routes `/`, the UI and its static files, with nginx basic auth when `ingress.management.basicAuth.enabled` is true.
+  - `management` routes `/api` and `/health`, with no basic auth.
+
+  Both share the host and TLS settings.
+- **Credentials.**
+  - The username and password go in the secrets file, as `secrets.managementBasicAuth.user` and `.password`, and `secrets.yaml.example` lists them.
+  - The chart writes only a bcrypt htpasswd hash, into a Secret `management-basic-auth`.
+  - With the login on, rendering stops when either is empty, naming it.
+  - The hash stays the same across installs and upgrades while the credentials don't change (see the design).
+- **The management API ignores basic credentials.** An `Authorization` header whose scheme isn't `Bearer` counts as no token. Reads give the public view, and changes give `401`, as without a token. A malformed or non-admin `Bearer` token is refused as today.
+- **The allowlist is optional.** `whitelist-source-range` is added only when `ingress.management.allowFrom` is set. When it is set, both management Ingress objects carry it.
+- **Checks and tests:**
+  - `scripts/check-helm-values.py` covers each case, and checks that no plain password appears in any rendered object.
+  - The management API tests cover a `Basic` header on a read and on a change.
+- **The local cluster.** `scripts/local-env.sh` stops writing `allowFrom: "0.0.0.0/0"`. It turns the UI login on, with a generated password kept in `.local/`. `scripts/ingress-check.py` checks the UI login through the Ingress.
 - **Documents:**
-  - `helm/README.md` describes the allowlist as optional, explains when to use one, and says that nginx must see the client's real address for it to work, for example with `externalTrafficPolicy: Local` or the PROXY protocol.
-  - The README also says to run helmfile from `helm/` after `source ./env.sh`, or with `-f helm/helmfile.yaml.gotmpl` from elsewhere, and to keep the file's `.gotmpl` name.
-  - `architecture.md` ("What is and is not publicly reachable") says management is reachable through its Ingress, protected by the Keycloak admin login, with an optional allowlist.
-  - `management-api.md` tells an external participant's operator to add its address to the allowlist only if one is set.
-- **Spec.** In `security-hardening`, "Management Ingress needs an allowlist" becomes "Management Ingress allowlist", with a scenario for each case.
+  - `helm/README.md` and `architecture.md` describe the UI login, the token on `/api`, the optional allowlist, when an allowlist still helps, and that nginx must see the client's real address for it to work.
+  - The README covers running helmfile from `helm/` after `source ./env.sh`, or with `-f helm/helmfile.yaml.gotmpl`. It warns against duplicating or renaming `helmfile.yaml.gotmpl` as `helmfile.yaml`.
+  - `management-api.md` changes its step for external participants, and says how a `Basic` header is treated.
 
 ## Capabilities
 
@@ -31,19 +41,20 @@ None.
 
 ### Modified Capabilities
 
-- `security-hardening`: the management Ingress's allowlist is optional.
+- `security-hardening`: "Management Ingress needs an allowlist" becomes "Management Ingress access": the UI login, `/api` without basic auth, and the optional allowlist.
+- `management-api`: basic credentials are treated as no token.
 
 ## Out of Scope
 
-- Basic auth at the Ingress. The maintainer decided against it. It would use the same `Authorization` header as the admin token, and external adapters would need a shared password.
-- A rate limit on `POST /api/admin/token`. The maintainer decided to leave it as it is.
-- Authentication in front of management at the Ingress, such as oauth2-proxy or nginx `auth-url`.
+- A Keycloak login in front of management, such as oauth2-proxy or nginx `auth-url`.
+- A rate limit on `POST /api/admin/token`.
 - The gateway and DSP gateway Ingresses.
-- Management's own token checks.
 
 ## Impact
 
 - `manifest.md`: none affected.
 - `architecture.md`: the row for the management GUI in "What is and is not publicly reachable".
-- `helm/README.md`, `helm/common.yaml`, `management-api.md` (step 1 of connecting an external participant).
-- `helm/charts/management/templates/ingress.yaml`, `scripts/check-helm-values.py` and `scripts/local-env.sh`.
+- `helm/README.md`, `helm/common.yaml`, `helm/environment/secrets.yaml.example`, and the management chart's templates.
+- `management-api.md`: "Authentication", "What is public" under "Reads", and step 1 of connecting an external participant.
+- `management/api` (`tokens.py` and the read routes in `main.py`), and its tests.
+- `scripts/check-helm-values.py`, `scripts/local-env.sh` and `scripts/ingress-check.py`.
