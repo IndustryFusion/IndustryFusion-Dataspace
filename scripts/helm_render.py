@@ -41,6 +41,7 @@ CANARY_SECRETS = {
         "postgres": {"user": "canary-pg-user", "password": "canary-pg-password"},
         "s3": {"accessKey": "canary-s3-access", "secretKey": "canary-s3-secret"},
         "adminClientSecret": "canary-admin-secret",
+        "managementBasicAuth": {"user": "canary-ui-user", "password": "canary-ui-password"},
     }
 }
 

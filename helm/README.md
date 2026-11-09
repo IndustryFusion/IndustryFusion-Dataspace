@@ -51,7 +51,7 @@ source helm/env.sh
 | `MAIN_VERSION` | `latest` | the images' tag |
 | `HELM_VERSION` | `3.14.0` | the oldest Helm `bootstrap.sh` accepts |
 | `HELMFILE_VERSION` | `0.169.2` | the helmfile `bootstrap.sh` installs, for Linux or macOS on amd64 or arm64. `bootstrap.sh` holds the checksums |
-| `HELM_DIFF_PLUGIN` | `3.15.11` | the helm-diff plugin `bootstrap.sh tools` installs if none is, for `helmfile diff` and `helmfile apply` |
+| `HELM_DIFF_PLUGIN` | `3.15.11` | the helm-diff plugin `bootstrap.sh tools` installs if none is, for `helmfile diff` and `helmfile apply`. An installed one has to be 3.9.4 or later, for `--dry-run=server` |
 
 A variable already exported keeps its value, even an empty one, so you can export them before sourcing, or edit `env.sh` in a copy you keep with your installation. Export them on their own line: `LOCAL_REGISTRY=... source helm/env.sh` on one line doesn't keep the value after `source`. It holds no secret. The charts and `scripts/build-images.sh` read the same three image variables, so what the script pushes is what the charts deploy. Without `env.sh`, helmfile stops and names the variable that is missing.
 
@@ -83,6 +83,10 @@ The charts use the same variables for the four fixed services, and pass them to 
 
 Run these from `helm/`, in a shell where `env.sh` is sourced.
 
+**Running helmfile.** Run helmfile from `helm/` after `source ./env.sh`, or from elsewhere with `-f helm/helmfile.yaml.gotmpl`, after `source helm/env.sh`. Keep the file's name. Don't make a `helmfile.yaml` from it, by copying or renaming:
+- with both files present, helmfile refuses to start;
+- helmfile v1 reads a `helmfile.yaml` as plain YAML, so the template in it fails to parse. The pinned 0.169.2 still renders it, but the `.gotmpl` name works with both.
+
 1. **Prepare the cluster.** This checks Helm, installs `helmfile` under `.tools` and helm-diff if needed, and creates both namespaces. It can be repeated.
 
    ```bash
@@ -96,7 +100,7 @@ Run these from `helm/`, in a shell where `env.sh` is sourced.
    cp environment/secrets.yaml.example environment/secrets.yaml
    ```
 
-3. **Fill in the environment.** Set your installation's values in `environment/default.yaml`: at least the Ingress hosts and `ingress.management.allowFrom` if you enable the Ingress, and the dependencies' addresses if they differ from `common.yaml`. Settings not given come from `common.yaml`. Keep a real installation's hosts out of this repository: keep the file in a private one, or put them in a file of your own and set `DATASPACE_VALUES_FILE` to its path, which is layered after `environment/default.yaml`.
+3. **Fill in the environment.** Set your installation's values in `environment/default.yaml`: at least the Ingress hosts if you enable the Ingress, whether the management UI has a login (see "Management access"), and the dependencies' addresses if they differ from `common.yaml`. Settings not given come from `common.yaml`. Keep a real installation's hosts out of this repository: keep the file in a private one, or put them in a file of your own and set `DATASPACE_VALUES_FILE` to its path, which is layered after `environment/default.yaml`.
 
 4. **Install.** Releases go in order, each waiting until its pods are ready: `common`, then `registry` and `dsp-gateway`, then `gateway`, then `management`.
 
@@ -140,7 +144,8 @@ Set these in `environment/default.yaml`.
 |---|---|
 | `limits.maxUploadBytes`, `limits.maxJsonBytes` | The one place these are set. The gateway, management and, through management, every new adapter read them. The gateway Ingress allows exactly `maxUploadBytes`, and the management Ingress `maxJsonBytes`. A participant that already exists gets a new value when it is registered again |
 | `dependencies.keycloak.url` | Used by every service, and compared exactly with a token's issuer. Keycloak has to be reachable at this address from inside the cluster, and tokens have to be minted through it. No addresses are fixed: use a name your cluster resolves |
-| `ingress.management.allowFrom` | Who reaches management, required with its Ingress. See "What is and is not publicly reachable" in [architecture.md](../architecture.md). External participants' adapters read participants there, so include them |
+| `ingress.management.basicAuth.enabled` | A username and password in front of the management UI, from `secrets.managementBasicAuth` in the secrets file. Off by default. See "Management access" below |
+| `ingress.management.allowFrom` | Optional. The addresses allowed to reach management, on both its Ingress objects. Empty means any address. See "Management access" below |
 | `networkPolicy.enabled` | On by default. See "Security Layers" in [architecture.md](../architecture.md) |
 | `dependencies.s3.iamUrl` | For an S3 identity per participant. See below |
 | `ingress.dspGateway.enabled`, `ingress.dspGateway.host` | Exposes the DSP gateway, for external participants. Off by default, and hosted-only installations leave it off. It routes to every hosted connector's DSP and public ports. See "DSP Gateway" in [architecture.md](../architecture.md) |
@@ -148,6 +153,37 @@ Set these in `environment/default.yaml`.
 | `ingress.tls.certManagerClusterIssuer` | With `ingress.tls.enabled`, adds the cert-manager annotation. Without it, the named TLS Secrets have to exist |
 
 With external participants, connectors push content through the gateway, and through the DSP gateway's addresses. A connector's HTTP client reuses a connection for up to 5 minutes, and a push on a connection the other end has dropped fails the transfer. The services keep idle connections for longer. So must anything in front of them: with ingress-nginx, set `keep-alive` above 300 in its ConfigMap, as its default is 75 seconds.
+
+### Management access
+
+Management has two Ingress objects on its host:
+- **`management`** routes `/api` and `/health`. Every change there needs a Keycloak admin token. A read without a token gives only the public view, which external participants' adapters use.
+- **`management-ui`** routes the rest: the UI and its files.
+
+**The UI login.** Set `ingress.management.basicAuth.enabled: true`, and put a username and password in the secrets file:
+
+```yaml
+secrets:
+  managementBasicAuth:
+    user: admin
+    password: <a long random password>
+```
+
+- The browser then asks for them before showing the UI. In the UI, an administrator still signs in with the admin client, which gives the token `/api` needs.
+- `/api` and `/health` never ask for the login. The UI and adapters send a bearer token there, and adapters can't answer a password prompt.
+- Management treats the Basic credentials a browser sends with every call after the login as no token.
+- Rendering stops if the login is on without a username or a password.
+- Only a bcrypt hash goes into the cluster, in the Secret `management-basic-auth`. The hash is kept while the credentials stay the same, so a repeated `helmfile sync` leaves the Secret alone. `helmfile diff` and `apply` render against the cluster for this (`diffArgs: ["--dry-run=server"]` in `helmfile.yaml.gotmpl`), so they don't show it as changed either. `helmfile template` has no cluster, and writes a new hash each time.
+- To change the password, change it in the secrets file and run `helmfile -e default sync`.
+- Use the login with TLS (`ingress.tls.enabled`): without it, the browser sends the password in clear text.
+- Tries are limited per client address, as each costs a bcrypt check in the Ingress controller: `ingress.management.basicAuth.limitRps` requests a second (5, with a burst of five times that) and `limitConnections` open connections (10). Over them, nginx answers `503`. `/api` isn't limited.
+- **Rolling back** with `helm rollback management` to a revision from before the login (one Ingress, `management`, on `/`): delete `management-ui` first, with `kubectl -n "$NAMESPACE" delete ingress management-ui`. Otherwise ingress-nginx refuses the old object, as the host and `/` are already taken.
+
+**Certificates.** Set `ingress.tls.certManagerClusterIssuer` for cert-manager, not a `cert-manager.io/...` annotation in `ingress.annotations`. That one goes on every Ingress object, and on both of management's, cert-manager would make two Certificates for one Secret.
+
+**The allowlist** is optional. With `ingress.management.allowFrom`, such as `10.0.0.0/8,192.0.2.10/32`, both objects only admit those addresses. Use it to keep management to known networks, such as an office or a VPN.
+- Include every external participant's adapter address, as adapters read participants there.
+- nginx has to see the client's real address, or the list matches the load balancer instead. On most clouds that means `externalTrafficPolicy: Local` on the Ingress controller's Service, or the PROXY protocol, with `use-proxy-protocol: "true"` in the controller's ConfigMap and the load balancer set to send it.
 
 ### An S3 identity per participant
 

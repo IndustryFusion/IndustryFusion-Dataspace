@@ -130,6 +130,11 @@ install_helm_diff() {
   local installed current_helm
   installed=$(helm plugin list 2>/dev/null | awk '$1 == "diff" { print $2 }')
   if [ -n "$installed" ]; then
+    # helmfile.yaml.gotmpl gives helm-diff --dry-run=server, which it takes from 3.9.4.
+    if ! at_least "$installed" 3.9.4; then
+      echo "helm-diff $installed is older than 3.9.4, which helmfile diff and apply need here. Run: helm plugin update diff" >&2
+      exit 1
+    fi
     echo "helm-diff $installed is present"
     return
   fi

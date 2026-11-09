@@ -61,17 +61,28 @@ participants:
 ingress:
   enabled: false
   className: nginx
-  # Extra annotations, for both Ingress objects.
+  # Extra annotations, for every Ingress object. Not cert-manager's: set ingress.tls.certManagerClusterIssuer, which
+  # goes on one object per TLS Secret. On both of management's, cert-manager would make two Certificates for one.
   annotations: {}
   gateway:
     host: ""
     # How long the Ingress waits on an upload or a download, in seconds.
     transferTimeoutSeconds: 3600
+  # Two Ingress objects on this host: /api and /health with the Keycloak admin token, and the UI on / .
   management:
     host: ""
-    # Addresses allowed to reach it, comma-separated, required with the Ingress. Include external participants'
-    # adapters, as they read participants here.
+    # Optional. Addresses allowed to reach management, comma-separated, on both objects. Empty means any address.
+    # If you set it, include external participants' adapters, as they read participants here, and make sure nginx
+    # sees clients' real addresses. See helm/README.md.
     allowFrom: ""
+    # A username and password in front of the UI only, from secrets.managementBasicAuth in the secrets file. /api
+    # keeps the admin token. Use it with TLS.
+    basicAuth:
+      enabled: false
+      # Per client address on the UI, as each try costs a bcrypt check: requests a second (with a burst of five
+      # times as many), and open connections. Over them, nginx answers 503.
+      limitRps: 5
+      limitConnections: 10
   # For external participants. Hosted-only installations leave this off.
   dspGateway:
     enabled: false

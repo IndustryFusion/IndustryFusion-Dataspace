@@ -19,6 +19,7 @@
 import asyncio
 import logging
 import pathlib
+import posixpath
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -184,9 +185,11 @@ async def admin_token(
 
 
 async def shown_as_token_allows(services: Services, authorization: str | None, records: list[dict]) -> list[dict]:
-    """A token that isn't an administrator's is refused, not treated as no token."""
-    if authorization is not None:
-        await services.tokens.require_admin(authorization)
+    """A bearer token that isn't an administrator's is refused, not treated as no token. A header of another
+    scheme, such as Basic from the UI's login, is treated as none."""
+    bearer = services.tokens.bearer(authorization)
+    if bearer is not None:
+        await services.tokens.require_admin(bearer)
     else:
         records = [public_view(record) for record in records]
     return await services.companies.add_details(records)
@@ -366,10 +369,17 @@ async def read_policy(
     }
 
 
+def outside_the_ui(path: str) -> bool:
+    """Whether a path is the API's or the probe's once normalised, as nginx normalises it to route it. The Ingress
+    sends //api/x or /./api/x to management's no-login object, so the page must not answer it there."""
+    normal = posixpath.normpath(f"/{path}").lstrip("/")
+    return normal in ("api", "health") or normal.startswith("api/")
+
+
 @app.get("/{path:path}", include_in_schema=False)
 async def user_interface(path: str, services: Services = Depends(services_of)) -> FileResponse:
     """The built UI. A path it doesn't have gets its page, as the page has the screens. Declared last."""
-    if path == "api" or path.startswith("api/") or "\x00" in path:
+    if "\x00" in path or outside_the_ui(path):
         raise HTTPException(status_code=404, detail="Not found")
     root = pathlib.Path(services.settings.ui_dir).resolve()
     wanted = (root / path).resolve()

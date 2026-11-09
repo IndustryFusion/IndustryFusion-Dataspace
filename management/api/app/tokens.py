@@ -85,6 +85,13 @@ class AdminTokens:
         except jwt.PyJWTError as error:
             raise refused from error
 
+    @staticmethod
+    def bearer(authorization: str | None) -> str | None:
+        """The header if it is a bearer token, whatever its contents. Any other scheme, such as the Basic
+        credentials a browser sends after the UI's login, counts as no token."""
+        scheme, _, _ = (authorization or "").partition(" ")
+        return authorization if scheme.lower() == "bearer" else None
+
     async def require_admin(self, authorization: str | None) -> str:
         """Return the bearer token, if it belongs to an administrator."""
         scheme, _, token = (authorization or "").partition(" ")

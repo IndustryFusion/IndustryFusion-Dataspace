@@ -103,6 +103,45 @@ def test_a_bad_token_on_a_read_is_refused(world, path):
     assert world.client.get(path, headers={"Authorization": "Bearer nonsense"}).status_code == 401
 
 
+BASIC = {"Authorization": "Basic YWRtaW46c2VjcmV0"}
+
+
+@pytest.mark.parametrize("path", PUBLIC_READS)
+def test_basic_credentials_on_a_read_give_the_public_view(world, path):
+    """After the UI's login, a browser sends its Basic credentials with every call, which counts as no token."""
+    setup_pair(world)
+    answer = world.client.get(path, headers=BASIC)
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == world.client.get(path).json()
+    for record in records_in(answer):
+        assert record["adapter_url"] is None and record["dsp_url"] is None
+
+
+@pytest.mark.parametrize("scheme", ["Basic", "basic", "Digest", "Negotiate"])
+def test_any_scheme_but_bearer_on_a_read_is_no_token(world, scheme):
+    setup_pair(world)
+    answer = world.client.get(f"/api/participants/{FO}", headers={"Authorization": f"{scheme} {make_token()}"})
+    assert answer.status_code == 200 and answer.json()["adapter_url"] is None
+
+
+@pytest.mark.parametrize("path", PUBLIC_READS)
+def test_a_bearer_token_without_the_role_on_a_read_is_still_refused(world, path):
+    setup_pair(world)
+    other = {"Authorization": f"Bearer {make_token(roles=('participant:a',))}"}
+    assert world.client.get(path, headers=other).status_code == 403
+    assert world.client.get(path, headers={"Authorization": "Bearer"}).status_code == 401
+
+
+def test_basic_credentials_on_a_change_give_401_and_change_nothing(world):
+    setup_pair(world)
+    before = world.client.get("/api/participants").json()
+    body = {"participant_id": "urn:test:new", "participant_type": "factory_owner"}
+    assert world.client.post("/api/participants", json=body, headers=BASIC).status_code == 401
+    assert world.client.delete(f"/api/participants/{FO}", headers=BASIC).status_code == 401
+    assert world.client.get(f"/api/participants/{FO}/credentials", headers=BASIC).status_code == 401
+    assert world.client.get("/api/participants").json() == before
+
+
 @pytest.mark.parametrize("path", [f"/api/participants/{FO}/capabilities", f"/api/policy?fo={FO}&mb={MB}"])
 def test_who_has_access_needs_an_administrator(world, path):
     setup_pair(world)
@@ -375,6 +414,34 @@ def test_unknown_api_paths_are_not_given_the_page(world, tmp_path, monkeypatch):
     monkeypatch.setattr(world.services, "settings", dataclasses.replace(world.settings, ui_dir=str(tmp_path)))
     answer = world.client.get("/api/nothing")
     assert answer.status_code == 404 and answer.json() == {"detail": "Not found"}
+
+
+@pytest.mark.parametrize(
+    "path", ["//api/x", "//api", "/./api/x", "/x/../api/x", "///api//x", "//health", "/./health", "/x/../health"]
+)
+def test_paths_nginx_routes_to_the_api_are_not_given_the_page(world, tmp_path, monkeypatch, path):
+    """nginx merges slashes and resolves dot segments before it picks the Ingress, and sends the raw path on. A path
+    it routes to the API's object, which has no login, must not get the UI's page."""
+    (tmp_path / "index.html").write_text("<html>the page</html>")
+    monkeypatch.setattr(world.services, "settings", dataclasses.replace(world.settings, ui_dir=str(tmp_path)))
+    # In full, as "//api/x" alone reads as a host named api.
+    answer = world.client.get(f"http://testserver{path}")
+    # httpx resolves dot segments itself, so /./health reaches the real probe, which is right too.
+    assert "the page" not in answer.text, (path, answer.status_code)
+
+
+@pytest.mark.parametrize(
+    ("path", "outside"),
+    [
+        ("api/x", True), ("/api/x", True), ("api", True), ("health", True), ("./api/x", True), ("x/../api/x", True),
+        ("a/./../api", True), ("", False), ("policies", False), ("assets/app.js", False), ("apix", False),
+        ("health/x", False), ("api-docs", False),
+    ],
+)  # fmt: skip
+def test_which_paths_are_outside_the_ui(path, outside):
+    from app.main import outside_the_ui
+
+    assert outside_the_ui(path) is outside
 
 
 def test_without_a_built_ui(world):

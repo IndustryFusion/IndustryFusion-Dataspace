@@ -1,0 +1,54 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+{{- /*
+  The UI login's htpasswd line, a bcrypt hash of the credentials in the secrets file. The plain password is in no
+  object. Helm's htpasswd picks a new salt each time, so the line in the cluster is kept while the credentials are
+  the same. To tell, the Secret's data, which helm-diff masks, also holds a fingerprint: the SHA-256 of the line
+  with the password, salted by the line's own random bcrypt salt, so no plain or unsalted hash of the password is
+  shown anywhere. Without a cluster, as in helmfile template, lookup finds nothing and a new line is written.
+  See helm/README.md.
+*/}}
+{{- $settings := .Values.ingress.management -}}
+{{- if and .Values.ingress.enabled $settings.basicAuth $settings.basicAuth.enabled }}
+{{- $given := .Values.secrets.managementBasicAuth | default dict }}
+{{- $user := required "secrets.managementBasicAuth.user is required with ingress.management.basicAuth.enabled" $given.user }}
+{{- $password := required "secrets.managementBasicAuth.password is required with ingress.management.basicAuth.enabled" $given.password }}
+{{- if contains ":" $user }}
+{{- fail "secrets.managementBasicAuth.user can't contain a colon, which ends the user in an htpasswd line" }}
+{{- end }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace "management-basic-auth" | default dict }}
+{{- $stored := $existing.data | default dict }}
+{{- $line := "" }}
+{{- if and (hasKey $stored "auth") (hasKey $stored "fingerprint") }}
+{{- $old := index $stored "auth" | b64dec }}
+{{- if and (hasPrefix (printf "%s:" $user) $old) (eq (printf "%s:%s" $old $password | sha256sum) (index $stored "fingerprint" | b64dec)) }}
+{{- $line = $old }}
+{{- end }}
+{{- end }}
+{{- if not $line }}
+{{- $line = htpasswd $user $password }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: management-basic-auth
+  labels: {{- include "management.labels" . | nindent 4 }}
+type: Opaque
+data:
+  auth: {{ $line | b64enc | quote }}
+  fingerprint: {{ printf "%s:%s" $line $password | sha256sum | b64enc | quote }}
+{{- end }}
