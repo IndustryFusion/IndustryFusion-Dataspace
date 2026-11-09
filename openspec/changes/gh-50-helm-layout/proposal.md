@@ -21,7 +21,7 @@ The deployment lives under `deploy/helm/`, in one chart that switches on a `comp
   - The management service account, its participant RBAC and the participant network policies move to the `management` chart.
   - The registry's network policy moves to the `registry` chart.
 - **The rendered objects stay the same, apart from labels.** A new check compares the new layout's output with the old layout's, with default settings and with the local cluster's settings.
-- **`scripts/build-images.sh`** reads `LOCAL_REGISTRY`, `MAIN_REPO` and `MAIN_VERSION` instead of `REGISTRY`, `REPO` and `VERSION`, with the same defaults. Its config file example, its tests, `scripts/check-image-names.py` and CI change with it.
+- **`scripts/build-images.sh`** reads `LOCAL_REGISTRY`, `MAIN_REPO` and `MAIN_VERSION` from the shell instead of `REGISTRY`, `REPO` and `VERSION`, with the same defaults. Its config file, `scripts/build-images.env.example` and `BUILD_IMAGES_CONFIG` are removed, so `helm/env.sh` is the one place to set them. Its tests, `scripts/check-image-names.py` and CI change with it.
 - **`scripts/local-env.sh services`** deploys the `default` environment with helmfile. It passes the local cluster's hosts and settings in a generated values file in `.local/`, next to the generated secrets file. `deploy/local/services.yaml` and `deploy/local/network-policies.yaml`, which duplicated the chart, are removed.
 - **Moved with the layout:** CI's lint and render steps, `scripts/check-helm-values.py`, and the guide. `deploy/README.md` becomes `helm/README.md`, and other documents that name `deploy/helm` point to `helm/`.
 
@@ -34,7 +34,7 @@ None.
 ### Modified Capabilities
 
 - `helm-deployment`: the layout, the single environment, `env.sh`, the charts and their releases, and the check that the output is unchanged.
-- `image-build`: the variables the script reads, and the guide's new place.
+- `image-build`: the variables the script reads, the removed config file, and the guide's new place.
 - `local-environment`: `scripts/local-env.sh services` deploys the services with the chart.
 - `contract-tests`: the deployment guide's new place.
 

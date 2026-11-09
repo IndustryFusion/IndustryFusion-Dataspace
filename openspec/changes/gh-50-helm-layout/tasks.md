@@ -13,7 +13,7 @@
 
 ## 3. Images
 
-- [ ] 3.1 Make `scripts/build-images.sh` read `LOCAL_REGISTRY`, `MAIN_REPO` and `MAIN_VERSION`, and say so when it finds `REGISTRY`, `REPO` or `VERSION`; update `scripts/build-images.env.example` and `scripts/build-images-test.py`; verify with the tests, including the old-name message, and a revert check
+- [ ] 3.1 Make `scripts/build-images.sh` read `LOCAL_REGISTRY`, `MAIN_REPO` and `MAIN_VERSION` from the shell only, and say so when it finds `REGISTRY`, `REPO` or `VERSION`; remove the config file, `BUILD_IMAGES_CONFIG`, `scripts/build-images.env.example`, its `.gitignore` entry and their tests; update `scripts/build-images-test.py`; verify with the tests, including the old-name message and that a `scripts/build-images.env` is not read, and a revert check
 - [ ] 3.2 Make `scripts/check-image-names.py` render the `default` environment with helmfile from the same three variables; verify it passes, and fails when a chart's image name is changed
 
 ## 4. The local cluster

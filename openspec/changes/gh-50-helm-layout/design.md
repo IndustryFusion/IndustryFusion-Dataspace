@@ -13,7 +13,7 @@ DigitalTwin and XANA lay out their deployments as a top-level `helm/` folder wit
 
 ## Decisions
 
-The maintainer took the decisions in the first five sections. The rest are proposals, each with its alternatives.
+The maintainer took the decisions in the first five sections, accepted the proposals in the sections after them, and decided the build script's config file is dropped.
 
 ### One environment (maintainer's decision)
 
@@ -46,7 +46,9 @@ Operators run `source helm/env.sh` before `helmfile` and `scripts/build-images.s
 
 `values.yaml.gotmpl` sets `images.registry`, `images.repo` and `images.version` from `LOCAL_REGISTRY`, `MAIN_REPO` and `MAIN_VERSION`. The charts render `[<images.registry>/]<images.repo>/<name>:<images.version>` as today, and the management API still receives `MAIN_REGISTRY`, `MAIN_REPO` and `MAIN_VERSION` for participant images.
 
-`scripts/build-images.sh` reads `LOCAL_REGISTRY`, `MAIN_REPO` and `MAIN_VERSION` in place of `REGISTRY`, `REPO` and `VERSION`, with the same defaults, validation and precedence: the shell, then `scripts/build-images.env`, then the defaults. `scripts/build-images.env.example`, `scripts/build-images-test.py`, `scripts/check-image-names.py` and the CI job use the new names. The old names are not read, so a value left in them is ignored. The script says so if it finds `REGISTRY`, `REPO` or `VERSION` set, so an old habit doesn't silently push somewhere else.
+`scripts/build-images.sh` reads `LOCAL_REGISTRY`, `MAIN_REPO` and `MAIN_VERSION` in place of `REGISTRY`, `REPO` and `VERSION`, from the shell only, with the same defaults when a variable is unset and the same validation. A variable set in the shell, even empty, wins over the default.
+
+The maintainer decided to drop `scripts/build-images.env`, `scripts/build-images.env.example` and `BUILD_IMAGES_CONFIG`: `helm/env.sh` is the one place to set the three values, for the charts and the script alike. The script's file parsing, its tests and its `.gitignore` entry go with it. `scripts/build-images-test.py`, `scripts/check-image-names.py` and the CI job use the new names. The old names are not read, so a value left in them is ignored. The script says so if it finds `REGISTRY`, `REPO` or `VERSION` set, so an old habit doesn't silently push somewhere else.
 
 `images.*` and `namespaces.*` leave `common.yaml`, so each has one source. `images.pullPolicy` stays in `common.yaml`.
 
@@ -121,11 +123,8 @@ The `helm` job sources `helm/env.sh`, installs the pinned helmfile with `bootstr
 
 ## Conflicts with existing documents and specs
 
-- **`env.sh` and the build script's config file.** After `source helm/env.sh`, all three image variables are set in the shell, so `scripts/build-images.env` no longer applies: the shell comes first. The file still works when the script runs without `env.sh`. `helm/README.md` and the example file say so.
-  - Alternative: `env.sh` could leave a variable unset when the config file sets it, but then helmfile and the script could see different values.
-  - Alternative: dropping the config file. This contradicts the maintainer's instruction to update it.
-  - The maintainer may prefer either.
-- **`image-build` spec.** Its requirements name `REGISTRY`, `REPO`, `VERSION` and `deploy/README.md`. They change to the new names and `helm/README.md`. The behaviour is otherwise unchanged.
+- **The build script's config file.** After `source helm/env.sh`, the shell would shadow `scripts/build-images.env`. The maintainer decided to drop the file, so `env.sh` is the only place for the three values, and the `image-build` requirement "Configuration file and precedence" is removed.
+- **`image-build` spec.** Its requirements name `REGISTRY`, `REPO`, `VERSION` and `deploy/README.md`. They change to the new names and `helm/README.md`, and the config file requirement is removed. The behaviour is otherwise unchanged.
 - **`helm-deployment` spec.** "Installing from the documented procedure" names `deploy/README.md`, and "Layered values and secrets" says "an environment's values". Both change for the single `default` environment and the new paths.
 - **`contract-tests` spec.** It names `deploy/README.md`.
 - **Default image version.** `common.yaml` today defaults to `dev` with no registry. With `env.sh` the defaults become `k3d-iff.localhost:12345/dataspace/<name>:latest`, the build script's. This is the maintainer's choice of defaults for `env.sh`. The output check gives the old values explicitly, so it compares like with like.
