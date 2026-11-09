@@ -14,10 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-"""Renders the Helm chart with the example secrets and checks what a review would otherwise have to catch.
+"""Renders helm/ with canary secrets and checks what a review would otherwise have to catch.
 
-Each environment file must: keep the Ingress body sizes equal to the services' limits, keep credentials
-in the Secret, use no fixed cluster addresses, and let each pod find its settings. Needs helm and PyYAML.
+The default environment, alone and with the values file scripts/local-env.sh writes, must: keep the Ingress body
+sizes equal to the services' limits, keep credentials in the Secret, hold no IP address, and let each pod find its
+settings. The releases must be in the spec's order with its needs, and listing them must work without a secrets
+file, while rendering stops without one. Needs bash, helm, helmfile and PyYAML.
 """
 
 import pathlib
@@ -27,16 +29,12 @@ import sys
 import tempfile
 
 import yaml
+from helm_render import CANARY_SECRETS as CANARY
+from helm_render import HELM, RELEASES, ROOT
+from helm_render import render as render_helmfile
+from helm_render import run as run_helmfile
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent / "deploy" / "helm"
-COMPONENTS = ["common", "registry", "gateway", "dsp-gateway", "management"]
-CANARY = {
-    "secrets": {
-        "postgres": {"user": "canary-pg-user", "password": "canary-pg-password"},
-        "s3": {"accessKey": "canary-s3-access", "secretKey": "canary-s3-secret"},
-        "adminClientSecret": "canary-admin-secret",
-    }
-}
+COMPONENTS = RELEASES
 IP_ADDRESS = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 BODY_SIZE = "nginx.ingress.kubernetes.io/proxy-body-size"
 ALLOWLIST = "nginx.ingress.kubernetes.io/whitelist-source-range"
@@ -44,20 +42,17 @@ READ_TIMEOUT = "nginx.ingress.kubernetes.io/proxy-read-timeout"
 CERT_MANAGER = "cert-manager.io/cluster-issuer"
 
 
-def render(component: str, environment: pathlib.Path, secrets: str, *extra: str) -> list[dict]:
-    answer = subprocess.run(
-        [
-            "helm", "template", f"dataspace-{component}", str(ROOT / "charts" / "dataspace"),
-            "--namespace", "dataspace",
-            "-f", str(ROOT / "values" / "common.yaml"), "-f", str(environment), "-f", secrets,
-            "--set", f"component={component}", *extra,
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-    )
-    if answer.returncode:
-        raise SystemExit(f"helm template failed for {component}: {answer.stderr}")
-    return [document for document in yaml.safe_load_all(answer.stdout) if document]
+def pairs(extra: tuple[str, ...]) -> tuple[str, ...]:
+    """The key=value pairs of --set arguments."""
+    return tuple(value for flag, value in zip(extra[::2], extra[1::2], strict=True) if flag == "--set")
+
+
+def render(component: str, values_file: str | None, secrets: str, *extra: str) -> list[dict]:
+    return render_helmfile(secrets, release=component, values_file=values_file, state=pairs(extra))
+
+
+def attempt(component: str, secrets: str, *extra: str) -> subprocess.CompletedProcess:
+    return run_helmfile(secrets, release=component, state=pairs(extra))
 
 
 def env_of(objects: list[dict]) -> dict[str, dict]:
@@ -65,7 +60,7 @@ def env_of(objects: list[dict]) -> dict[str, dict]:
     return {entry["name"]: entry for entry in deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
 
 
-def check(environment: pathlib.Path, secrets: str) -> list[str]:
+def check(environment: str | None, secrets: str) -> list[str]:
     problems = []
     by_component = {
         component: render(component, environment, secrets, "--set", "ingress.enabled=true",
@@ -99,29 +94,31 @@ def check(environment: pathlib.Path, secrets: str) -> list[str]:
             problems.append(f"{name}: Ingress body size {size} isn't the limit {wanted}")
 
     # A management Ingress that is open to whoever reaches it isn't a mistake that can be made.
-    attempt = subprocess.run(
-        [
-            "helm", "template", "x", str(ROOT / "charts" / "dataspace"), "-f", str(ROOT / "values" / "common.yaml"),
-            "-f", secrets, "--set", "component=management", "--set", "ingress.enabled=true",
-            "--set", "ingress.management.host=m.example",
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-    )
-    if attempt.returncode == 0 or "ingress.management.allowFrom" not in attempt.stderr:
+    open_ingress = attempt(
+        "management", secrets, "--set", "ingress.enabled=true", "--set", "ingress.management.host=m.example",
+        "--set", "ingress.management.allowFrom=",
+    )  # fmt: skip
+    if open_ingress.returncode == 0 or "ingress.management.allowFrom" not in open_ingress.stderr:
         problems.append("A management Ingress without an allowlist was accepted")
 
     # On by default, and each policy where it belongs.
-    common = {o["metadata"]["name"]: o for o in by_component["common"] if o["kind"] == "NetworkPolicy"}
-    if set(common) != {"adapters", "connectors", "registry"}:
-        problems.append(f"The NetworkPolicies are {sorted(common)}")
-    elif {common[name]["metadata"].get("namespace") for name in ("adapters", "connectors")} != {
+    policies = {
+        o["metadata"]["name"]: (component, o)
+        for component, objects in by_component.items()
+        for o in objects
+        if o["kind"] == "NetworkPolicy"
+    }
+    owners = {name: component for name, (component, _) in policies.items()}
+    if owners != {"adapters": "management", "connectors": "management", "registry": "registry"}:
+        problems.append(f"The NetworkPolicies and their releases are {owners}")
+    elif {policies[name][1]["metadata"].get("namespace") for name in ("adapters", "connectors")} != {
         "dataspace-participants"
     }:
         problems.append("The adapters' and connectors' NetworkPolicies aren't in the participants' namespace")
-    off = render("common", environment, secrets, "--set", "networkPolicy.enabled=false")
-    if any(o["kind"] == "NetworkPolicy" for o in off):
-        problems.append("networkPolicy.enabled=false still renders a NetworkPolicy")
+    for component in ("registry", "management"):
+        off = render(component, environment, secrets, "--set", "networkPolicy.enabled=false")
+        if any(o["kind"] == "NetworkPolicy" for o in off):
+            problems.append(f"{component}: networkPolicy.enabled=false still renders a NetworkPolicy")
 
     without = render("dsp-gateway", environment, secrets, "--set", "ingress.enabled=true")
     if any(o["kind"] == "Ingress" for o in without):
@@ -161,7 +158,7 @@ def check(environment: pathlib.Path, secrets: str) -> list[str]:
         for item in objects:
             if item["kind"] in {"ClusterRole", "ClusterRoleBinding"}:
                 problems.append(f"{component}: a {item['kind']} reaches outside its namespaces")
-    role = next(o for o in by_component["common"] if o["kind"] == "Role")
+    role = next(o for o in by_component["management"] if o["kind"] == "Role")
     if role["metadata"]["namespace"] != "dataspace-participants":
         problems.append("Management's Role isn't limited to the participants' namespace")
 
@@ -194,32 +191,74 @@ def main() -> int:
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as secrets:
         yaml.safe_dump(CANARY, secrets)
         secrets.flush()
-        for environment in sorted((ROOT / "values" / "environments").glob("*.yaml")):
-            for problem in check(environment, secrets.name):
-                problems.append(f"{environment.name}: {problem}")
+        with tempfile.TemporaryDirectory() as folder:
+            local_values = str(pathlib.Path(folder) / "local-values.yaml")
+            subprocess.run([str(ROOT / "scripts" / "local-env.sh"), "helm-values", local_values], check=True,
+                           capture_output=True)  # fmt: skip
+            for name, values_file in (("default", None), ("default with the local cluster's values", local_values)):
+                for problem in check(values_file, secrets.name):
+                    problems.append(f"{name}: {problem}")
 
         # Disagreeing limits have to stop the install.
-        extra = ("--set", "limits.maxUploadBytes=10", "--set", "limits.maxJsonBytes=20")
-        attempt = subprocess.run(
-            [
-                "helm", "template", "x", str(ROOT / "charts" / "dataspace"), "-f", str(ROOT / "values" / "common.yaml"),
-                "-f", secrets.name, "--set", "component=gateway", *extra,
-            ],  # fmt: skip
-            capture_output=True,
-            text=True,
+        limits = attempt(
+            "gateway", secrets.name, "--set", "limits.maxUploadBytes=10", "--set", "limits.maxJsonBytes=20"
         )
-        if attempt.returncode == 0:
+        if limits.returncode == 0 or "limits.maxUploadBytes must not be below" not in limits.stderr:
             problems.append("An upload limit below the JSON limit was accepted")
 
-    # The committed example has to name every secret, with no values.
-    example = yaml.safe_load((ROOT / "values" / "secrets.yaml.example").read_text())["secrets"]
+    # The releases and what each needs, as the helm-deployment spec gives them.
+    built = run_helmfile(str(HELM / "environment" / "secrets.yaml.example"), command="build")
+    if built.returncode:
+        problems.append(f"helmfile build failed: {built.stderr}")
+    else:
+        state = next(document for document in yaml.safe_load_all(built.stdout) if document and "releases" in document)
+        # helmfile gives each need as <namespace>/<release>.
+        releases = [
+            (entry["name"], sorted(need.split("/")[-1] for need in entry.get("needs") or []))
+            for entry in state["releases"]
+        ]
+        wanted = [
+            ("common", []),
+            ("registry", ["common"]),
+            ("gateway", ["registry"]),
+            ("dsp-gateway", ["common"]),
+            ("management", ["dsp-gateway", "gateway", "registry"]),
+        ]
+        if releases != wanted:
+            problems.append(f"The releases and their needs are {releases}, not {wanted}")
+
+    # Listing and removing work without a secrets file. Rendering stops, naming it.
+    missing = "/nonexistent/secrets.yaml"
+    listed = run_helmfile(missing, command="list")
+    if listed.returncode or "management" not in listed.stdout:
+        problems.append(f"helmfile list fails without a secrets file: {listed.stderr}")
+    rendered = run_helmfile(missing, release="gateway")
+    if rendered.returncode == 0 or f"The secrets file {missing} doesn't exist" not in rendered.stderr:
+        problems.append("A render without a secrets file doesn't stop, naming the file")
+
+    # The committed example has to name every secret the charts read, and nothing else.
+    secret_template = (HELM / "charts" / "common" / "templates" / "secret.yaml").read_text()
+    read = set(re.findall(r"\.Values\.secrets\.([A-Za-z0-9.]+)", secret_template))
+    example_text = yaml.safe_load((HELM / "environment" / "secrets.yaml.example").read_text())["secrets"]
+
+    def leaves(value: dict, prefix: str = "") -> set[str]:
+        found = set()
+        for key, item in value.items():
+            found |= leaves(item, f"{prefix}{key}.") if isinstance(item, dict) else {f"{prefix}{key}"}
+        return found
+
+    if leaves(example_text) != read:
+        problems.append(f"secrets.yaml.example lists {sorted(leaves(example_text))}, the Secret reads {sorted(read)}")
+
+    # The committed example has to hold no values.
+    example = yaml.safe_load((HELM / "environment" / "secrets.yaml.example").read_text())["secrets"]
     if any(value for value in (*example["postgres"].values(), *example["s3"].values(), example["adminClientSecret"])):
         problems.append("secrets.yaml.example holds a value")
 
     for problem in problems:
         print(f"FAIL {problem}")
     if not problems:
-        print("The chart's limits, credentials and addresses are as they should be")
+        print("The charts' limits, credentials, IP addresses, releases and secrets file are as they should be")
     return 1 if problems else 0
 
 

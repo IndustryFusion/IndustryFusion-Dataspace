@@ -69,7 +69,7 @@ Returns the participant record with `client_id`, `client_secret` and `warnings`,
 
 1. Create its PostgreSQL user, and the adapter and connector databases, which that user owns and no other can connect to.
 2. Create the Keycloak role `participant:<id>`, a client-credentials client named after the participant, a `participant_id` claim mapper, and the role assignment.
-3. Create its bucket and an S3 identity for it, if `SEAWEEDFS_IAM_URL` is set. That identity can't directly read, write or list another's bucket, though it can copy from one: see [deploy/README.md](deploy/README.md). Otherwise it uses the configured identity, shared with every other participant, and its adapter creates the bucket. See [deploy/README.md](deploy/README.md).
+3. Create its bucket and an S3 identity for it, if `SEAWEEDFS_IAM_URL` is set. That identity can't directly read, write or list another's bucket, though it can copy from one: see [helm/README.md](helm/README.md). Otherwise it uses the configured identity, shared with every other participant, and its adapter creates the bucket. See [helm/README.md](helm/README.md).
 4. Create the Secret, ConfigMap, and connector and adapter Deployments and Services in `dataspace-participants`. The Secret holds what only this participant has: its database password, S3 keys, internal key and connector API key. They are generated once.
 5. Write the registry entry.
 
@@ -137,7 +137,7 @@ An external participant runs its own adapter, connector, PostgreSQL and S3 stora
 
 **To onboard one:**
 
-1. Make sure of the doors. The gateway has to be reachable from where it runs, and so does the DSP gateway, which isn't exposed by default: see `ingress.dspGateway`, `participants.gatewayPeerUrl` and `participants.dspGatewayPeerUrl` in [deploy/README.md](deploy/README.md). So do these read routes: add its address to `ingress.management.allowFrom`.
+1. Make sure of the doors. The gateway has to be reachable from where it runs, and so does the DSP gateway, which isn't exposed by default: see `ingress.dspGateway`, `participants.gatewayPeerUrl` and `participants.dspGatewayPeerUrl` in [helm/README.md](helm/README.md). So do these read routes: add its address to `ingress.management.allowFrom`.
 2. Register it, with `hosted: false` and the addresses where hosted connectors and adapters can reach it. It gets only its Keycloak client and registry entry, with no databases or pods. The answer has its `client_secret`.
 
    ```json
@@ -265,7 +265,7 @@ Also `MAX_UPLOAD_BYTES` and `MAX_JSON_BYTES`, passed on to adapters, which must 
 | Setting | Holds |
 |---|---|
 | `DEMO_PARTICIPANTS` | The demo participants: a JSON list or comma-separated `<id>=<type>`. Unset or empty means the default in [`POST /api/demo`](#post-apidemo), and `[]` none |
-| `SEAWEEDFS_IAM_URL` | The storage's IAM API, for an S3 identity per participant. Empty means participants share the configured identity. See [deploy/README.md](deploy/README.md) before setting it |
+| `SEAWEEDFS_IAM_URL` | The storage's IAM API, for an S3 identity per participant. Empty means participants share the configured identity. See [helm/README.md](helm/README.md) before setting it |
 | `GATEWAY_PEER_URL`, `DSP_GATEWAY_PEER_URL` | What an `externally_reachable` participant announces. They have to work from outside the cluster and from inside it, as two reachable participants use them too, and hosted participants are reachable by default. Without them, hosted participants are registered as not reachable |
 | `MAIN_REGISTRY`, `MAIN_REPO`, `MAIN_VERSION` | Participant images are `[<registry>/]<repo>/adapter:<version>` and `.../connector:<version>` |
 | `RESOURCES_PARTICIPANT_CPU_REQUEST`, `_CPU_LIMIT`, `_MEMORY_REQUEST`, `_MEMORY_LIMIT` | Per participant container. Unset ones are left out, except the memory limit, which defaults to `2Gi` |

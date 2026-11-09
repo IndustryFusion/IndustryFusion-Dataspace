@@ -14,12 +14,9 @@ build/
 connector/.gradle/
 connector/build/
 
-# Settings of scripts/build-images.sh
-scripts/build-images.env
-
 # Deployment secrets and downloaded tools
-deploy/helm/values/secrets.yaml
-deploy/helm/.tools/
+helm/environment/secrets.yaml
+helm/.tools/
 
 # Management UI
 management/ui/node_modules/

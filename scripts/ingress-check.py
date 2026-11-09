@@ -16,8 +16,9 @@
 #
 """Checks a Helm install from outside, through its Ingress: onboarding, messages and the body limits.
 
-Needs an install from deploy/README.md on the local cluster, with -e local. The Ingress controller is reached
-at --ingress, an address such as http://<node address>:<node port>, with each host sent as a header.
+Needs the charts of helm/ on the local cluster, as scripts/local-env.sh services deploys them. The Ingress
+controller is reached at --ingress, an address such as http://<node address>:<node port>, with each host
+sent as a header.
 
 Without --ingress it forwards to the gateway and management Services, for an install with no Ingress controller.
 That checks the same flows and limits as the services enforce them, and says nothing about the Ingress.

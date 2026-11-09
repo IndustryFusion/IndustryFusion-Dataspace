@@ -1,0 +1,97 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# Settings shared by every installation. Override them in environment/default.yaml.
+# The image names and the namespaces come from helm/env.sh, through values.yaml.gotmpl.
+
+images:
+  pullPolicy: IfNotPresent
+
+# By default these come from the IndustryFusion DigitalTwin stack, in namespace iff.
+dependencies:
+  postgres:
+    host: acid-cluster.iff
+    port: 5432
+  s3:
+    endpoint: http://seaweedfs.iff:80
+    # The storage's IAM API, for an S3 identity per participant. A storage started with a static list can't use this,
+    # which includes the DigitalTwin stack's. Empty means participants share the identity in the secrets file. See
+    # helm/README.md.
+    iamUrl: ""
+  keycloak:
+    # Every service compares a token's issuer with <url>/realms/<realm>, so mint tokens through this URL.
+    url: http://keycloak-service.iff:8080/auth
+    # Optional. Without it, health looks at the realm's address.
+    healthUrl: ""
+    realm: dataspace
+
+# The one place these limits are set. The services and the Ingress body sizes all read them.
+limits:
+  maxUploadBytes: 1073741824
+  maxJsonBytes: 4194304
+
+participants:
+  # How long a whole registration may take. An undo can add up to 50 seconds, and the Ingress allows for that.
+  provisionReadySeconds: 300
+  # Empty means the default demo participants, the demo companies' IFRIC ids. "[]" means none. See management-api.md.
+  demo: ""
+  # What an externally reachable participant announces, so they must work from outside the cluster and inside it.
+  # Empty means the services' addresses inside the cluster, which is enough only for peers in this cluster.
+  gatewayPeerUrl: ""
+  dspGatewayPeerUrl: ""
+  resources:
+    cpuRequest: ""
+    cpuLimit: ""
+    memoryRequest: ""
+    memoryLimit: 2Gi
+
+ingress:
+  enabled: false
+  className: nginx
+  # Extra annotations, for both Ingress objects.
+  annotations: {}
+  gateway:
+    host: ""
+    # How long the Ingress waits on an upload or a download, in seconds.
+    transferTimeoutSeconds: 3600
+  management:
+    host: ""
+    # Addresses allowed to reach it, comma-separated, required with the Ingress. Include external participants'
+    # adapters, as they read participants here.
+    allowFrom: ""
+  # For external participants. Hosted-only installations leave this off.
+  dspGateway:
+    enabled: false
+    host: ""
+  tls:
+    enabled: false
+    # Name of a cert-manager ClusterIssuer. Empty means the Secrets below already exist.
+    certManagerClusterIssuer: ""
+    gatewaySecretName: dataspace-gateway-tls
+    managementSecretName: dataspace-management-tls
+    dspGatewaySecretName: dataspace-dsp-gateway-tls
+
+# Who reaches adapters, connectors and the registry. They need a network plugin that enforces them.
+networkPolicy:
+  enabled: true
+
+# How a service's own containers are sized. Empty leaves it to the cluster.
+resources: {}
+
+# Optional. Without it, participant reads have no company details. See keycloak.md.
+ifric:
+  backendUrl: ""
+  lookupCacheSeconds: 300

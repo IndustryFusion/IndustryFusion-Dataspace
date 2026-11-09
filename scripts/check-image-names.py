@@ -16,10 +16,11 @@
 #
 """Checks that the images scripts/build-images.sh names are exactly the ones a deployment uses.
 
-For each set of images.registry, images.repo and images.version, it renders every release of the chart and
-collects the images of its pods. It takes MAIN_REGISTRY, MAIN_REPO and MAIN_VERSION from the management
-Deployment, and asks the management API's own settings for the adapter and connector images. Together they
-must be the six names that build-images.sh --list prints for the same settings. Needs bash, helm and PyYAML.
+For each setting of LOCAL_REGISTRY, MAIN_REPO and MAIN_VERSION, given to helm/env.sh as an operator would, it
+renders every release of helm/ with helmfile and collects the images of its pods. It takes MAIN_REGISTRY,
+MAIN_REPO and MAIN_VERSION from the management Deployment, and asks the management API's own settings for the
+adapter and connector images. Together they must be the six names that build-images.sh --list prints with the
+same settings. Needs bash, helm, helmfile and PyYAML.
 
     check-image-names.py                   Checks scripts/build-images.sh
     check-image-names.py --script <file>   Checks another copy, such as one with a change undone
@@ -34,42 +35,20 @@ import sys
 import tempfile
 
 import yaml
+from helm_render import CANARY_SECRETS, RELEASES, ROOT, environment, render
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-HELM = ROOT / "deploy" / "helm"
-RELEASES = ["common", "registry", "gateway", "dsp-gateway", "management"]
-SETTINGS = [
-    ("reg.example:5000", "team/dataspace", "1.2.3"),
-    ("k3d-iff.localhost:12345", "dataspace", "latest"),
-    ("", "dataspace", "dev"),
-]
-# Only so the chart renders. Nothing here is used.
-SECRETS = {
-    "secrets": {
-        "postgres": {"user": "check-user", "password": "check-password"},
-        "s3": {"accessKey": "check-access", "secretKey": "check-secret"},
-        "adminClientSecret": "check-admin-secret",
-    }
-}
-
-
-def render(release: str, secrets: str, registry: str, repo: str, version: str) -> list[dict]:
-    answer = subprocess.run(
-        [
-            "helm", "template", f"dataspace-{release}", str(HELM / "charts" / "dataspace"),
-            "--namespace", "dataspace",
-            "-f", str(HELM / "values" / "common.yaml"), "-f", secrets,
-            "--set", f"component={release}",
-            "--set-string", f"images.registry={registry}",
-            "--set-string", f"images.repo={repo}",
-            "--set-string", f"images.version={version}",
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-    )
-    if answer.returncode:
-        raise SystemExit(f"helm template failed for {release}: {answer.stderr}")
-    return [document for document in yaml.safe_load_all(answer.stdout) if document]
+# Each with helm/env.sh sourced after the settings, or, last, without it, where LOCAL_REGISTRY is unset and the
+# charts and the script have to fall back to the same default. None is env.sh's defaults.
+SETTINGS: list[tuple[dict[str, str] | None, bool]] = [
+    (None, True),
+    ({"LOCAL_REGISTRY": "reg.example:5000", "MAIN_REPO": "team/dataspace", "MAIN_VERSION": "1.2.3"}, True),
+    ({"LOCAL_REGISTRY": "", "MAIN_REPO": "dataspace", "MAIN_VERSION": "dev"}, True),
+    (
+        {"MAIN_REPO": "dataspace", "MAIN_VERSION": "1.0", "NAMESPACE": "dataspace",
+         "PARTICIPANTS_NAMESPACE": "dataspace-participants"},
+        False,
+    ),
+]  # fmt: skip
 
 
 def pod_specs(item: dict) -> list[dict]:
@@ -82,12 +61,12 @@ def pod_specs(item: dict) -> list[dict]:
     return [template["spec"]] if "spec" in template else []
 
 
-def chart_names(secrets: str, registry: str, repo: str, version: str) -> tuple[list[str], dict[str, str]]:
+def chart_names(secrets: str, settings: dict[str, str] | None, sourced: bool) -> tuple[list[str], dict[str, str]]:
     """The images of the chart's pods, and the management Deployment's MAIN_* settings."""
     images: list[str] = []
     main: dict[str, str] = {}
     for release in RELEASES:
-        for item in render(release, secrets, registry, repo, version):
+        for item in render(secrets, settings=settings, release=release, sourced=sourced):
             for spec in pod_specs(item):
                 for container in spec.get("initContainers", []) + spec.get("containers", []):
                     images.append(container["image"])
@@ -118,16 +97,10 @@ def participant_names(main: dict[str, str]) -> list[str]:
                 os.environ[key] = value
 
 
-def script_names(script: pathlib.Path, registry: str, repo: str, version: str) -> list[str]:
-    environment = {
-        "PATH": os.environ.get("PATH", ""),
-        "REGISTRY": registry,
-        "REPO": repo,
-        "VERSION": version,
-        # So a scripts/build-images.env in the checkout doesn't change what is compared.
-        "BUILD_IMAGES_CONFIG": os.devnull,
-    }
-    answer = subprocess.run(["bash", str(script), "--list"], env=environment, capture_output=True, text=True)
+def script_names(script: pathlib.Path, settings: dict[str, str] | None, sourced: bool) -> list[str]:
+    answer = subprocess.run(
+        ["bash", str(script), "--list"], env=environment(settings, sourced), capture_output=True, text=True
+    )
     if answer.returncode:
         raise SystemExit(f"build-images.sh --list failed: {answer.stderr}")
     return answer.stdout.splitlines()
@@ -139,16 +112,21 @@ def main() -> int:
     script = parser.parse_args().script.resolve()
     problems = []
     with tempfile.NamedTemporaryFile("w", suffix=".yaml") as secrets:
-        yaml.safe_dump(SECRETS, secrets)
+        yaml.safe_dump(CANARY_SECRETS, secrets)
         secrets.flush()
-        for registry, repo, version in SETTINGS:
-            shown = f"registry={registry!r} repo={repo!r} version={version!r}"
-            images, main = chart_names(secrets.name, registry, repo, version)
+        for settings, sourced in SETTINGS:
+            used = environment(settings, sourced)
+            registry = used.get("LOCAL_REGISTRY", "k3d-iff.localhost:12345")
+            repo, version = used["MAIN_REPO"], used["MAIN_VERSION"]
+            shown = (
+                f"LOCAL_REGISTRY={used.get('LOCAL_REGISTRY', 'unset')!r} MAIN_REPO={repo!r} MAIN_VERSION={version!r}"
+            )
+            images, main = chart_names(secrets.name, settings, sourced)
             expected_main = {"MAIN_REGISTRY": registry, "MAIN_REPO": repo, "MAIN_VERSION": version}
             if main != expected_main:
                 problems.append(f"{shown}: the management Deployment has {main}, not {expected_main}")
             deployed = images + participant_names(main)
-            listed = script_names(script, registry, repo, version)
+            listed = script_names(script, settings, sourced)
             if sorted(deployed) != sorted(listed) or len(set(listed)) != len(listed):
                 problems.append(f"{shown}: the deployment uses {sorted(deployed)}, the script names {sorted(listed)}")
             else:

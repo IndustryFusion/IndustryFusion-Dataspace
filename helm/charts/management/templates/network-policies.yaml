@@ -1,0 +1,79 @@
+#
+# Copyright (c) 2026 IndustryFusion Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# The participants' adapters and connectors, which management creates.
+{{- if .Values.networkPolicy.enabled }}
+{{- $component := "dataspace.industryfusion.org/component" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: adapters
+  namespace: {{ .Values.namespaces.participants }}
+  labels: {{- include "management.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{ $component }}: adapter
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [gateway, management] }
+        # Peers notify directly, and connectors read and push content.
+        - podSelector: {}
+      ports: [{ protocol: TCP, port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: connectors
+  namespace: {{ .Values.namespaces.participants }}
+  labels: {{- include "management.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{ $component }}: connector
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{ $component }}: connector
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dsp-gateway
+      ports:
+        - { protocol: TCP, port: 8082 }
+        - { protocol: TCP, port: 8084 }
+    - from:
+        - podSelector:
+            matchLabels:
+              {{ $component }}: adapter
+      ports: [{ protocol: TCP, port: 8081 }]
+    - from:
+        - podSelector:
+            matchLabels:
+              {{ $component }}: connector
+      ports: [{ protocol: TCP, port: 8083 }]
+{{- end }}

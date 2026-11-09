@@ -40,7 +40,7 @@ from app.tokens import fetch_admin_token
 log = logging.getLogger("management.provisioning")
 
 # What an undo may add to a registration's deadline, and how much of that may go on waiting for pods to go. Whatever
-# sits in front of this service allows for the deadline and a little more. See deploy/README.md.
+# sits in front of this service allows for the deadline and a little more. See helm/README.md.
 UNDO_SECONDS = 50
 UNDO_PODS_SECONDS = 30
 
